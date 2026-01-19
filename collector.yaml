@@ -1,0 +1,20 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: localhost:4317
+      http:
+        endpoint: localhost:4318
+
+exporters:
+  awsxray:
+    # Region is automatically detected from Lambda environment
+
+service:
+  telemetry:
+    logs:
+      level: error    # Only show errors, suppress all info/warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [awsxray]
