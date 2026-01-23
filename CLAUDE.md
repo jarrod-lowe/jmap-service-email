@@ -6,7 +6,7 @@ This is a plugin for jmap-service-core that provides email capabilities (urn:iet
 
 ## Architecture
 
-```
+```plain
 ┌─────────────────────────────────────────────────────────────────┐
 │                        jmap-service-core                         │
 │  ┌─────────────┐    ┌──────────────┐    ┌──────────────────┐   │
@@ -92,7 +92,7 @@ make outputs ENV=test   # Show outputs
 
 ## Development Requirements
 
-1. **TDD** - Write tests first, then implementation
+1. **TDD** - Write tests first, then implementation. Use dependency inversion
 2. **ARM64** - All Lambdas must be ARM64 (Graviton)
 3. **Structured Logging** - Use slog with JSON handler
 4. **OTel Tracing** - All Lambdas instrumented with X-Ray via ADOT layer
@@ -101,13 +101,14 @@ make outputs ENV=test   # Show outputs
 ## Current Status
 
 The repository contains infrastructure setup only:
+
 - Placeholder Lambda that returns `serverFail` for all methods
 - Plugin registration in core DynamoDB
 - No actual email implementation yet
 
 ## Project Structure
 
-```
+```plain
 jmap-service-email/
 ├── cmd/
 │   └── placeholder/           # Placeholder Lambda (to be replaced)

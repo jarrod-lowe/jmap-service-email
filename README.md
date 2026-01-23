@@ -55,7 +55,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 ## Make Targets
 
 | Target | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `make deps` | Initialize go.mod and fetch dependencies |
 | `make build` | Compile all lambdas (linux/arm64) |
 | `make package` | Create Lambda deployment packages |

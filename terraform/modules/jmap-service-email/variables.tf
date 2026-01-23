@@ -44,3 +44,13 @@ variable "plugin_version" {
   type        = string
   default     = "1.0.0"
 }
+
+variable "jmap_core_api_gateway_arn" {
+  description = "ARN of the JMAP core API Gateway (execution ARN)"
+  type        = string
+}
+
+variable "jmap_core_api_gateway_url" {
+  description = "URL of the JMAP core API Gateway"
+  type        = string
+}
