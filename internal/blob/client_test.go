@@ -385,3 +385,312 @@ func TestNewHTTPBlobClient_SetsDefaults(t *testing.T) {
 		t.Errorf("sleepFunc should not be nil")
 	}
 }
+
+// Tests for Stream method
+
+func TestStream_ConstructsCorrectURL(t *testing.T) {
+	var capturedURL string
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			capturedURL = req.URL.String()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte("content"))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	rc, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Fatalf("Stream error = %v, want nil", err)
+	}
+	defer rc.Close()
+
+	expected := "https://api.example.com/download-iam/user-123/blob-456"
+	if capturedURL != expected {
+		t.Errorf("URL = %q, want %q", capturedURL, expected)
+	}
+}
+
+func TestStream_ReturnsReadCloserOn200(t *testing.T) {
+	expectedContent := []byte("streamed content")
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(expectedContent)),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	rc, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Fatalf("Stream error = %v, want nil", err)
+	}
+	defer rc.Close()
+
+	content, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if !bytes.Equal(content, expectedContent) {
+		t.Errorf("content = %q, want %q", content, expectedContent)
+	}
+}
+
+func TestStream_Returns404AsErrBlobNotFound(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if !errors.Is(err, ErrBlobNotFound) {
+		t.Errorf("error = %v, want ErrBlobNotFound", err)
+	}
+}
+
+func TestStream_Returns403AsErrForbidden(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if !errors.Is(err, ErrForbidden) {
+		t.Errorf("error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestStream_Returns5xxAsErrServerFail(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if !errors.Is(err, ErrServerFail) {
+		t.Errorf("error = %v, want ErrServerFail", err)
+	}
+}
+
+// Tests for Upload method
+
+func TestUpload_ConstructsCorrectURL(t *testing.T) {
+	var capturedURL string
+	var capturedMethod string
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			capturedURL = req.URL.String()
+			capturedMethod = req.Method
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"blobId":"new-blob-123","size":100}`))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("content")))
+	if err != nil {
+		t.Fatalf("Upload error = %v, want nil", err)
+	}
+
+	expectedURL := "https://api.example.com/upload-iam/user-123"
+	if capturedURL != expectedURL {
+		t.Errorf("URL = %q, want %q", capturedURL, expectedURL)
+	}
+	if capturedMethod != http.MethodPost {
+		t.Errorf("Method = %q, want %q", capturedMethod, http.MethodPost)
+	}
+}
+
+func TestUpload_SetsRequiredHeaders(t *testing.T) {
+	var capturedContentType string
+	var capturedParentHeader string
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			capturedContentType = req.Header.Get("Content-Type")
+			capturedParentHeader = req.Header.Get("X-Parent")
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"blobId":"new-blob-123","size":100}`))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob-456", "application/pdf", bytes.NewReader([]byte("content")))
+	if err != nil {
+		t.Fatalf("Upload error = %v, want nil", err)
+	}
+
+	if capturedContentType != "application/pdf" {
+		t.Errorf("Content-Type = %q, want %q", capturedContentType, "application/pdf")
+	}
+	if capturedParentHeader != "parent-blob-456" {
+		t.Errorf("X-Parent = %q, want %q", capturedParentHeader, "parent-blob-456")
+	}
+}
+
+func TestUpload_StreamsBodyDirectly(t *testing.T) {
+	var capturedBody []byte
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			capturedBody, _ = io.ReadAll(req.Body)
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"blobId":"new-blob-123","size":7}`))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	content := []byte("content")
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("Upload error = %v, want nil", err)
+	}
+
+	if !bytes.Equal(capturedBody, content) {
+		t.Errorf("body = %q, want %q", capturedBody, content)
+	}
+}
+
+func TestUpload_ParsesResponseForBlobID(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"blobId":"uploaded-blob-789","size":42}`))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	blobID, size, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if err != nil {
+		t.Fatalf("Upload error = %v, want nil", err)
+	}
+
+	if blobID != "uploaded-blob-789" {
+		t.Errorf("blobID = %q, want %q", blobID, "uploaded-blob-789")
+	}
+	if size != 42 {
+		t.Errorf("size = %d, want 42", size)
+	}
+}
+
+func TestUpload_Returns4xxAsInvalidArguments(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"type":"invalidArguments","description":"bad request"}`))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if err == nil {
+		t.Fatal("Upload should return error for 4xx")
+	}
+}
+
+func TestUpload_Returns5xxAsServerFail(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if !errors.Is(err, ErrServerFail) {
+		t.Errorf("error = %v, want ErrServerFail", err)
+	}
+}
+
+func TestUpload_ReturnsNetworkError(t *testing.T) {
+	networkErr := errors.New("connection refused")
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return nil, networkErr
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if err == nil {
+		t.Fatal("Upload should return error for network failure")
+	}
+}

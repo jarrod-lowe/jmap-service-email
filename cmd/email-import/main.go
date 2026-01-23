@@ -3,10 +3,11 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -28,9 +29,14 @@ var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 // emailItem is an alias for the internal email.EmailItem type.
 type emailItem = email.EmailItem
 
-// BlobClient defines the interface for fetching blobs.
-type BlobClient interface {
-	FetchBlob(ctx context.Context, accountID, blobID string) ([]byte, error)
+// BlobStreamer defines the interface for streaming blobs.
+type BlobStreamer interface {
+	Stream(ctx context.Context, accountID, blobID string) (io.ReadCloser, error)
+}
+
+// BlobUploader defines the interface for uploading blobs.
+type BlobUploader interface {
+	Upload(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (blobID string, size int64, err error)
 }
 
 // EmailRepository defines the interface for storing emails.
@@ -40,15 +46,17 @@ type EmailRepository interface {
 
 // handler implements the Email/import logic.
 type handler struct {
-	repo EmailRepository
-	blob BlobClient
+	repo     EmailRepository
+	streamer BlobStreamer
+	uploader BlobUploader
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, blob BlobClient) *handler {
+func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader) *handler {
 	return &handler{
-		repo: repo,
-		blob: blob,
+		repo:     repo,
+		streamer: streamer,
+		uploader: uploader,
 	}
 }
 
@@ -169,16 +177,16 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		receivedAt = time.Now().UTC()
 	}
 
-	// Fetch blob
-	blobBytes, err := h.blob.FetchBlob(ctx, accountID, blobID)
+	// Stream blob
+	stream, err := h.streamer.Stream(ctx, accountID, blobID)
 	if err != nil {
-		logger.ErrorContext(ctx, "Failed to fetch blob",
+		logger.ErrorContext(ctx, "Failed to stream blob",
 			slog.String("account_id", accountID),
 			slog.String("blob_id", blobID),
 			slog.String("error", err.Error()),
 		)
 		errorType := "serverFail"
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, blob.ErrBlobNotFound) {
 			errorType = "blobNotFound"
 		}
 		return nil, map[string]any{
@@ -186,9 +194,10 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 			"description": err.Error(),
 		}
 	}
+	defer stream.Close()
 
-	// Parse email
-	parsed, err := email.ParseRFC5322(blobBytes)
+	// Parse email with streaming parser
+	parsed, err := email.ParseRFC5322Stream(ctx, stream, blobID, accountID, h.uploader)
 	if err != nil {
 		logger.ErrorContext(ctx, "Failed to parse email",
 			slog.String("account_id", accountID),
@@ -289,6 +298,7 @@ func main() {
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
-	h := newHandler(repo, blobClient)
+	// HTTPBlobClient implements both BlobStreamer and BlobUploader
+	h := newHandler(repo, blobClient, blobClient)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

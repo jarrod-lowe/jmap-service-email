@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 )
 
 // Simple test email content
@@ -18,16 +21,30 @@ Message-ID: <test-msg@example.com>
 This is a test email body.
 `
 
-// mockBlobClient implements the BlobClient interface for testing.
-type mockBlobClient struct {
-	fetchFunc func(ctx context.Context, accountID, blobID string) ([]byte, error)
+// mockBlobStreamer implements the BlobStreamer interface for testing.
+type mockBlobStreamer struct {
+	streamFunc func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error)
 }
 
-func (m *mockBlobClient) FetchBlob(ctx context.Context, accountID, blobID string) ([]byte, error) {
-	if m.fetchFunc != nil {
-		return m.fetchFunc(ctx, accountID, blobID)
+func (m *mockBlobStreamer) Stream(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+	if m.streamFunc != nil {
+		return m.streamFunc(ctx, accountID, blobID)
 	}
-	return []byte(testEmailContent), nil
+	return io.NopCloser(strings.NewReader(testEmailContent)), nil
+}
+
+// mockBlobUploader implements the BlobUploader interface for testing.
+type mockBlobUploader struct {
+	uploadFunc func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error)
+}
+
+func (m *mockBlobUploader) Upload(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
+	if m.uploadFunc != nil {
+		return m.uploadFunc(ctx, accountID, parentBlobID, contentType, body)
+	}
+	// Default: consume the body and return a mock blob ID
+	content, _ := io.ReadAll(body)
+	return "uploaded-blob-id", int64(len(content)), nil
 }
 
 // mockEmailRepository implements the EmailRepository interface for testing.
@@ -50,9 +67,10 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 			return nil
 		},
 	}
-	mockBlob := &mockBlobClient{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
 
-	h := newHandler(mockRepo, mockBlob)
+	h := newHandler(mockRepo, mockStreamer, mockUploader)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -128,15 +146,16 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 	}
 }
 
-func TestHandler_BlobFetchError(t *testing.T) {
+func TestHandler_BlobStreamError(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
-	mockBlob := &mockBlobClient{
-		fetchFunc: func(ctx context.Context, accountID, blobID string) ([]byte, error) {
-			return nil, errors.New("blob not found")
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return nil, blob.ErrBlobNotFound
 		},
 	}
+	mockUploader := &mockBlobUploader{}
 
-	h := newHandler(mockRepo, mockBlob)
+	h := newHandler(mockRepo, mockStreamer, mockUploader)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -184,9 +203,10 @@ func TestHandler_RepositoryError(t *testing.T) {
 			return errors.New("database error")
 		},
 	}
-	mockBlob := &mockBlobClient{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
 
-	h := newHandler(mockRepo, mockBlob)
+	h := newHandler(mockRepo, mockStreamer, mockUploader)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -236,9 +256,10 @@ func TestHandler_MultipleEmails(t *testing.T) {
 			return nil
 		},
 	}
-	mockBlob := &mockBlobClient{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
 
-	h := newHandler(mockRepo, mockBlob)
+	h := newHandler(mockRepo, mockStreamer, mockUploader)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -286,9 +307,10 @@ func TestHandler_MultipleEmails(t *testing.T) {
 
 func TestHandler_InvalidMethod(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
-	mockBlob := &mockBlobClient{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
 
-	h := newHandler(mockRepo, mockBlob)
+	h := newHandler(mockRepo, mockStreamer, mockUploader)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -311,5 +333,68 @@ func TestHandler_InvalidMethod(t *testing.T) {
 	errorType, ok := response.MethodResponse.Args["type"].(string)
 	if !ok || errorType != "unknownMethod" {
 		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "unknownMethod")
+	}
+}
+
+func TestHandler_Base64Attachment_UploadsCalled(t *testing.T) {
+	// Email with base64 encoded content
+	emailWithBase64 := `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: With Attachment
+MIME-Version: 1.0
+Content-Type: application/octet-stream; name="test.bin"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="test.bin"
+
+SGVsbG8gV29ybGQ=
+`
+	uploadCount := 0
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(emailWithBase64)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{
+		uploadFunc: func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
+			uploadCount++
+			content, _ := io.ReadAll(body)
+			return "decoded-blob", int64(len(content)), nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "email-blob-123",
+					"mailboxIds": map[string]any{
+						"inbox-id": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should succeed
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Should have uploaded the decoded content
+	if uploadCount != 1 {
+		t.Errorf("uploadCount = %d, want 1", uploadCount)
 	}
 }
