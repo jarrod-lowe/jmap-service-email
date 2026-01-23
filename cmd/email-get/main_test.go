@@ -1,0 +1,579 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+)
+
+// emailItem is an alias for the internal email.EmailItem type.
+type emailItem = email.EmailItem
+
+// mockEmailRepository implements the EmailRepository interface for testing.
+type mockEmailRepository struct {
+	getFunc func(ctx context.Context, accountID, emailID string) (*emailItem, error)
+}
+
+func (m *mockEmailRepository) GetEmail(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+	if m.getFunc != nil {
+		return m.getFunc(ctx, accountID, emailID)
+	}
+	return nil, email.ErrEmailNotFound
+}
+
+// Helper to create a test email item.
+func testEmailItem(accountID, emailID string) *emailItem {
+	return &emailItem{
+		AccountID:     accountID,
+		EmailID:       emailID,
+		BlobID:        "blob-" + emailID,
+		ThreadID:      "thread-" + emailID,
+		MailboxIDs:    map[string]bool{"inbox": true},
+		Keywords:      map[string]bool{"$seen": true},
+		Size:          1234,
+		ReceivedAt:    time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC),
+		HasAttachment: false,
+		Subject:       "Test Subject",
+		From:          []email.EmailAddress{{Name: "Alice", Email: "alice@example.com"}},
+		To:            []email.EmailAddress{{Name: "Bob", Email: "bob@example.com"}},
+		CC:            nil,
+		ReplyTo:       nil,
+		SentAt:        time.Date(2024, 1, 20, 9, 0, 0, 0, time.UTC),
+		MessageID:     []string{"<msg-123@example.com>"},
+		InReplyTo:     nil,
+		References:    nil,
+		Preview:       "This is a preview...",
+		BodyStructure: email.BodyPart{PartID: "1", Type: "text/plain", Size: 100},
+		TextBody:      []string{"1"},
+		HTMLBody:      nil,
+		Attachments:   nil,
+	}
+}
+
+func TestHandler_SingleIDFound(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			if accountID == "user-123" && emailID == "email-1" {
+				return testEmail, nil
+			}
+			return nil, email.ErrEmailNotFound
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return Email/get response
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	// Should have accountId in args
+	accountID, ok := response.MethodResponse.Args["accountId"].(string)
+	if !ok || accountID != "user-123" {
+		t.Errorf("accountId = %v, want %q", response.MethodResponse.Args["accountId"], "user-123")
+	}
+
+	// Should have state
+	state, ok := response.MethodResponse.Args["state"].(string)
+	if !ok || state != "0" {
+		t.Errorf("state = %v, want %q", response.MethodResponse.Args["state"], "0")
+	}
+
+	// Should have list with one email
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be a slice")
+	}
+	if len(list) != 1 {
+		t.Fatalf("list length = %d, want 1", len(list))
+	}
+
+	// Check email in list
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+	if emailMap["id"] != "email-1" {
+		t.Errorf("id = %v, want %q", emailMap["id"], "email-1")
+	}
+	if emailMap["blobId"] != "blob-email-1" {
+		t.Errorf("blobId = %v, want %q", emailMap["blobId"], "blob-email-1")
+	}
+	if emailMap["subject"] != "Test Subject" {
+		t.Errorf("subject = %v, want %q", emailMap["subject"], "Test Subject")
+	}
+
+	// Should have empty notFound
+	notFound, ok := response.MethodResponse.Args["notFound"].([]any)
+	if !ok {
+		t.Fatal("notFound should be a slice")
+	}
+	if len(notFound) != 0 {
+		t.Errorf("notFound length = %d, want 0", len(notFound))
+	}
+}
+
+func TestHandler_SingleIDNotFound(t *testing.T) {
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return nil, email.ErrEmailNotFound
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"nonexistent-id"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return Email/get response (not error)
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	// Should have empty list
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be a slice")
+	}
+	if len(list) != 0 {
+		t.Errorf("list length = %d, want 0", len(list))
+	}
+
+	// Should have notFound with the ID
+	notFound, ok := response.MethodResponse.Args["notFound"].([]any)
+	if !ok {
+		t.Fatal("notFound should be a slice")
+	}
+	if len(notFound) != 1 {
+		t.Fatalf("notFound length = %d, want 1", len(notFound))
+	}
+	if notFound[0] != "nonexistent-id" {
+		t.Errorf("notFound[0] = %v, want %q", notFound[0], "nonexistent-id")
+	}
+}
+
+func TestHandler_MultipleIDsMixedResults(t *testing.T) {
+	email1 := testEmailItem("user-123", "email-1")
+	email3 := testEmailItem("user-123", "email-3")
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			switch emailID {
+			case "email-1":
+				return email1, nil
+			case "email-3":
+				return email3, nil
+			default:
+				return nil, email.ErrEmailNotFound
+			}
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1", "email-2", "email-3"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should have list with two emails
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be a slice")
+	}
+	if len(list) != 2 {
+		t.Fatalf("list length = %d, want 2", len(list))
+	}
+
+	// Should have notFound with one ID
+	notFound, ok := response.MethodResponse.Args["notFound"].([]any)
+	if !ok {
+		t.Fatal("notFound should be a slice")
+	}
+	if len(notFound) != 1 {
+		t.Fatalf("notFound length = %d, want 1", len(notFound))
+	}
+	if notFound[0] != "email-2" {
+		t.Errorf("notFound[0] = %v, want %q", notFound[0], "email-2")
+	}
+}
+
+func TestHandler_PropertyFiltering(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"email-1"},
+			"properties": []any{"id", "subject", "from"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return Email/get response
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	// Should have list with one email
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be a slice")
+	}
+	if len(list) != 1 {
+		t.Fatalf("list length = %d, want 1", len(list))
+	}
+
+	// Check email has only requested properties
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Should have requested properties
+	if emailMap["id"] != "email-1" {
+		t.Errorf("id = %v, want %q", emailMap["id"], "email-1")
+	}
+	if emailMap["subject"] != "Test Subject" {
+		t.Errorf("subject = %v, want %q", emailMap["subject"], "Test Subject")
+	}
+	if _, ok := emailMap["from"]; !ok {
+		t.Error("from should be present")
+	}
+
+	// Should NOT have unrequested properties
+	if _, ok := emailMap["blobId"]; ok {
+		t.Error("blobId should NOT be present (not requested)")
+	}
+	if _, ok := emailMap["threadId"]; ok {
+		t.Error("threadId should NOT be present (not requested)")
+	}
+	if _, ok := emailMap["size"]; ok {
+		t.Error("size should NOT be present (not requested)")
+	}
+}
+
+func TestHandler_HeaderPropertyRejection(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"email-1"},
+			"properties": []any{"id", "header:X-Custom-Header"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "invalidArguments" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "invalidArguments")
+	}
+
+	// Description should mention header
+	description, _ := response.MethodResponse.Args["description"].(string)
+	if description == "" {
+		t.Error("description should be present")
+	}
+}
+
+func TestHandler_MissingIDs(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			// No "ids" field
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "invalidArguments" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "invalidArguments")
+	}
+}
+
+func TestHandler_EmptyIDsArray(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return valid Email/get response (not an error)
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	// Should have empty list
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be a slice")
+	}
+	if len(list) != 0 {
+		t.Errorf("list length = %d, want 0", len(list))
+	}
+
+	// Should have empty notFound
+	notFound, ok := response.MethodResponse.Args["notFound"].([]any)
+	if !ok {
+		t.Fatal("notFound should be a slice")
+	}
+	if len(notFound) != 0 {
+		t.Errorf("notFound length = %d, want 0", len(notFound))
+	}
+
+	// Should have state
+	state, ok := response.MethodResponse.Args["state"].(string)
+	if !ok || state != "0" {
+		t.Errorf("state = %v, want %q", response.MethodResponse.Args["state"], "0")
+	}
+}
+
+func TestHandler_RepositoryError(t *testing.T) {
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return nil, errors.New("database connection failed")
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "serverFail" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "serverFail")
+	}
+}
+
+func TestHandler_InvalidMethod(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args:      map[string]any{},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "unknownMethod" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "unknownMethod")
+	}
+}
+
+func TestHandler_BodyValuesAlwaysEmpty(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// bodyValues should be present and be an empty map
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+	if len(bodyValues) != 0 {
+		t.Errorf("bodyValues should be empty, got %v", bodyValues)
+	}
+}
+
+func TestHandler_InvalidIDType(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       "not-an-array", // Wrong type - should be array
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "invalidArguments" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "invalidArguments")
+	}
+}

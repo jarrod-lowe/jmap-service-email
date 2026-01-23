@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Infrastructure setup complete** - the plugin registration pipeline is functional but the email implementation is a placeholder that returns `serverFail` for all methods.
+**Partial implementation** - `Email/import` and `Email/get` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -73,7 +73,12 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 ```plain
 jmap-service-email/
 ├── cmd/
-│   └── placeholder/           # Placeholder Lambda
+│   ├── placeholder/           # Placeholder Lambda
+│   ├── email-import/          # Email/import Lambda
+│   └── email-get/             # Email/get Lambda
+├── internal/
+│   ├── email/                 # Email types, repository, parser
+│   └── blob/                  # Blob API client
 ├── terraform/
 │   ├── modules/
 │   │   └── jmap-service-email/
@@ -93,11 +98,32 @@ The plugin registers the following capability:
 
 - `urn:ietf:params:jmap:mail`
 
-Methods (all currently return `serverFail`):
+Methods:
 
-- `Email/get`
-- `Email/query`
-- `Email/import`
+- `Email/get` - Retrieve emails by ID with optional property filtering
+- `Email/import` - Import RFC 5322 messages from blobs
+- `Email/query` - (placeholder, returns `serverFail`)
+
+## TODOs
+
+The following enhancements are planned for future versions:
+
+### Email/get
+
+- **BatchGetItem**: Use `BatchGetItem` instead of sequential `GetItem` calls for multi-ID efficiency
+- **bodyValues**: Implement content fetching from blob storage (currently returns `{}`)
+- **header:\* properties**: Support arbitrary header property syntax (currently rejected with `invalidArguments`)
+- **Additional properties**: Add `sender` and `bcc` fields
+
+### Email/import
+
+- **Threading**: Implement proper thread assignment based on References/In-Reply-To headers (currently uses email ID as thread ID)
+
+### General
+
+- **Email/query**: Implement query support with mailbox filtering, sorting, and pagination
+- **Email/changes**: Implement state tracking for delta sync
+- **Email/set**: Implement email mutations (keywords, mailbox assignments)
 
 ## License
 

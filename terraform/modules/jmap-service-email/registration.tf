@@ -1,5 +1,7 @@
 # Plugin registration in jmap-service-core DynamoDB table
 
+resource "time_static" "plugin_registered" {}
+
 resource "aws_dynamodb_table_item" "plugin_registration" {
   table_name = data.aws_ssm_parameter.jmap_table_name.value
   hash_key   = "pk"
@@ -24,7 +26,7 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
         "Email/get" = {
           M = {
             invocationType = { S = "lambda-invoke" }
-            invokeTarget   = { S = aws_lambda_function.placeholder.arn }
+            invokeTarget   = { S = aws_lambda_function.email_get.arn }
           }
         }
         "Email/query" = {
@@ -41,11 +43,7 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
         }
       }
     }
-    registeredAt = { S = timestamp() }
+    registeredAt = { S = time_static.plugin_registered.rfc3339 }
     version      = { S = var.plugin_version }
   })
-
-  lifecycle {
-    ignore_changes = [item]
-  }
 }
