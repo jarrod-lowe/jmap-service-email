@@ -32,25 +32,8 @@ variable "lambda_timeout" {
   default     = 30
 }
 
-# Plugin-specific variables for integration with jmap-service-core
-
-variable "jmap_core_table_name" {
-  description = "Name of the JMAP core DynamoDB table"
-  type        = string
-}
-
 variable "plugin_version" {
   description = "Plugin version"
   type        = string
   default     = "1.0.0"
-}
-
-variable "jmap_core_api_gateway_arn" {
-  description = "ARN of the JMAP core API Gateway (execution ARN)"
-  type        = string
-}
-
-variable "jmap_core_api_gateway_url" {
-  description = "URL of the JMAP core API Gateway"
-  type        = string
 }

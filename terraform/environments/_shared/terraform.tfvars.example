@@ -9,9 +9,9 @@ log_retention_days = 7 # 7 for test, 30 for prod
 lambda_memory_size = 128 # 128 for test, 256+ for prod
 lambda_timeout     = 30
 
-# jmap-service-core integration
-# Table name follows pattern: jmap-service-core-data-<env>
-jmap_core_table_name = "jmap-service-core-data-test" # or "jmap-service-core-data-prod"
-
 # Plugin version
 plugin_version = "1.0.0"
+
+# Note: jmap-service-core integration values (table name, API URL, etc.)
+# are automatically discovered via SSM Parameter Store.
+# Ensure jmap-service-core is deployed first.

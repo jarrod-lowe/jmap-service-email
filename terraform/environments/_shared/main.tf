@@ -36,11 +36,10 @@ provider "aws" {
 module "jmap_service_email" {
   source = "../../modules/jmap-service-email"
 
-  aws_region           = var.aws_region
-  environment          = var.environment
-  log_retention_days   = var.log_retention_days
-  lambda_memory_size   = var.lambda_memory_size
-  lambda_timeout       = var.lambda_timeout
-  jmap_core_table_name = var.jmap_core_table_name
-  plugin_version       = var.plugin_version
+  aws_region         = var.aws_region
+  environment        = var.environment
+  log_retention_days = var.log_retention_days
+  lambda_memory_size = var.lambda_memory_size
+  lambda_timeout     = var.lambda_timeout
+  plugin_version     = var.plugin_version
 }

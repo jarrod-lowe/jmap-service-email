@@ -4,11 +4,6 @@ data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
-# Look up the core DynamoDB table by name
-data "aws_dynamodb_table" "jmap_core" {
-  name = var.jmap_core_table_name
-}
-
 locals {
   plugin_name = "email"
   name_prefix = "jmap-service-email-${var.environment}"

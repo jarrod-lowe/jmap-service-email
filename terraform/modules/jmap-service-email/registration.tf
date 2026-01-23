@@ -1,7 +1,7 @@
 # Plugin registration in jmap-service-core DynamoDB table
 
 resource "aws_dynamodb_table_item" "plugin_registration" {
-  table_name = var.jmap_core_table_name
+  table_name = data.aws_ssm_parameter.jmap_table_name.value
   hash_key   = "pk"
   range_key  = "sk"
 

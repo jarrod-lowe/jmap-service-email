@@ -79,16 +79,14 @@ make package   # Create Lambda deployment packages
 ## Terraform Commands
 
 ```bash
-# Get core outputs first
-cd ../jmap-service-core && AWS_PROFILE=ses-mail make outputs ENV=test
-
-# Configure terraform.tfvars with jmap_core_table_name and jmap_core_table_arn
-
+# Ensure jmap-service-core is deployed first (provides SSM parameters)
 make init ENV=test      # Initialize Terraform
 make plan ENV=test      # Create plan
 make apply ENV=test     # Apply changes
 make outputs ENV=test   # Show outputs
 ```
+
+Core infrastructure values (DynamoDB table, API URL, etc.) are automatically discovered via SSM Parameter Store from jmap-service-core.
 
 ## Development Requirements
 
@@ -123,6 +121,7 @@ jmap-service-email/
 │   │       ├── iam.tf
 │   │       ├── cloudwatch.tf
 │   │       ├── registration.tf
+│   │       ├── ssm_discovery.tf   # Discovers core values via SSM
 │   │       └── tfvars-backup.tf
 │   └── environments/
 │       ├── _shared/           # Shared terraform configs
