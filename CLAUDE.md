@@ -4,6 +4,10 @@
 
 This is a plugin for jmap-service-core that provides email capabilities (urn:ietf:params:jmap:mail). Unlike the core service, plugins are **not exposed via API Gateway** - they are invoked directly by the core's jmap-api Lambda.
 
+## Reference Specifications
+
+- [RFC 8621 - JMAP for Mail](docs/rfc8621-jmap-mail.txt) - The JSON Meta Application Protocol for Mail specification that this plugin implements
+
 ## Architecture
 
 ```plain
