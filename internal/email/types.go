@@ -51,6 +51,7 @@ type EmailItem struct {
 	TextBody      []string        `json:"textBody"`
 	HTMLBody      []string        `json:"htmlBody"`
 	Attachments   []string        `json:"attachments"`
+	Version       int             `json:"version"`
 }
 
 // PK returns the DynamoDB partition key for this email.

@@ -14,6 +14,7 @@ import (
 type mockEmailRepository struct {
 	updateEmailMailboxesFunc func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
 	getEmailFunc             func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	updateEmailKeywordsFunc  func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
 }
 
 func (m *mockEmailRepository) UpdateEmailMailboxes(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error) {
@@ -26,6 +27,13 @@ func (m *mockEmailRepository) UpdateEmailMailboxes(ctx context.Context, accountI
 func (m *mockEmailRepository) GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
 	if m.getEmailFunc != nil {
 		return m.getEmailFunc(ctx, accountID, emailID)
+	}
+	return nil, email.ErrEmailNotFound
+}
+
+func (m *mockEmailRepository) UpdateEmailKeywords(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error) {
+	if m.updateEmailKeywordsFunc != nil {
+		return m.updateEmailKeywordsFunc(ctx, accountID, emailID, newKeywords, expectedVersion)
 	}
 	return nil, email.ErrEmailNotFound
 }
@@ -680,16 +688,231 @@ func TestHandler_TransactionError(t *testing.T) {
 	}
 }
 
-// Test: Keywords update returns invalidProperties (not implemented)
-func TestHandler_KeywordsNotImplemented(t *testing.T) {
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil)
+// Test: Keywords update - full replacement
+func TestHandler_UpdateKeywords_FullReplacement(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+	var capturedNewKeywords map[string]bool
+	var capturedVersion int
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    1,
+			}, nil
+		},
+		updateEmailKeywordsFunc: func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error) {
+			capturedNewKeywords = newKeywords
+			capturedVersion = expectedVersion
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   newKeywords,
+				Version:    expectedVersion + 1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
 		Args: map[string]any{
 			"update": map[string]any{
 				"email-456": map[string]any{
-					"keywords": map[string]any{"$seen": true},
+					"keywords": map[string]any{"$seen": true, "$flagged": true},
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if resp.MethodResponse.Name != "Email/set" {
+		t.Errorf("Name = %q, want %q", resp.MethodResponse.Name, "Email/set")
+	}
+
+	updated, ok := resp.MethodResponse.Args["updated"].(map[string]any)
+	if !ok {
+		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
+	}
+	if _, ok := updated["email-456"]; !ok {
+		t.Error("email-456 should be in updated")
+	}
+
+	// Verify keywords were passed correctly
+	if capturedNewKeywords == nil {
+		t.Fatal("UpdateEmailKeywords was not called")
+	}
+	if !capturedNewKeywords["$seen"] || !capturedNewKeywords["$flagged"] {
+		t.Errorf("capturedNewKeywords = %v, want $seen and $flagged", capturedNewKeywords)
+	}
+	if capturedVersion != 1 {
+		t.Errorf("capturedVersion = %d, want 1", capturedVersion)
+	}
+}
+
+// Test: Keywords update - patch add
+func TestHandler_UpdateKeywords_PatchAdd(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+	var capturedNewKeywords map[string]bool
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true}, // Currently has $seen
+				Version:    1,
+			}, nil
+		},
+		updateEmailKeywordsFunc: func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error) {
+			capturedNewKeywords = newKeywords
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   newKeywords,
+				Version:    expectedVersion + 1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"keywords/$flagged": true, // Patch: add $flagged
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	updated, ok := resp.MethodResponse.Args["updated"].(map[string]any)
+	if !ok {
+		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
+	}
+	if _, ok := updated["email-456"]; !ok {
+		t.Error("email-456 should be in updated")
+	}
+
+	// Verify patch was applied: should have both $seen and $flagged
+	if capturedNewKeywords == nil {
+		t.Fatal("UpdateEmailKeywords was not called")
+	}
+	if !capturedNewKeywords["$seen"] || !capturedNewKeywords["$flagged"] {
+		t.Errorf("capturedNewKeywords = %v, want $seen and $flagged", capturedNewKeywords)
+	}
+}
+
+// Test: Keywords update - patch remove
+func TestHandler_UpdateKeywords_PatchRemove(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+	var capturedNewKeywords map[string]bool
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true, "$flagged": true}, // Currently has both
+				Version:    1,
+			}, nil
+		},
+		updateEmailKeywordsFunc: func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error) {
+			capturedNewKeywords = newKeywords
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   newKeywords,
+				Version:    expectedVersion + 1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"keywords/$flagged": nil, // Patch: remove $flagged
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	updated, ok := resp.MethodResponse.Args["updated"].(map[string]any)
+	if !ok {
+		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
+	}
+	if _, ok := updated["email-456"]; !ok {
+		t.Error("email-456 should be in updated")
+	}
+
+	// Verify patch was applied: should have only $seen
+	if capturedNewKeywords == nil {
+		t.Fatal("UpdateEmailKeywords was not called")
+	}
+	if len(capturedNewKeywords) != 1 || !capturedNewKeywords["$seen"] {
+		t.Errorf("capturedNewKeywords = %v, want only $seen", capturedNewKeywords)
+	}
+}
+
+// Test: Keywords update with invalid keyword
+func TestHandler_UpdateKeywords_InvalidKeyword(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{},
+				Version:    1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"keywords": map[string]any{"invalid(keyword": true}, // Invalid character
 				},
 			},
 		},
@@ -710,6 +933,74 @@ func TestHandler_KeywordsNotImplemented(t *testing.T) {
 	}
 	if item["type"] != "invalidProperties" {
 		t.Errorf("type = %v, want %q", item["type"], "invalidProperties")
+	}
+}
+
+// Test: Keywords update with version conflict and retry
+func TestHandler_UpdateKeywords_VersionConflictRetry(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+	callCount := 0
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			callCount++
+			// Simulate another update happening between reads
+			version := callCount
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    version,
+			}, nil
+		},
+		updateEmailKeywordsFunc: func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error) {
+			// First two attempts fail with version conflict, third succeeds
+			if expectedVersion < 3 {
+				return nil, email.ErrVersionConflict
+			}
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   newKeywords,
+				Version:    expectedVersion + 1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"keywords": map[string]any{"$seen": true, "$flagged": true},
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Should succeed after retries
+	updated, ok := resp.MethodResponse.Args["updated"].(map[string]any)
+	if !ok {
+		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
+	}
+	if _, ok := updated["email-456"]; !ok {
+		t.Error("email-456 should be in updated after retry")
+	}
+
+	// Should have called GetEmail 3 times (initial + 2 retries)
+	if callCount != 3 {
+		t.Errorf("GetEmail called %d times, want 3", callCount)
 	}
 }
 

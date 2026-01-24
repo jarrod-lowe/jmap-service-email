@@ -13,12 +13,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
+	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 )
 
 // Error types for repository operations.
 var (
 	ErrTransactionFailed = errors.New("transaction failed")
 	ErrEmailNotFound     = errors.New("email not found")
+	ErrVersionConflict   = errors.New("version conflict")
 )
 
 // DynamoDBClient defines the interface for DynamoDB operations.
@@ -364,6 +366,9 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		item[AttrBodyStructure] = &types.AttributeValueMemberS{Value: string(bodyStructureJSON)}
 	}
 
+	// Version
+	item[AttrVersion] = &types.AttributeValueMemberN{Value: strconv.Itoa(email.Version)}
+
 	return item
 }
 
@@ -492,6 +497,13 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	// BodyStructure - deserialize from JSON string
 	if v, ok := item[AttrBodyStructure].(*types.AttributeValueMemberS); ok {
 		_ = json.Unmarshal([]byte(v.Value), &email.BodyStructure)
+	}
+
+	// Version
+	if v, ok := item[AttrVersion].(*types.AttributeValueMemberN); ok {
+		if n, err := strconv.Atoi(v.Value); err == nil {
+			email.Version = n
+		}
 	}
 
 	return email, nil
@@ -638,4 +650,85 @@ func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailI
 	}
 
 	return oldMailboxIDs, email, nil
+}
+
+// UpdateEmailKeywords updates an email's keywords with optimistic locking.
+// Returns ErrVersionConflict if expectedVersion doesn't match.
+// Updates mailbox unreadEmails counters when $seen changes.
+func (r *Repository) UpdateEmailKeywords(ctx context.Context, accountID, emailID string,
+	newKeywords map[string]bool, expectedVersion int) (*EmailItem, error) {
+	// Fetch existing email
+	email, err := r.GetEmail(ctx, accountID, emailID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if $seen changed
+	oldSeen := email.Keywords["$seen"]
+	newSeen := newKeywords["$seen"]
+	seenChanged := oldSeen != newSeen
+
+	// Update email with new keywords and increment version
+	email.Keywords = newKeywords
+	email.Version = expectedVersion + 1
+
+	// Build transaction items
+	transactItems := make([]types.TransactWriteItem, 0, 1+len(email.MailboxIDs))
+
+	// Email update with version condition
+	emailItem := r.marshalEmailItem(email)
+	transactItems = append(transactItems, types.TransactWriteItem{
+		Put: &types.Put{
+			TableName:           aws.String(r.tableName),
+			Item:                emailItem,
+			ConditionExpression: aws.String(AttrVersion + " = :expectedVersion"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":expectedVersion": &types.AttributeValueMemberN{Value: strconv.Itoa(expectedVersion)},
+			},
+		},
+	})
+
+	// If $seen changed, update mailbox unread counters
+	if seenChanged {
+		// delta is -1 if marking as seen (decrement unread), +1 if marking as unseen (increment unread)
+		delta := 1
+		if newSeen {
+			delta = -1
+		}
+
+		for mailboxID := range email.MailboxIDs {
+			transactItems = append(transactItems, types.TransactWriteItem{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						dynamo.AttrPK: &types.AttributeValueMemberS{Value: dynamo.PrefixAccount + accountID},
+						dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.PrefixMailbox + mailboxID},
+					},
+					UpdateExpression: aws.String("ADD " + mailbox.AttrUnreadEmails + " :delta"),
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":delta": &types.AttributeValueMemberN{Value: strconv.Itoa(delta)},
+					},
+				},
+			})
+		}
+	}
+
+	// Execute transaction
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
+	})
+	if err != nil {
+		// Check for version conflict
+		var txCanceled *types.TransactionCanceledException
+		if errors.As(err, &txCanceled) {
+			for _, reason := range txCanceled.CancellationReasons {
+				if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+					return nil, ErrVersionConflict
+				}
+			}
+		}
+		return nil, fmt.Errorf("%w: %v", ErrTransactionFailed, err)
+	}
+
+	return email, nil
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
@@ -946,6 +947,243 @@ func TestRepository_UpdateEmailMailboxes_NotFound(t *testing.T) {
 
 	repo := NewRepository(mockClient, "test-table")
 	_, _, err := repo.UpdateEmailMailboxes(context.Background(), "user-123", "nonexistent", map[string]bool{"inbox-id": true})
+
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !errors.Is(err, ErrEmailNotFound) {
+		t.Errorf("Expected ErrEmailNotFound, got %v", err)
+	}
+}
+
+func TestMarshalEmailItem_IncludesVersion(t *testing.T) {
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Now(),
+		Version:    1,
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	versionAttr, ok := capturedItem[AttrVersion]
+	if !ok {
+		t.Fatal("marshalEmailItem missing version field")
+	}
+	versionVal := versionAttr.(*types.AttributeValueMemberN).Value
+	if versionVal != "1" {
+		t.Errorf("version = %q, want %q", versionVal, "1")
+	}
+}
+
+func TestUnmarshalEmailItem_IncludesVersion(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{
+				Item: map[string]types.AttributeValue{
+					"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+					"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+					"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+					"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+					"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+					AttrVersion:  &types.AttributeValueMemberN{Value: "5"},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	email, err := repo.GetEmail(context.Background(), "user-123", "email-456")
+	if err != nil {
+		t.Fatalf("GetEmail failed: %v", err)
+	}
+
+	if email.Version != 5 {
+		t.Errorf("Version = %d, want %d", email.Version, 5)
+	}
+}
+
+func TestRepository_UpdateEmailKeywords_Success(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email with $seen keyword and version 1
+	existingEmail := map[string]types.AttributeValue{
+		"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+		"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+		"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+		"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+		"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+		"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"inbox-id": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+		"keywords": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"$seen": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+		AttrVersion: &types.AttributeValueMemberN{Value: "1"},
+	}
+
+	var capturedTransaction *dynamodb.TransactWriteItemsInput
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: existingEmail}, nil
+		},
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedTransaction = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	newKeywords := map[string]bool{"$seen": true, "$flagged": true}
+	email, err := repo.UpdateEmailKeywords(context.Background(), "user-123", "email-456", newKeywords, 1)
+
+	if err != nil {
+		t.Fatalf("UpdateEmailKeywords failed: %v", err)
+	}
+
+	// Should return updated email
+	if email == nil || email.EmailID != "email-456" {
+		t.Errorf("email = %+v, want email-456", email)
+	}
+
+	// Email should have new keywords
+	if !email.Keywords["$seen"] || !email.Keywords["$flagged"] {
+		t.Errorf("email.Keywords = %v, want $seen and $flagged", email.Keywords)
+	}
+
+	// Version should be incremented
+	if email.Version != 2 {
+		t.Errorf("email.Version = %d, want 2", email.Version)
+	}
+
+	// Transaction should have been called
+	if capturedTransaction == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+}
+
+func TestRepository_UpdateEmailKeywords_VersionConflict(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	existingEmail := map[string]types.AttributeValue{
+		"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+		"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+		"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+		"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+		"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+		"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"inbox-id": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+		"keywords": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"$seen": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+		AttrVersion: &types.AttributeValueMemberN{Value: "2"}, // Version is 2, but we'll send 1
+	}
+
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: existingEmail}, nil
+		},
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			// Simulate version conflict - ConditionalCheckFailedException
+			return nil, &types.TransactionCanceledException{
+				CancellationReasons: []types.CancellationReason{
+					{Code: aws.String("ConditionalCheckFailed")},
+				},
+			}
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	newKeywords := map[string]bool{"$flagged": true}
+	_, err := repo.UpdateEmailKeywords(context.Background(), "user-123", "email-456", newKeywords, 1) // Expected version 1 but actual is 2
+
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Errorf("Expected ErrVersionConflict, got %v", err)
+	}
+}
+
+func TestRepository_UpdateEmailKeywords_SeenChangeUpdatesMailboxCounters(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email in inbox, not seen (unread)
+	existingEmail := map[string]types.AttributeValue{
+		"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+		"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+		"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+		"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+		"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+		"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"inbox-id":   &types.AttributeValueMemberBOOL{Value: true},
+			"archive-id": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+		"keywords":  &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}}, // No $seen
+		AttrVersion: &types.AttributeValueMemberN{Value: "1"},
+	}
+
+	var capturedTransaction *dynamodb.TransactWriteItemsInput
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: existingEmail}, nil
+		},
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedTransaction = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	// Mark as seen (was unread, now read)
+	newKeywords := map[string]bool{"$seen": true}
+	_, err := repo.UpdateEmailKeywords(context.Background(), "user-123", "email-456", newKeywords, 1)
+
+	if err != nil {
+		t.Fatalf("UpdateEmailKeywords failed: %v", err)
+	}
+
+	// Transaction should have: 1 email update + 2 mailbox counter decrements
+	if capturedTransaction == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+	// 1 Put for email + 2 Updates for mailbox counters
+	if len(capturedTransaction.TransactItems) != 3 {
+		t.Errorf("TransactItems count = %d, want 3 (email update + 2 mailbox counter updates)", len(capturedTransaction.TransactItems))
+	}
+
+	// Check for Update operations (counter updates)
+	updateCount := 0
+	for _, item := range capturedTransaction.TransactItems {
+		if item.Update != nil {
+			updateCount++
+		}
+	}
+	if updateCount != 2 {
+		t.Errorf("Update operations = %d, want 2 (one per mailbox)", updateCount)
+	}
+}
+
+func TestRepository_UpdateEmailKeywords_NotFound(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: nil}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, err := repo.UpdateEmailKeywords(context.Background(), "user-123", "nonexistent", map[string]bool{"$seen": true}, 1)
 
 	if err == nil {
 		t.Fatal("Expected error, got nil")

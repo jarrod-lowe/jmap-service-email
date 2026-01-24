@@ -36,4 +36,5 @@ const (
 	AttrAttachments   = "attachments"
 	AttrName          = "name"
 	AttrEmail         = "email"
+	AttrVersion       = "version"
 )

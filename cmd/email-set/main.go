@@ -29,6 +29,7 @@ var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 type EmailRepository interface {
 	UpdateEmailMailboxes(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (oldMailboxIDs map[string]bool, email *email.EmailItem, err error)
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	UpdateEmailKeywords(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
 }
 
 // MailboxRepository defines the interface for mailbox operations.
@@ -226,16 +227,38 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}, nil
 }
 
+// maxKeywordRetries is the number of times to retry on version conflict.
+const maxKeywordRetries = 3
+
 // updateEmail processes an email update.
 func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, data map[string]any, affectedMailboxes map[string]bool) map[string]any {
 	// Check for unsupported properties
+	hasMailboxUpdate := false
+	hasKeywordUpdate := false
 	for key := range data {
-		if key == "keywords" || strings.HasPrefix(key, "keywords/") {
-			return setError("invalidProperties", "keywords updates are not yet supported")
+		if key == "mailboxIds" || strings.HasPrefix(key, "mailboxIds/") {
+			hasMailboxUpdate = true
+		} else if key == "keywords" || strings.HasPrefix(key, "keywords/") {
+			hasKeywordUpdate = true
+		} else {
+			return setError("invalidProperties", "unsupported property: "+key)
 		}
-		if key != "mailboxIds" && !strings.HasPrefix(key, "mailboxIds/") {
-			return setError("invalidProperties", "only mailboxIds updates are supported")
+	}
+
+	// Handle keywords update
+	if hasKeywordUpdate {
+		if err := h.updateKeywords(ctx, accountID, emailID, data, affectedMailboxes); err != nil {
+			return err
 		}
+	}
+
+	// Handle mailboxIds update
+	if !hasMailboxUpdate {
+		// If we had keywords and succeeded, we're done
+		if hasKeywordUpdate {
+			return nil
+		}
+		return setError("invalidProperties", "no mailboxIds or keywords update found")
 	}
 
 	// Parse mailboxIds update (full replacement vs patch)
@@ -370,6 +393,121 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 		} else if b, ok := value.(bool); ok && b {
 			// Add to mailbox
 			result[mailboxID] = true
+		}
+	}
+
+	return result, nil
+}
+
+// updateKeywords updates an email's keywords with retry logic for version conflicts.
+func (h *handler) updateKeywords(ctx context.Context, accountID, emailID string, data map[string]any, affectedMailboxes map[string]bool) map[string]any {
+	for attempt := 0; attempt < maxKeywordRetries; attempt++ {
+		// Get current email state
+		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
+		if err != nil {
+			if errors.Is(err, email.ErrEmailNotFound) {
+				return setError("notFound", "email not found")
+			}
+			return setError("serverFail", err.Error())
+		}
+
+		// Parse keyword updates
+		newKeywords, parseErr := h.parseKeywordUpdates(data, emailItem.Keywords)
+		if parseErr != nil {
+			return parseErr
+		}
+
+		// Validate keywords
+		for keyword := range newKeywords {
+			if err := email.ValidateKeyword(keyword); err != nil {
+				return setError("invalidProperties", "invalid keyword: "+keyword+": "+err.Error())
+			}
+		}
+
+		// Update keywords
+		_, updateErr := h.emailRepo.UpdateEmailKeywords(ctx, accountID, emailID, newKeywords, emailItem.Version)
+		if updateErr != nil {
+			if errors.Is(updateErr, email.ErrVersionConflict) {
+				// Retry with fresh read
+				logger.InfoContext(ctx, "Keywords version conflict, retrying",
+					slog.String("account_id", accountID),
+					slog.String("email_id", emailID),
+					slog.Int("attempt", attempt+1),
+				)
+				continue
+			}
+			if errors.Is(updateErr, email.ErrEmailNotFound) {
+				return setError("notFound", "email not found")
+			}
+			logger.ErrorContext(ctx, "Failed to update email keywords",
+				slog.String("account_id", accountID),
+				slog.String("email_id", emailID),
+				slog.String("error", updateErr.Error()),
+			)
+			return setError("serverFail", updateErr.Error())
+		}
+
+		// Success - mark mailboxes as affected since unread counts may have changed
+		for mailboxID := range emailItem.MailboxIDs {
+			affectedMailboxes[mailboxID] = true
+		}
+		return nil
+	}
+
+	// All retries exhausted
+	logger.ErrorContext(ctx, "Keywords update failed after max retries",
+		slog.String("account_id", accountID),
+		slog.String("email_id", emailID),
+	)
+	return setError("serverFail", "concurrent update conflict, please retry")
+}
+
+// parseKeywordUpdates parses the keywords update data.
+// Supports both full replacement and JMAP patch syntax.
+func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[string]bool) (map[string]bool, map[string]any) {
+	// Check for full replacement
+	if keywords, ok := data["keywords"].(map[string]any); ok {
+		result := make(map[string]bool)
+		for k, v := range keywords {
+			if b, ok := v.(bool); ok && b {
+				result[email.NormalizeKeyword(k)] = true
+			}
+		}
+		return result, nil
+	}
+
+	// Check for patch syntax (keywords/{keyword})
+	hasPatch := false
+	for key := range data {
+		if strings.HasPrefix(key, "keywords/") {
+			hasPatch = true
+			break
+		}
+	}
+
+	if !hasPatch {
+		return nil, nil
+	}
+
+	// Start with current keywords
+	result := make(map[string]bool)
+	for k, v := range currentKeywords {
+		result[k] = v
+	}
+
+	// Apply patches
+	for key, value := range data {
+		if !strings.HasPrefix(key, "keywords/") {
+			continue
+		}
+		keyword := email.NormalizeKeyword(strings.TrimPrefix(key, "keywords/"))
+
+		if value == nil {
+			// Remove keyword
+			delete(result, keyword)
+		} else if b, ok := value.(bool); ok && b {
+			// Add keyword
+			result[keyword] = true
 		}
 	}
 

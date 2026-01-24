@@ -281,6 +281,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		TextBody:      parsed.TextBody,
 		HTMLBody:      parsed.HTMLBody,
 		Attachments:   parsed.Attachments,
+		Version:       1,
 	}
 
 	// Store in repository

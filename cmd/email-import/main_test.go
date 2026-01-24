@@ -187,6 +187,10 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 	if capturedEmail.Subject != "Test Email" {
 		t.Errorf("Subject = %q, want %q", capturedEmail.Subject, "Test Email")
 	}
+	// Version should be 1 for newly imported emails
+	if capturedEmail.Version != 1 {
+		t.Errorf("Version = %d, want 1", capturedEmail.Version)
+	}
 }
 
 func TestHandler_SingleEmailImport_VerifiesFromField(t *testing.T) {
