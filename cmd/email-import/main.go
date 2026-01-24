@@ -17,6 +17,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -44,19 +45,27 @@ type EmailRepository interface {
 	CreateEmail(ctx context.Context, email *emailItem) error
 }
 
+// MailboxRepository defines the interface for mailbox operations.
+type MailboxRepository interface {
+	MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error)
+	IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+}
+
 // handler implements the Email/import logic.
 type handler struct {
-	repo     EmailRepository
-	streamer BlobStreamer
-	uploader BlobUploader
+	repo        EmailRepository
+	streamer    BlobStreamer
+	uploader    BlobUploader
+	mailboxRepo MailboxRepository
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader) *handler {
+func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository) *handler {
 	return &handler{
-		repo:     repo,
-		streamer: streamer,
-		uploader: uploader,
+		repo:        repo,
+		streamer:    streamer,
+		uploader:    uploader,
+		mailboxRepo: mailboxRepo,
 	}
 }
 
@@ -152,6 +161,28 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		for k, v := range mailboxArg {
 			if b, ok := v.(bool); ok && b {
 				mailboxIDs[k] = true
+			}
+		}
+	}
+
+	// Validate all mailboxIds exist
+	for mailboxID := range mailboxIDs {
+		exists, err := h.mailboxRepo.MailboxExists(ctx, accountID, mailboxID)
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to check mailbox existence",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+			return nil, map[string]any{
+				"type":        "serverFail",
+				"description": err.Error(),
+			}
+		}
+		if !exists {
+			return nil, map[string]any{
+				"type":        "invalidMailboxId",
+				"description": "Mailbox does not exist: " + mailboxID,
 			}
 		}
 	}
@@ -254,6 +285,20 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		}
 	}
 
+	// Increment mailbox counts
+	isSeen := keywords["$seen"]
+	incrementUnread := !isSeen
+	for mailboxID := range mailboxIDs {
+		if err := h.mailboxRepo.IncrementCounts(ctx, accountID, mailboxID, incrementUnread); err != nil {
+			// Log but don't fail - email was already stored successfully
+			logger.ErrorContext(ctx, "Failed to increment mailbox counts",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
 	logger.InfoContext(ctx, "Email imported successfully",
 		slog.String("account_id", accountID),
 		slog.String("email_id", emailID),
@@ -292,6 +337,7 @@ func main() {
 	// Create DynamoDB client
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := email.NewRepository(dynamoClient, tableName)
+	mailboxRepo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 
 	// Create blob client with SigV4 signing
 	transport := blob.NewSigV4Transport(http.DefaultTransport, cfg.Credentials, cfg.Region)
@@ -299,6 +345,6 @@ func main() {
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
 	// HTTPBlobClient implements both BlobStreamer and BlobUploader
-	h := newHandler(repo, blobClient, blobClient)
+	h := newHandler(repo, blobClient, blobClient, mailboxRepo)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

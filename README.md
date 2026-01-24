@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import` and `Email/get` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Mailbox/get`, and `Mailbox/set` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -75,9 +75,12 @@ jmap-service-email/
 ├── cmd/
 │   ├── placeholder/           # Placeholder Lambda
 │   ├── email-import/          # Email/import Lambda
-│   └── email-get/             # Email/get Lambda
+│   ├── email-get/             # Email/get Lambda
+│   ├── mailbox-get/           # Mailbox/get Lambda
+│   └── mailbox-set/           # Mailbox/set Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
+│   ├── mailbox/               # Mailbox types and repository
 │   └── blob/                  # Blob API client
 ├── terraform/
 │   ├── modules/
@@ -103,6 +106,8 @@ Methods:
 - `Email/get` - Retrieve emails by ID with optional property filtering
 - `Email/import` - Import RFC 5322 messages from blobs
 - `Email/query` - (placeholder, returns `serverFail`)
+- `Mailbox/get` - Retrieve mailboxes by ID or get all
+- `Mailbox/set` - Create, update, and destroy mailboxes
 
 ## TODOs
 
@@ -119,11 +124,20 @@ The following enhancements are planned for future versions:
 
 - **Threading**: Implement proper thread assignment based on References/In-Reply-To headers (currently uses email ID as thread ID)
 
+### Mailbox
+
+- **Thread counts are stubbed**: `totalThreads` equals `totalEmails`, `unreadThreads` equals `unreadEmails`
+- **Mailbox name uniqueness not enforced**: Multiple mailboxes can have the same name
+- **Hierarchical mailboxes not supported**: `parentId` is always `null`; attempts to set `parentId` to non-null return `invalidProperties`
+- **onDestroyRemoveEmails**: Not fully implemented; only checks if mailbox is empty
+
 ### General
 
 - **Email/query**: Implement query support with mailbox filtering, sorting, and pagination
 - **Email/changes**: Implement state tracking for delta sync
 - **Email/set**: Implement email mutations (keywords, mailbox assignments)
+- **Mailbox/query**: Implement mailbox query support
+- **Mailbox/changes**: Implement state tracking for mailbox delta sync
 
 ## License
 

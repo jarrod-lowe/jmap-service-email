@@ -9,6 +9,7 @@ import (
 
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
+	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 )
 
 // Simple test email content
@@ -59,6 +60,26 @@ func (m *mockEmailRepository) CreateEmail(ctx context.Context, email *emailItem)
 	return nil
 }
 
+// mockMailboxRepository implements the MailboxRepository interface for testing.
+type mockMailboxRepository struct {
+	existsFunc         func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	incrementCountFunc func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+}
+
+func (m *mockMailboxRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
+	if m.existsFunc != nil {
+		return m.existsFunc(ctx, accountID, mailboxID)
+	}
+	return true, nil
+}
+
+func (m *mockMailboxRepository) IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error {
+	if m.incrementCountFunc != nil {
+		return m.incrementCountFunc(ctx, accountID, mailboxID, incrementUnread)
+	}
+	return nil
+}
+
 func TestHandler_SingleEmailImport(t *testing.T) {
 	var capturedEmail *emailItem
 	mockRepo := &mockEmailRepository{
@@ -69,8 +90,9 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 	}
 	mockStreamer := &mockBlobStreamer{}
 	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -154,8 +176,9 @@ func TestHandler_BlobStreamError(t *testing.T) {
 		},
 	}
 	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -205,8 +228,9 @@ func TestHandler_RepositoryError(t *testing.T) {
 	}
 	mockStreamer := &mockBlobStreamer{}
 	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -258,8 +282,9 @@ func TestHandler_MultipleEmails(t *testing.T) {
 	}
 	mockStreamer := &mockBlobStreamer{}
 	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -309,8 +334,9 @@ func TestHandler_InvalidMethod(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 	mockStreamer := &mockBlobStreamer{}
 	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -362,8 +388,9 @@ SGVsbG8gV29ybGQ=
 			return "decoded-blob", int64(len(content)), nil
 		},
 	}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -396,5 +423,361 @@ SGVsbG8gV29ybGQ=
 	// Should have uploaded the decoded content
 	if uploadCount != 1 {
 		t.Errorf("uploadCount = %d, want 1", uploadCount)
+	}
+}
+
+// Test: Import with invalid mailbox ID returns invalidMailboxId error
+func TestHandler_InvalidMailboxId(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return false, nil // Mailbox does not exist
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"nonexistent-mailbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should have notCreated entry
+	notCreated, ok := response.MethodResponse.Args["notCreated"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should be a map")
+	}
+
+	errorEntry, ok := notCreated["client-ref-1"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should contain client-ref-1")
+	}
+
+	// Error type should be invalidMailboxId
+	if errorType, ok := errorEntry["type"].(string); !ok || errorType != "invalidMailboxId" {
+		t.Errorf("error type = %v, want %q", errorEntry["type"], "invalidMailboxId")
+	}
+}
+
+// Test: Import with valid mailbox ID succeeds and increments counts
+func TestHandler_ValidMailboxIdIncrementsCounts(t *testing.T) {
+	var incrementCalls []struct {
+		mailboxID       string
+		incrementUnread bool
+	}
+
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+		incrementCountFunc: func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error {
+			incrementCalls = append(incrementCalls, struct {
+				mailboxID       string
+				incrementUnread bool
+			}{mailboxID, incrementUnread})
+			return nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+					"keywords": map[string]any{
+						"$seen": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should succeed
+	created, ok := response.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatal("created should be a map")
+	}
+	if _, ok := created["client-ref-1"]; !ok {
+		t.Fatal("created should contain client-ref-1")
+	}
+
+	// Should have incremented counts for inbox
+	if len(incrementCalls) != 1 {
+		t.Errorf("IncrementCounts called %d times, want 1", len(incrementCalls))
+	}
+	if len(incrementCalls) > 0 {
+		if incrementCalls[0].mailboxID != "inbox" {
+			t.Errorf("mailboxID = %q, want %q", incrementCalls[0].mailboxID, "inbox")
+		}
+		// $seen is present, so should NOT increment unread
+		if incrementCalls[0].incrementUnread != false {
+			t.Error("incrementUnread should be false when $seen is present")
+		}
+	}
+}
+
+// Test: Import without $seen keyword increments unread count
+func TestHandler_NoSeenKeywordIncrementsUnread(t *testing.T) {
+	var incrementCalls []struct {
+		mailboxID       string
+		incrementUnread bool
+	}
+
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+		incrementCountFunc: func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error {
+			incrementCalls = append(incrementCalls, struct {
+				mailboxID       string
+				incrementUnread bool
+			}{mailboxID, incrementUnread})
+			return nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+					// No $seen keyword
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should succeed
+	created, ok := response.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatal("created should be a map")
+	}
+	if _, ok := created["client-ref-1"]; !ok {
+		t.Fatal("created should contain client-ref-1")
+	}
+
+	// Should have incremented counts for inbox with unread
+	if len(incrementCalls) != 1 {
+		t.Errorf("IncrementCounts called %d times, want 1", len(incrementCalls))
+	}
+	if len(incrementCalls) > 0 {
+		// No $seen, so should increment unread
+		if incrementCalls[0].incrementUnread != true {
+			t.Error("incrementUnread should be true when $seen is not present")
+		}
+	}
+}
+
+// Test: Import with multiple mailboxes increments all
+func TestHandler_MultipleMailboxesIncrementAll(t *testing.T) {
+	var incrementCalls []string
+
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+		incrementCountFunc: func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error {
+			incrementCalls = append(incrementCalls, mailboxID)
+			return nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox":   true,
+						"archive": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should succeed
+	created, ok := response.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatal("created should be a map")
+	}
+	if _, ok := created["client-ref-1"]; !ok {
+		t.Fatal("created should contain client-ref-1")
+	}
+
+	// Should have incremented counts for both mailboxes
+	if len(incrementCalls) != 2 {
+		t.Errorf("IncrementCounts called %d times, want 2", len(incrementCalls))
+	}
+}
+
+// Test: Mailbox check error returns serverFail
+func TestHandler_MailboxCheckError(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return false, errors.New("database error")
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	notCreated, ok := response.MethodResponse.Args["notCreated"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should be a map")
+	}
+
+	errorEntry, ok := notCreated["client-ref-1"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should contain client-ref-1")
+	}
+
+	if errorType, ok := errorEntry["type"].(string); !ok || errorType != "serverFail" {
+		t.Errorf("error type = %v, want %q", errorEntry["type"], "serverFail")
+	}
+}
+
+// Test: Increment count error still succeeds (non-fatal)
+func TestHandler_IncrementCountError(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+		incrementCountFunc: func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error {
+			return mailbox.ErrMailboxNotFound // Mailbox was deleted after check
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should still succeed - increment error is logged but not fatal
+	created, ok := response.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatal("created should be a map")
+	}
+	if _, ok := created["client-ref-1"]; !ok {
+		t.Fatal("created should contain client-ref-1 even when increment fails")
 	}
 }
