@@ -1184,9 +1184,9 @@ func TestHandler_StateTracking(t *testing.T) {
 		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
 	}
 
-	// Should have 3 state changes: 1 Email created + 2 Mailboxes updated
-	if len(stateChanges) != 3 {
-		t.Fatalf("stateChanges count = %d, want 3", len(stateChanges))
+	// Should have 4 state changes: 1 Email created + 1 Thread updated + 2 Mailboxes updated
+	if len(stateChanges) != 4 {
+		t.Fatalf("stateChanges count = %d, want 4", len(stateChanges))
 	}
 
 	// First should be Email created
@@ -1210,5 +1210,177 @@ func TestHandler_StateTracking(t *testing.T) {
 	}
 	if mailboxUpdates != 2 {
 		t.Errorf("mailbox update count = %d, want 2", mailboxUpdates)
+	}
+}
+
+func TestHandler_StateTracking_ThreadUpdated_ForReply(t *testing.T) {
+	parentThreadID := "existing-thread-123"
+
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			return nil
+		},
+		findByMessageIDFunc: func(ctx context.Context, accountID, messageID string) (*emailItem, error) {
+			// Parent email found - reply joins existing thread
+			if messageID == "<parent-msg@example.com>" {
+				return &emailItem{
+					EmailID:  "parent-email-id",
+					ThreadID: parentThreadID,
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	// Use email with In-Reply-To to join existing thread
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(testEmailWithReply)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	// Track state changes
+	var stateChanges []struct {
+		objectType state.ObjectType
+		objectID   string
+		changeType state.ChangeType
+	}
+	mockStateRepo := &mockStateRepository{
+		incrementFunc: func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error) {
+			stateChanges = append(stateChanges, struct {
+				objectType state.ObjectType
+				objectID   string
+				changeType state.ChangeType
+			}{objectType, objectID, changeType})
+			return 1, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Should have Thread updated (not created) since email joins existing thread
+	threadUpdated := false
+	var threadChange struct {
+		objectType state.ObjectType
+		objectID   string
+		changeType state.ChangeType
+	}
+	for _, change := range stateChanges {
+		if change.objectType == state.ObjectTypeThread {
+			threadChange = change
+			if change.changeType == state.ChangeTypeUpdated {
+				threadUpdated = true
+			}
+			break
+		}
+	}
+	if !threadUpdated {
+		t.Errorf("Expected Thread/updated state change for reply, got changes: %v", stateChanges)
+	}
+	if threadChange.objectID != parentThreadID {
+		t.Errorf("Thread objectID = %q, want %q (parent thread)", threadChange.objectID, parentThreadID)
+	}
+}
+
+func TestHandler_StateTracking_IncludesThread(t *testing.T) {
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			return nil
+		},
+	}
+	// Use email without In-Reply-To to create a new thread
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(testEmailNoReply)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	// Track state changes
+	var stateChanges []struct {
+		objectType state.ObjectType
+		objectID   string
+		changeType state.ChangeType
+	}
+	mockStateRepo := &mockStateRepository{
+		incrementFunc: func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error) {
+			stateChanges = append(stateChanges, struct {
+				objectType state.ObjectType
+				objectID   string
+				changeType state.ChangeType
+			}{objectType, objectID, changeType})
+			return 1, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Should have state changes: Email created, Thread created (new thread), Mailbox updated
+	// New threads (no In-Reply-To) should be logged as "created"
+	threadCreated := false
+	for _, change := range stateChanges {
+		if change.objectType == state.ObjectTypeThread && change.changeType == state.ChangeTypeCreated {
+			threadCreated = true
+			break
+		}
+	}
+	if !threadCreated {
+		t.Errorf("Expected Thread/created state change for new thread, got changes: %v", stateChanges)
 	}
 }

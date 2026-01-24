@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/set`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, and `Thread/get` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/set`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, `Thread/get`, and `Thread/changes` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -82,7 +82,8 @@ jmap-service-email/
 │   ├── mailbox-get/           # Mailbox/get Lambda
 │   ├── mailbox-set/           # Mailbox/set Lambda
 │   ├── mailbox-changes/       # Mailbox/changes Lambda
-│   └── thread-get/            # Thread/get Lambda
+│   ├── thread-get/            # Thread/get Lambda
+│   └── thread-changes/        # Thread/changes Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
 │   ├── mailbox/               # Mailbox types and repository
@@ -118,6 +119,7 @@ Methods:
 - `Mailbox/set` - Create, update, and destroy mailboxes
 - `Mailbox/changes` - Get mailbox changes since a given state (for delta sync)
 - `Thread/get` - Retrieve threads by ID (returns emailIds in receivedAt order)
+- `Thread/changes` - Get thread changes since a given state (for delta sync)
 
 ## DynamoDB Indexes
 
@@ -154,7 +156,6 @@ The following enhancements are planned for future versions:
 - **References header**: Currently only `In-Reply-To` is used for threading; `References` header could improve thread grouping
 - **Subject matching**: Implement subject-based threading for emails without `In-Reply-To` header
 - **Out-of-order delivery**: Thread merging when reply arrives before parent is not implemented (creates fragmented threads)
-- **Thread/changes**: Returns `cannotCalculateChanges` (not implemented)
 
 ### Mailbox
 
@@ -171,7 +172,6 @@ The following enhancements are planned for future versions:
 ### General
 
 - **Mailbox/query**: Implement mailbox query support
-- **Thread/changes**: Implement state tracking for threads (currently returns `cannotCalculateChanges`)
 - **Email/queryChanges**: Implement query result change tracking
 
 ## License

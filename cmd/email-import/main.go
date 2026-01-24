@@ -296,13 +296,28 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		}
 	}
 
-	// Track state changes for Email (created)
+	// Track state changes for Email (created) and Thread (updated)
 	if h.stateRepo != nil {
 		if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeCreated); err != nil {
 			// Log but don't fail - email was already stored successfully
 			logger.ErrorContext(ctx, "Failed to track email state change",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailID),
+				slog.String("error", err.Error()),
+			)
+		}
+
+		// Determine if this is a new thread or existing thread
+		// New thread: threadID == emailID (no parent found or no In-Reply-To)
+		// Existing thread: threadID != emailID (inherited from parent)
+		threadChangeType := state.ChangeTypeUpdated
+		if threadID == emailID {
+			threadChangeType = state.ChangeTypeCreated
+		}
+		if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeThread, threadID, threadChangeType); err != nil {
+			logger.ErrorContext(ctx, "Failed to track thread state change",
+				slog.String("account_id", accountID),
+				slog.String("thread_id", threadID),
 				slog.String("error", err.Error()),
 			)
 		}

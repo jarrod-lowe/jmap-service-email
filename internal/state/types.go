@@ -16,6 +16,8 @@ const (
 	ObjectTypeEmail ObjectType = "Email"
 	// ObjectTypeMailbox represents the Mailbox object type.
 	ObjectTypeMailbox ObjectType = "Mailbox"
+	// ObjectTypeThread represents the Thread object type.
+	ObjectTypeThread ObjectType = "Thread"
 )
 
 // ChangeType represents the type of change made to an object.

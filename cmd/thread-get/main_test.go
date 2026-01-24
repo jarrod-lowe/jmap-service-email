@@ -8,6 +8,7 @@ import (
 
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
 // mockEmailRepository implements the EmailRepository interface for testing.
@@ -20,6 +21,18 @@ func (m *mockEmailRepository) FindByThreadID(ctx context.Context, accountID, thr
 		return m.findByThreadIDFunc(ctx, accountID, threadID)
 	}
 	return nil, nil
+}
+
+// mockStateRepository implements the StateRepository interface for testing.
+type mockStateRepository struct {
+	getCurrentStateFunc func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+}
+
+func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+	if m.getCurrentStateFunc != nil {
+		return m.getCurrentStateFunc(ctx, accountID, objectType)
+	}
+	return 0, nil
 }
 
 func TestHandler_SingleThread(t *testing.T) {
@@ -309,5 +322,93 @@ func TestHandler_MissingIds(t *testing.T) {
 	errorType, ok := response.MethodResponse.Args["type"].(string)
 	if !ok || errorType != "invalidArguments" {
 		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "invalidArguments")
+	}
+}
+
+func TestHandler_ReturnsActualState(t *testing.T) {
+	mockRepo := &mockEmailRepository{
+		findByThreadIDFunc: func(ctx context.Context, accountID, threadID string) ([]*email.EmailItem, error) {
+			return []*email.EmailItem{
+				{EmailID: "email-1", ThreadID: "thread-123"},
+			}, nil
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			if objectType != state.ObjectTypeThread {
+				t.Errorf("Expected ObjectTypeThread, got %v", objectType)
+			}
+			return 42, nil // Return a specific state to verify
+		},
+	}
+
+	h := newHandlerWithState(mockRepo, mockStateRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Thread/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"thread-123"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Thread/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Thread/get")
+	}
+
+	// Verify state is returned as "42" (not hardcoded "0")
+	stateValue, ok := response.MethodResponse.Args["state"].(string)
+	if !ok {
+		t.Fatalf("state should be a string, got %T", response.MethodResponse.Args["state"])
+	}
+	if stateValue != "42" {
+		t.Errorf("state = %q, want %q", stateValue, "42")
+	}
+}
+
+func TestHandler_StateError_ReturnsServerFail(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 0, errors.New("database error")
+		},
+	}
+
+	h := newHandlerWithState(mockRepo, mockStateRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Thread/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"thread-123"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "serverFail" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "serverFail")
 	}
 }
