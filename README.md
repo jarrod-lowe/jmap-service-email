@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import`, `Email/get`, `Mailbox/get`, and `Mailbox/set` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Mailbox/get`, and `Mailbox/set` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -76,6 +76,7 @@ jmap-service-email/
 │   ├── placeholder/           # Placeholder Lambda
 │   ├── email-import/          # Email/import Lambda
 │   ├── email-get/             # Email/get Lambda
+│   ├── email-query/           # Email/query Lambda
 │   ├── mailbox-get/           # Mailbox/get Lambda
 │   └── mailbox-set/           # Mailbox/set Lambda
 ├── internal/
@@ -105,7 +106,7 @@ Methods:
 
 - `Email/get` - Retrieve emails by ID with optional property filtering
 - `Email/import` - Import RFC 5322 messages from blobs
-- `Email/query` - (placeholder, returns `serverFail`)
+- `Email/query` - Query emails with `inMailbox` filter and `receivedAt` sorting
 - `Mailbox/get` - Retrieve mailboxes by ID or get all
 - `Mailbox/set` - Create, update, and destroy mailboxes
 
@@ -120,6 +121,15 @@ The following enhancements are planned for future versions:
 - **header:\* properties**: Support arbitrary header property syntax (currently rejected with `invalidArguments`)
 - **Additional properties**: Add `sender` and `bcc` fields
 
+### Email/query
+
+- **calculateTotal**: Not implemented, always returns `null`
+- **canCalculateChanges**: Always returns `false`; `Email/queryChanges` not implemented
+- **Additional filters**: Only `inMailbox` is supported; other filters return `unsupportedFilter`
+- **Additional sorts**: Only `receivedAt` is supported; other sorts return `unsupportedSort`
+- **collapseThreads**: Always `false` (threads not implemented)
+- **Anchor pagination**: Anchor validation is implemented but anchor-based querying is not yet functional
+
 ### Email/import
 
 - **Threading**: Implement proper thread assignment based on References/In-Reply-To headers (currently uses email ID as thread ID)
@@ -133,7 +143,6 @@ The following enhancements are planned for future versions:
 
 ### General
 
-- **Email/query**: Implement query support with mailbox filtering, sorting, and pagination
 - **Email/changes**: Implement state tracking for delta sync
 - **Email/set**: Implement email mutations (keywords, mailbox assignments)
 - **Mailbox/query**: Implement mailbox query support

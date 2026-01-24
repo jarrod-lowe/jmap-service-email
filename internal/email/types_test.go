@@ -162,6 +162,62 @@ func TestEmailItem_FullStruct(t *testing.T) {
 	}
 }
 
+func TestEmailItem_LSI1SK(t *testing.T) {
+	email := EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Date(2024, 1, 20, 10, 30, 45, 0, time.UTC),
+	}
+
+	lsi := email.LSI1SK()
+	expected := "RCVD#2024-01-20T10:30:45Z#email-456"
+	if lsi != expected {
+		t.Errorf("LSI1SK() = %q, want %q", lsi, expected)
+	}
+}
+
+func TestQueryRequest_Defaults(t *testing.T) {
+	// Verify zero values work as expected
+	req := QueryRequest{}
+	if req.Position != 0 {
+		t.Errorf("Position = %d, want 0", req.Position)
+	}
+	if req.Limit != 0 {
+		t.Errorf("Limit = %d, want 0", req.Limit)
+	}
+	if req.Filter != nil {
+		t.Errorf("Filter = %v, want nil", req.Filter)
+	}
+}
+
+func TestQueryFilter_InMailbox(t *testing.T) {
+	filter := &QueryFilter{InMailbox: "inbox-123"}
+	if filter.InMailbox != "inbox-123" {
+		t.Errorf("InMailbox = %q, want %q", filter.InMailbox, "inbox-123")
+	}
+}
+
+func TestComparator_Defaults(t *testing.T) {
+	comp := Comparator{Property: "receivedAt"}
+	if comp.IsAscending != false {
+		t.Errorf("IsAscending default = %v, want false", comp.IsAscending)
+	}
+}
+
+func TestQueryResult_Fields(t *testing.T) {
+	result := QueryResult{
+		IDs:        []string{"email-1", "email-2"},
+		Position:   0,
+		QueryState: "state-123",
+	}
+	if len(result.IDs) != 2 {
+		t.Errorf("IDs length = %d, want 2", len(result.IDs))
+	}
+	if result.QueryState != "state-123" {
+		t.Errorf("QueryState = %q, want %q", result.QueryState, "state-123")
+	}
+}
+
 func TestMailboxMembershipItem_SortKeyOrdering(t *testing.T) {
 	accountID := "user-123"
 	mailboxID := "inbox"

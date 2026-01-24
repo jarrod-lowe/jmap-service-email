@@ -14,6 +14,7 @@ import (
 type mockDynamoDBClient struct {
 	transactWriteFunc func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 	getItemFunc       func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	queryFunc         func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 }
 
 func (m *mockDynamoDBClient) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
@@ -28,6 +29,13 @@ func (m *mockDynamoDBClient) GetItem(ctx context.Context, input *dynamodb.GetIte
 		return m.getItemFunc(ctx, input, opts...)
 	}
 	return &dynamodb.GetItemOutput{}, nil
+}
+
+func (m *mockDynamoDBClient) Query(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	if m.queryFunc != nil {
+		return m.queryFunc(ctx, input, opts...)
+	}
+	return &dynamodb.QueryOutput{}, nil
 }
 
 func TestRepository_CreateEmail(t *testing.T) {
@@ -274,6 +282,35 @@ func TestMarshalEmailItem_IncludesAttachments(t *testing.T) {
 	}
 }
 
+func TestMarshalEmailItem_IncludesLSI1SK(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 30, 45, 0, time.UTC)
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: receivedAt,
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	lsi1sk, ok := capturedItem["lsi1sk"]
+	if !ok {
+		t.Fatal("marshalEmailItem missing lsi1sk field")
+	}
+	lsiVal := lsi1sk.(*types.AttributeValueMemberS).Value
+	expectedLSI := "RCVD#2024-01-20T10:30:45Z#email-456"
+	if lsiVal != expectedLSI {
+		t.Errorf("lsi1sk = %q, want %q", lsiVal, expectedLSI)
+	}
+}
+
 func TestMarshalEmailItem_IncludesBodyStructure(t *testing.T) {
 	email := &EmailItem{
 		AccountID:     "user-123",
@@ -404,5 +441,198 @@ func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 	// Verify BodyStructure
 	if retrieved.BodyStructure.PartID != "1" || retrieved.BodyStructure.Type != "multipart/mixed" {
 		t.Errorf("BodyStructure = %+v, want PartID=1, Type=multipart/mixed", retrieved.BodyStructure)
+	}
+}
+
+func TestRepository_QueryEmails_InMailbox(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			// Verify the query is correct
+			if *input.TableName != "test-table" {
+				t.Errorf("TableName = %q, want %q", *input.TableName, "test-table")
+			}
+
+			// Should query with SK begins_with MBOX#{mailboxId}#EMAIL#
+			keyCondExpr := *input.KeyConditionExpression
+			if keyCondExpr != "pk = :pk AND begins_with(sk, :skPrefix)" {
+				t.Errorf("KeyConditionExpression = %q", keyCondExpr)
+			}
+
+			// Return mock results
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"pk":      &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"sk":      &types.AttributeValueMemberS{Value: "MBOX#inbox-id#EMAIL#2024-01-20T10:00:00Z#email-1"},
+						"emailId": &types.AttributeValueMemberS{Value: "email-1"},
+					},
+					{
+						"pk":      &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"sk":      &types.AttributeValueMemberS{Value: "MBOX#inbox-id#EMAIL#2024-01-20T11:00:00Z#email-2"},
+						"emailId": &types.AttributeValueMemberS{Value: "email-2"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{InMailbox: "inbox-id"},
+		Limit:  25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	if result.IDs[0] != "email-1" {
+		t.Errorf("IDs[0] = %q, want %q", result.IDs[0], "email-1")
+	}
+	if result.IDs[1] != "email-2" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-2")
+	}
+}
+
+func TestRepository_QueryEmails_NoFilter_UsesLSI(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"pk":      &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"lsi1sk":  &types.AttributeValueMemberS{Value: "RCVD#2024-01-20T11:00:00Z#email-2"},
+						"emailId": &types.AttributeValueMemberS{Value: "email-2"},
+					},
+					{
+						"pk":      &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"lsi1sk":  &types.AttributeValueMemberS{Value: "RCVD#2024-01-20T10:00:00Z#email-1"},
+						"emailId": &types.AttributeValueMemberS{Value: "email-1"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: nil, // No filter
+		Limit:  25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	// Verify LSI was used
+	if capturedInput.IndexName == nil || *capturedInput.IndexName != "lsi1" {
+		t.Errorf("Expected IndexName = lsi1, got %v", capturedInput.IndexName)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+}
+
+func TestRepository_QueryEmails_PositionPagination(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			// Simulate 5 items being returned
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"emailId": &types.AttributeValueMemberS{Value: "email-1"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-2"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-3"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-4"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-5"}},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter:   &QueryFilter{InMailbox: "inbox"},
+		Position: 2, // Skip first 2
+		Limit:    2, // Take 2
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	if result.IDs[0] != "email-3" {
+		t.Errorf("IDs[0] = %q, want %q", result.IDs[0], "email-3")
+	}
+	if result.IDs[1] != "email-4" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-4")
+	}
+	if result.Position != 2 {
+		t.Errorf("Position = %d, want 2", result.Position)
+	}
+}
+
+func TestRepository_QueryEmails_SortAscending(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, _ = repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{InMailbox: "inbox"},
+		Sort:   []Comparator{{Property: "receivedAt", IsAscending: true}},
+	})
+
+	if capturedInput.ScanIndexForward == nil || !*capturedInput.ScanIndexForward {
+		t.Error("Expected ScanIndexForward = true for ascending sort")
+	}
+}
+
+func TestRepository_QueryEmails_SortDescending(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, _ = repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{InMailbox: "inbox"},
+		Sort:   []Comparator{{Property: "receivedAt", IsAscending: false}},
+	})
+
+	if capturedInput.ScanIndexForward == nil || *capturedInput.ScanIndexForward {
+		t.Error("Expected ScanIndexForward = false for descending sort")
+	}
+}
+
+func TestRepository_QueryEmails_DefaultLimit(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, _ = repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{InMailbox: "inbox"},
+		// Limit not set, should default to 25
+	})
+
+	if capturedInput.Limit == nil || *capturedInput.Limit != 25 {
+		t.Errorf("Expected Limit = 25, got %v", capturedInput.Limit)
 	}
 }

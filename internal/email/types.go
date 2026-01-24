@@ -61,6 +61,40 @@ func (e *EmailItem) SK() string {
 	return fmt.Sprintf("EMAIL#%s", e.EmailID)
 }
 
+// LSI1SK returns the DynamoDB LSI sort key for receivedAt sorting.
+// Format: RCVD#{receivedAt}#{emailId}
+func (e *EmailItem) LSI1SK() string {
+	return fmt.Sprintf("RCVD#%s#%s", e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
+}
+
+// QueryRequest represents an Email/query request parameters.
+type QueryRequest struct {
+	Filter       *QueryFilter
+	Sort         []Comparator
+	Position     int
+	Anchor       string
+	AnchorOffset int
+	Limit        int
+}
+
+// QueryFilter represents filter conditions for Email/query.
+type QueryFilter struct {
+	InMailbox string
+}
+
+// Comparator represents a sort condition for Email/query.
+type Comparator struct {
+	Property    string
+	IsAscending bool
+}
+
+// QueryResult represents the result of an Email/query operation.
+type QueryResult struct {
+	IDs        []string
+	Position   int
+	QueryState string
+}
+
 // MailboxMembershipItem represents a mailbox membership record in DynamoDB.
 type MailboxMembershipItem struct {
 	AccountID  string    `json:"accountId"`
