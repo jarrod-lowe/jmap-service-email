@@ -34,3 +34,13 @@ resource "aws_cloudwatch_log_group" "thread_get" {
   name              = "/aws/lambda/${local.name_prefix}-thread-get"
   retention_in_days = var.log_retention_days
 }
+
+resource "aws_cloudwatch_log_group" "email_changes" {
+  name              = "/aws/lambda/${local.name_prefix}-email-changes"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_cloudwatch_log_group" "mailbox_changes" {
+  name              = "/aws/lambda/${local.name_prefix}-mailbox-changes"
+  retention_in_days = var.log_retention_days
+}

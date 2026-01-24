@@ -59,6 +59,18 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
             invokeTarget   = { S = aws_lambda_function.thread_get.arn }
           }
         }
+        "Email/changes" = {
+          M = {
+            invocationType = { S = "lambda-invoke" }
+            invokeTarget   = { S = aws_lambda_function.email_changes.arn }
+          }
+        }
+        "Mailbox/changes" = {
+          M = {
+            invocationType = { S = "lambda-invoke" }
+            invokeTarget   = { S = aws_lambda_function.mailbox_changes.arn }
+          }
+        }
       }
     }
     registeredAt = { S = time_static.plugin_registered.rfc3339 }

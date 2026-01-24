@@ -8,6 +8,7 @@ import (
 
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
 type mockMailboxRepository struct {
@@ -29,6 +30,18 @@ func (m *mockMailboxRepository) GetAllMailboxes(ctx context.Context, accountID s
 	return []*mailbox.MailboxItem{}, nil
 }
 
+// mockStateRepository implements the StateRepository interface for testing.
+type mockStateRepository struct {
+	getCurrentStateFunc func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+}
+
+func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+	if m.getCurrentStateFunc != nil {
+		return m.getCurrentStateFunc(ctx, accountID, objectType)
+	}
+	return 0, nil
+}
+
 func TestHandler_SingleMailboxFound(t *testing.T) {
 	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	mock := &mockMailboxRepository{
@@ -48,7 +61,7 @@ func TestHandler_SingleMailboxFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Mailbox/get",
@@ -108,7 +121,7 @@ func TestHandler_MailboxNotFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Mailbox/get",
@@ -164,7 +177,7 @@ func TestHandler_GetAllMailboxes(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Mailbox/get",
@@ -203,7 +216,7 @@ func TestHandler_PropertyFiltering(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Mailbox/get",
@@ -262,7 +275,7 @@ func TestHandler_MyRightsComputed(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Mailbox/get",
@@ -306,7 +319,7 @@ func TestHandler_MyRightsComputed(t *testing.T) {
 func TestHandler_InvalidMethod(t *testing.T) {
 	mock := &mockMailboxRepository{}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/get", // Wrong method
@@ -332,7 +345,7 @@ func TestHandler_RepositoryError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(mock, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Mailbox/get",
@@ -350,5 +363,93 @@ func TestHandler_RepositoryError(t *testing.T) {
 	}
 	if resp.MethodResponse.Args["type"] != "serverFail" {
 		t.Errorf("type = %v, want %q", resp.MethodResponse.Args["type"], "serverFail")
+	}
+}
+
+func TestHandler_ReturnsActualState(t *testing.T) {
+	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	mockRepo := &mockMailboxRepository{
+		getAllMailboxesFunc: func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error) {
+			return []*mailbox.MailboxItem{
+				{
+					AccountID:    accountID,
+					MailboxID:    "inbox",
+					Name:         "Inbox",
+					TotalEmails:  0,
+					UnreadEmails: 0,
+					IsSubscribed: true,
+					CreatedAt:    now,
+					UpdatedAt:    now,
+				},
+			}, nil
+		},
+	}
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			if objectType != state.ObjectTypeMailbox {
+				t.Errorf("objectType = %q, want %q", objectType, state.ObjectTypeMailbox)
+			}
+			return 99, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStateRepo)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/get",
+		Args: map[string]any{
+			"ids": nil,
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if resp.MethodResponse.Name != "Mailbox/get" {
+		t.Fatalf("Name = %q, want %q", resp.MethodResponse.Name, "Mailbox/get")
+	}
+
+	stateVal, ok := resp.MethodResponse.Args["state"].(string)
+	if !ok {
+		t.Fatal("state should be a string")
+	}
+	if stateVal != "99" {
+		t.Errorf("state = %q, want %q", stateVal, "99")
+	}
+}
+
+func TestHandler_StateRepositoryError(t *testing.T) {
+	mockRepo := &mockMailboxRepository{
+		getAllMailboxesFunc: func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error) {
+			return []*mailbox.MailboxItem{}, nil
+		},
+	}
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 0, errors.New("state lookup failed")
+		},
+	}
+
+	h := newHandler(mockRepo, mockStateRepo)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/get",
+		Args: map[string]any{
+			"ids": nil,
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if resp.MethodResponse.Name != "error" {
+		t.Fatalf("Name = %q, want %q", resp.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := resp.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "serverFail" {
+		t.Errorf("error type = %v, want %q", resp.MethodResponse.Args["type"], "serverFail")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -32,15 +34,23 @@ type MailboxRepository interface {
 	DeleteMailbox(ctx context.Context, accountID, mailboxID string) error
 }
 
+// StateRepository defines the interface for state tracking operations.
+type StateRepository interface {
+	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+}
+
 // handler implements the Mailbox/set logic.
 type handler struct {
-	repo MailboxRepository
+	repo      MailboxRepository
+	stateRepo StateRepository
 }
 
 // newHandler creates a new handler.
-func newHandler(repo MailboxRepository) *handler {
+func newHandler(repo MailboxRepository, stateRepo StateRepository) *handler {
 	return &handler{
-		repo: repo,
+		repo:      repo,
+		stateRepo: stateRepo,
 	}
 }
 
@@ -69,12 +79,27 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		accountID = argAccountID
 	}
 
+	// Get old state
+	oldState := int64(0)
+	if h.stateRepo != nil {
+		var err error
+		oldState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to get current state",
+				slog.String("account_id", accountID),
+				slog.String("error", err.Error()),
+			)
+			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+		}
+	}
+
 	created := make(map[string]any)
 	notCreated := make(map[string]any)
 	updated := make(map[string]any)
 	notUpdated := make(map[string]any)
 	destroyed := []any{}
 	notDestroyed := make(map[string]any)
+	newState := oldState
 
 	// Handle create
 	if createArg, ok := request.Args["create"].(map[string]any); ok {
@@ -90,6 +115,19 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				notCreated[clientID] = err
 			} else {
 				created[clientID] = result
+				// Track state change
+				if h.stateRepo != nil {
+					mailboxID := result["id"].(string)
+					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeCreated); err != nil {
+						logger.ErrorContext(ctx, "Failed to track mailbox state change",
+							slog.String("account_id", accountID),
+							slog.String("mailbox_id", mailboxID),
+							slog.String("error", err.Error()),
+						)
+					} else {
+						newState = s
+					}
+				}
 			}
 		}
 	}
@@ -108,6 +146,18 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				notUpdated[mailboxID] = err
 			} else {
 				updated[mailboxID] = nil
+				// Track state change
+				if h.stateRepo != nil {
+					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeUpdated); err != nil {
+						logger.ErrorContext(ctx, "Failed to track mailbox state change",
+							slog.String("account_id", accountID),
+							slog.String("mailbox_id", mailboxID),
+							slog.String("error", err.Error()),
+						)
+					} else {
+						newState = s
+					}
+				}
 			}
 		}
 	}
@@ -130,6 +180,18 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				notDestroyed[mailboxID] = err
 			} else {
 				destroyed = append(destroyed, mailboxID)
+				// Track state change
+				if h.stateRepo != nil {
+					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeDestroyed); err != nil {
+						logger.ErrorContext(ctx, "Failed to track mailbox state change",
+							slog.String("account_id", accountID),
+							slog.String("mailbox_id", mailboxID),
+							slog.String("error", err.Error()),
+						)
+					} else {
+						newState = s
+					}
+				}
 			}
 		}
 	}
@@ -146,8 +208,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			Name: "Mailbox/set",
 			Args: map[string]any{
 				"accountId":    accountID,
-				"oldState":     "0",
-				"newState":     "1",
+				"oldState":     strconv.FormatInt(oldState, 10),
+				"newState":     strconv.FormatInt(newState, 10),
 				"created":      created,
 				"updated":      updated,
 				"destroyed":    destroyed,
@@ -320,6 +382,20 @@ func setError(errorType, description string) map[string]any {
 	}
 }
 
+// errorResponse creates a method-level error response.
+func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+	return plugincontract.PluginInvocationResponse{
+		MethodResponse: plugincontract.MethodResponse{
+			Name: "error",
+			Args: map[string]any{
+				"type":        errorType,
+				"description": description,
+			},
+			ClientID: clientID,
+		},
+	}
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -340,7 +416,8 @@ func main() {
 
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
+	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	h := newHandler(repo)
+	h := newHandler(repo, stateRepo)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

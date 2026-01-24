@@ -18,6 +18,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -52,21 +53,28 @@ type MailboxRepository interface {
 	IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
 }
 
+// StateRepository defines the interface for state tracking operations.
+type StateRepository interface {
+	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+}
+
 // handler implements the Email/import logic.
 type handler struct {
 	repo        EmailRepository
 	streamer    BlobStreamer
 	uploader    BlobUploader
 	mailboxRepo MailboxRepository
+	stateRepo   StateRepository
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository) *handler {
+func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository, stateRepo StateRepository) *handler {
 	return &handler{
 		repo:        repo,
 		streamer:    streamer,
 		uploader:    uploader,
 		mailboxRepo: mailboxRepo,
+		stateRepo:   stateRepo,
 	}
 }
 
@@ -288,7 +296,19 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		}
 	}
 
-	// Increment mailbox counts
+	// Track state changes for Email (created)
+	if h.stateRepo != nil {
+		if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeCreated); err != nil {
+			// Log but don't fail - email was already stored successfully
+			logger.ErrorContext(ctx, "Failed to track email state change",
+				slog.String("account_id", accountID),
+				slog.String("email_id", emailID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
+	// Increment mailbox counts and track state changes
 	isSeen := keywords["$seen"]
 	incrementUnread := !isSeen
 	for mailboxID := range mailboxIDs {
@@ -299,6 +319,17 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", err.Error()),
 			)
+		}
+
+		// Track state changes for Mailbox (updated)
+		if h.stateRepo != nil {
+			if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeUpdated); err != nil {
+				logger.ErrorContext(ctx, "Failed to track mailbox state change",
+					slog.String("account_id", accountID),
+					slog.String("mailbox_id", mailboxID),
+					slog.String("error", err.Error()),
+				)
+			}
 		}
 	}
 
@@ -371,6 +402,7 @@ func main() {
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := email.NewRepository(dynamoClient, tableName)
 	mailboxRepo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
+	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
 	// Create blob client with SigV4 signing
 	transport := blob.NewSigV4Transport(http.DefaultTransport, cfg.Credentials, cfg.Region)
@@ -378,6 +410,6 @@ func main() {
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
 	// HTTPBlobClient implements both BlobStreamer and BlobUploader
-	h := newHandler(repo, blobClient, blobClient, mailboxRepo)
+	h := newHandler(repo, blobClient, blobClient, mailboxRepo, stateRepo)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

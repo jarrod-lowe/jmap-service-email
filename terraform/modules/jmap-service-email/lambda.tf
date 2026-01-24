@@ -278,3 +278,83 @@ resource "aws_lambda_permission" "allow_jmap_core_thread_get" {
   principal     = "lambda.amazonaws.com"
   source_arn    = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:jmap-api-*"
 }
+
+# Lambda function for Email/changes
+resource "aws_lambda_function" "email_changes" {
+  function_name = "${local.name_prefix}-email-changes"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = var.lambda_timeout
+
+  filename         = "${path.module}/../../../build/email-changes/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/email-changes/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.email_changes,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.dynamodb_email_data
+  ]
+}
+
+# Permission for jmap-api Lambda to invoke email-changes function
+resource "aws_lambda_permission" "allow_jmap_core_email_changes" {
+  statement_id  = "AllowJMAPCoreInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.email_changes.function_name
+  principal     = "lambda.amazonaws.com"
+  source_arn    = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:jmap-api-*"
+}
+
+# Lambda function for Mailbox/changes
+resource "aws_lambda_function" "mailbox_changes" {
+  function_name = "${local.name_prefix}-mailbox-changes"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = var.lambda_timeout
+
+  filename         = "${path.module}/../../../build/mailbox-changes/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/mailbox-changes/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.mailbox_changes,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.dynamodb_email_data
+  ]
+}
+
+# Permission for jmap-api Lambda to invoke mailbox-changes function
+resource "aws_lambda_permission" "allow_jmap_core_mailbox_changes" {
+  statement_id  = "AllowJMAPCoreInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.mailbox_changes.function_name
+  principal     = "lambda.amazonaws.com"
+  source_arn    = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:jmap-api-*"
+}

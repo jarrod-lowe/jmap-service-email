@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -28,15 +30,22 @@ type EmailRepository interface {
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 }
 
+// StateRepository defines the interface for state operations.
+type StateRepository interface {
+	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+}
+
 // handler implements the Email/get logic.
 type handler struct {
-	repo EmailRepository
+	repo      EmailRepository
+	stateRepo StateRepository
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository) *handler {
+func newHandler(repo EmailRepository, stateRepo StateRepository) *handler {
 	return &handler{
-		repo: repo,
+		repo:      repo,
+		stateRepo: stateRepo,
 	}
 }
 
@@ -140,6 +149,20 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		notFound = []any{}
 	}
 
+	// Get current state
+	stateStr := "0"
+	if h.stateRepo != nil {
+		currentState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to get current state",
+				slog.String("account_id", accountID),
+				slog.String("error", err.Error()),
+			)
+			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+		}
+		stateStr = strconv.FormatInt(currentState, 10)
+	}
+
 	logger.InfoContext(ctx, "Email/get completed",
 		slog.String("account_id", accountID),
 		slog.Int("list_count", len(list)),
@@ -151,7 +174,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			Name: "Email/get",
 			Args: map[string]any{
 				"accountId": accountID,
-				"state":     "0", // Hardcoded until Email/changes implemented
+				"state":     stateStr,
 				"list":      list,
 				"notFound":  notFound,
 			},
@@ -307,7 +330,8 @@ func main() {
 	// Create DynamoDB client
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := email.NewRepository(dynamoClient, tableName)
+	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	h := newHandler(repo)
+	h := newHandler(repo, stateRepo)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

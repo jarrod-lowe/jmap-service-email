@@ -10,6 +10,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
 // Simple test email content
@@ -88,6 +89,18 @@ func (m *mockMailboxRepository) IncrementCounts(ctx context.Context, accountID, 
 	return nil
 }
 
+// mockStateRepository implements the StateRepository interface for testing.
+type mockStateRepository struct {
+	incrementFunc func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+}
+
+func (m *mockStateRepository) IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error) {
+	if m.incrementFunc != nil {
+		return m.incrementFunc(ctx, accountID, objectType, objectID, changeType)
+	}
+	return 1, nil
+}
+
 func TestHandler_SingleEmailImport(t *testing.T) {
 	var capturedEmail *emailItem
 	mockRepo := &mockEmailRepository{
@@ -100,7 +113,7 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -188,7 +201,7 @@ func TestHandler_SingleEmailImport_VerifiesFromField(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -250,7 +263,7 @@ func TestHandler_BlobStreamError(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -302,7 +315,7 @@ func TestHandler_RepositoryError(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -356,7 +369,7 @@ func TestHandler_MultipleEmails(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -408,7 +421,7 @@ func TestHandler_InvalidMethod(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -462,7 +475,7 @@ SGVsbG8gV29ybGQ=
 	}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -509,7 +522,7 @@ func TestHandler_InvalidMailboxId(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -574,7 +587,7 @@ func TestHandler_ValidMailboxIdIncrementsCounts(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -649,7 +662,7 @@ func TestHandler_NoSeenKeywordIncrementsUnread(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -713,7 +726,7 @@ func TestHandler_MultipleMailboxesIncrementAll(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -765,7 +778,7 @@ func TestHandler_MailboxCheckError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -819,7 +832,7 @@ func TestHandler_IncrementCountError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -896,7 +909,7 @@ func TestHandler_Threading_NoInReplyTo_NewThread(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -964,7 +977,7 @@ func TestHandler_Threading_InReplyTo_InheritsThread(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1021,7 +1034,7 @@ func TestHandler_Threading_InReplyTo_ParentNotFound(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1078,7 +1091,7 @@ func TestHandler_Threading_LookupError_FallsBackToNewThread(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1111,5 +1124,91 @@ func TestHandler_Threading_LookupError_FallsBackToNewThread(t *testing.T) {
 	}
 	if capturedEmail.ThreadID == "" {
 		t.Error("ThreadID should not be empty even when lookup fails")
+	}
+}
+
+func TestHandler_StateTracking(t *testing.T) {
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			return nil
+		},
+	}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	// Track state changes
+	var stateChanges []struct {
+		objectType state.ObjectType
+		objectID   string
+		changeType state.ChangeType
+	}
+	mockStateRepo := &mockStateRepository{
+		incrementFunc: func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error) {
+			stateChanges = append(stateChanges, struct {
+				objectType state.ObjectType
+				objectID   string
+				changeType state.ChangeType
+			}{objectType, objectID, changeType})
+			return 1, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox":   true,
+						"archive": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Should have 3 state changes: 1 Email created + 2 Mailboxes updated
+	if len(stateChanges) != 3 {
+		t.Fatalf("stateChanges count = %d, want 3", len(stateChanges))
+	}
+
+	// First should be Email created
+	emailCreated := false
+	for _, change := range stateChanges {
+		if change.objectType == state.ObjectTypeEmail && change.changeType == state.ChangeTypeCreated {
+			emailCreated = true
+			break
+		}
+	}
+	if !emailCreated {
+		t.Error("Expected Email/created state change")
+	}
+
+	// Should have 2 Mailbox updated changes
+	mailboxUpdates := 0
+	for _, change := range stateChanges {
+		if change.objectType == state.ObjectTypeMailbox && change.changeType == state.ChangeTypeUpdated {
+			mailboxUpdates++
+		}
+	}
+	if mailboxUpdates != 2 {
+		t.Errorf("mailbox update count = %d, want 2", mailboxUpdates)
 	}
 }

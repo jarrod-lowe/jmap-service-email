@@ -9,7 +9,7 @@ $(error ENV must be 'test' or 'prod'. Usage: make <target> ENV=test)
 endif
 
 # Lambda definitions - add new lambdas here
-LAMBDAS = placeholder email-import email-get email-query mailbox-get mailbox-set thread-get
+LAMBDAS = placeholder email-import email-get email-query mailbox-get mailbox-set thread-get email-changes mailbox-changes
 
 # Directories
 BUILD_DIR = build

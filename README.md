@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Mailbox/get`, `Mailbox/set`, and `Thread/get` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, and `Thread/get` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -77,12 +77,15 @@ jmap-service-email/
 │   ├── email-import/          # Email/import Lambda
 │   ├── email-get/             # Email/get Lambda
 │   ├── email-query/           # Email/query Lambda
+│   ├── email-changes/         # Email/changes Lambda
 │   ├── mailbox-get/           # Mailbox/get Lambda
 │   ├── mailbox-set/           # Mailbox/set Lambda
+│   ├── mailbox-changes/       # Mailbox/changes Lambda
 │   └── thread-get/            # Thread/get Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
 │   ├── mailbox/               # Mailbox types and repository
+│   ├── state/                 # State tracking repository
 │   └── blob/                  # Blob API client
 ├── terraform/
 │   ├── modules/
@@ -108,8 +111,10 @@ Methods:
 - `Email/get` - Retrieve emails by ID with optional property filtering
 - `Email/import` - Import RFC 5322 messages from blobs
 - `Email/query` - Query emails with `inMailbox` filter and `receivedAt` sorting
+- `Email/changes` - Get email changes since a given state (for delta sync)
 - `Mailbox/get` - Retrieve mailboxes by ID or get all
 - `Mailbox/set` - Create, update, and destroy mailboxes
+- `Mailbox/changes` - Get mailbox changes since a given state (for delta sync)
 - `Thread/get` - Retrieve threads by ID (returns emailIds in receivedAt order)
 
 ## DynamoDB Indexes
@@ -158,10 +163,11 @@ The following enhancements are planned for future versions:
 
 ### General
 
-- **Email/changes**: Implement state tracking for delta sync
-- **Email/set**: Implement email mutations (keywords, mailbox assignments)
+- **Email/set**: Implement email mutations (keywords, mailbox assignments); wire in state tracking when implemented
 - **Mailbox/query**: Implement mailbox query support
-- **Mailbox/changes**: Implement state tracking for mailbox delta sync
+- **Thread/changes**: Implement state tracking for threads (currently returns `cannotCalculateChanges`)
+- **Email/queryChanges**: Implement query result change tracking
+- **ifInState support**: Add optimistic concurrency control to `Email/set` and `Mailbox/set`
 
 ## License
 
