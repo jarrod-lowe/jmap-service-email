@@ -11,6 +11,11 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
     pk       = { S = "PLUGIN#" }
     sk       = { S = "PLUGIN#${local.plugin_name}" }
     pluginId = { S = local.plugin_name }
+    clientPrincipals = {
+      L = [
+        { S = aws_iam_role.lambda_execution.arn }
+      ]
+    }
     capabilities = {
       M = {
         "urn:ietf:params:jmap:mail" = {
