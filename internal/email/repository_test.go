@@ -501,6 +501,8 @@ func TestRepository_QueryEmails_NoFilter_UsesLSI(t *testing.T) {
 	mockClient := &mockDynamoDBClient{
 		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 			capturedInput = input
+			// Mock returns emailId attribute because LSI uses INCLUDE projection
+			// with non_key_attributes = ["emailId"] in dynamodb.tf
 			return &dynamodb.QueryOutput{
 				Items: []map[string]types.AttributeValue{
 					{

@@ -24,9 +24,10 @@ resource "aws_dynamodb_table" "email_data" {
   # LSI for querying all emails sorted by receivedAt
   # Format: RCVD#{receivedAt}#{emailId}
   local_secondary_index {
-    name            = "lsi1"
-    range_key       = "lsi1sk"
-    projection_type = "KEYS_ONLY"
+    name               = "lsi1"
+    range_key          = "lsi1sk"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["emailId"]
   }
 
   point_in_time_recovery {
