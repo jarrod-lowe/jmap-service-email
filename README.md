@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/set`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, `Thread/get`, and `Thread/changes` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/set`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, `Thread/get`, and `Thread/changes` are functional.
 
 ## Prerequisites
 
@@ -73,7 +73,6 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 ```plain
 jmap-service-email/
 ├── cmd/
-│   ├── placeholder/           # Placeholder Lambda
 │   ├── email-import/          # Email/import Lambda
 │   ├── email-get/             # Email/get Lambda
 │   ├── email-query/           # Email/query Lambda

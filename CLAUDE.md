@@ -23,8 +23,8 @@ This is a plugin for jmap-service-core that provides email capabilities (urn:iet
 ┌─────────────────────────────────────────────────────────────────┐
 │                      jmap-service-email                          │
 │  ┌──────────────────┐                                           │
-│  │  placeholder     │  (returns serverFail - not implemented)   │
-│  │  Lambda          │                                           │
+│  │  Method-specific │  (Email/*, Mailbox/*, Thread/* Lambdas)   │
+│  │  Lambdas         │                                           │
 │  └──────────────────┘                                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -106,19 +106,29 @@ Core infrastructure values (DynamoDB table, API URL, etc.) are automatically dis
 
 ## Current Status
 
-The repository contains infrastructure setup only:
+The repository implements the following JMAP methods:
 
-- Placeholder Lambda that returns `serverFail` for all methods
-- Plugin registration in core DynamoDB
-- No actual email implementation yet
+- `Email/get`, `Email/query`, `Email/set`, `Email/import`, `Email/changes`
+- `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`
+- `Thread/get`, `Thread/changes`
+
+See README.md for detailed capability documentation.
 
 ## Project Structure
 
 ```plain
 jmap-service-email/
 ├── cmd/
-│   └── placeholder/           # Placeholder Lambda (to be replaced)
-│       └── main.go
+│   ├── email-import/          # Email/import Lambda
+│   ├── email-get/             # Email/get Lambda
+│   ├── email-query/           # Email/query Lambda
+│   ├── email-set/             # Email/set Lambda
+│   ├── email-changes/         # Email/changes Lambda
+│   ├── mailbox-get/           # Mailbox/get Lambda
+│   ├── mailbox-set/           # Mailbox/set Lambda
+│   ├── mailbox-changes/       # Mailbox/changes Lambda
+│   ├── thread-get/            # Thread/get Lambda
+│   └── thread-changes/        # Thread/changes Lambda
 ├── terraform/
 │   ├── modules/
 │   │   └── jmap-service-email/
