@@ -41,6 +41,12 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
             invokeTarget   = { S = aws_lambda_function.email_import.arn }
           }
         }
+        "Email/set" = {
+          M = {
+            invocationType = { S = "lambda-invoke" }
+            invokeTarget   = { S = aws_lambda_function.email_set.arn }
+          }
+        }
         "Mailbox/get" = {
           M = {
             invocationType = { S = "lambda-invoke" }

@@ -809,3 +809,182 @@ func TestRepository_FindByThreadID_QueryError(t *testing.T) {
 		t.Fatal("Expected error, got nil")
 	}
 }
+
+func TestRepository_UpdateEmailMailboxes_AddMailbox(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email currently in inbox, moving to inbox + archive
+	existingEmail := map[string]types.AttributeValue{
+		"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+		"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+		"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+		"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+		"blobId":     &types.AttributeValueMemberS{Value: "blob-789"},
+		"threadId":   &types.AttributeValueMemberS{Value: "email-456"},
+		"subject":    &types.AttributeValueMemberS{Value: "Test Subject"},
+		"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+		"size":       &types.AttributeValueMemberN{Value: "2048"},
+		"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"inbox-id": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+	}
+
+	var capturedTransaction *dynamodb.TransactWriteItemsInput
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: existingEmail}, nil
+		},
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedTransaction = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	newMailboxIDs := map[string]bool{"inbox-id": true, "archive-id": true}
+	oldMailboxIDs, email, err := repo.UpdateEmailMailboxes(context.Background(), "user-123", "email-456", newMailboxIDs)
+
+	if err != nil {
+		t.Fatalf("UpdateEmailMailboxes failed: %v", err)
+	}
+
+	// Should return old mailboxIds
+	if len(oldMailboxIDs) != 1 || !oldMailboxIDs["inbox-id"] {
+		t.Errorf("oldMailboxIDs = %v, want map[inbox-id:true]", oldMailboxIDs)
+	}
+
+	// Should return email
+	if email == nil || email.EmailID != "email-456" {
+		t.Errorf("email = %+v, want email-456", email)
+	}
+
+	// Transaction should have: 1 email update + 1 new membership (archive-id added)
+	if capturedTransaction == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+	if len(capturedTransaction.TransactItems) != 2 {
+		t.Errorf("TransactItems count = %d, want 2 (email update + new membership)", len(capturedTransaction.TransactItems))
+	}
+}
+
+func TestRepository_UpdateEmailMailboxes_RemoveMailbox(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email currently in inbox + archive, removing from archive
+	existingEmail := map[string]types.AttributeValue{
+		"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+		"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+		"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+		"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+		"blobId":     &types.AttributeValueMemberS{Value: "blob-789"},
+		"threadId":   &types.AttributeValueMemberS{Value: "email-456"},
+		"subject":    &types.AttributeValueMemberS{Value: "Test Subject"},
+		"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+		"size":       &types.AttributeValueMemberN{Value: "2048"},
+		"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"inbox-id":   &types.AttributeValueMemberBOOL{Value: true},
+			"archive-id": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+	}
+
+	var capturedTransaction *dynamodb.TransactWriteItemsInput
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: existingEmail}, nil
+		},
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedTransaction = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	newMailboxIDs := map[string]bool{"inbox-id": true} // archive-id removed
+	oldMailboxIDs, email, err := repo.UpdateEmailMailboxes(context.Background(), "user-123", "email-456", newMailboxIDs)
+
+	if err != nil {
+		t.Fatalf("UpdateEmailMailboxes failed: %v", err)
+	}
+
+	// Should return old mailboxIds with both
+	if len(oldMailboxIDs) != 2 {
+		t.Errorf("oldMailboxIDs = %v, want map with inbox-id and archive-id", oldMailboxIDs)
+	}
+
+	// Should return email
+	if email == nil || email.EmailID != "email-456" {
+		t.Errorf("email = %+v, want email-456", email)
+	}
+
+	// Transaction should have: 1 email update + 1 delete membership (archive-id removed)
+	if capturedTransaction == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+	if len(capturedTransaction.TransactItems) != 2 {
+		t.Errorf("TransactItems count = %d, want 2 (email update + delete membership)", len(capturedTransaction.TransactItems))
+	}
+
+	// Verify delete operation exists
+	hasDelete := false
+	for _, item := range capturedTransaction.TransactItems {
+		if item.Delete != nil {
+			hasDelete = true
+			break
+		}
+	}
+	if !hasDelete {
+		t.Error("Expected Delete operation in transaction for removed mailbox")
+	}
+}
+
+func TestRepository_UpdateEmailMailboxes_NotFound(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: nil}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, _, err := repo.UpdateEmailMailboxes(context.Background(), "user-123", "nonexistent", map[string]bool{"inbox-id": true})
+
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !errors.Is(err, ErrEmailNotFound) {
+		t.Errorf("Expected ErrEmailNotFound, got %v", err)
+	}
+}
+
+func TestRepository_UpdateEmailMailboxes_TransactionError(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	existingEmail := map[string]types.AttributeValue{
+		"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+		"sk":         &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+		"emailId":    &types.AttributeValueMemberS{Value: "email-456"},
+		"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+		"receivedAt": &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+		"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"inbox-id": &types.AttributeValueMemberBOOL{Value: true},
+		}},
+	}
+
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: existingEmail}, nil
+		},
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			return nil, errors.New("transaction failed")
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, _, err := repo.UpdateEmailMailboxes(context.Background(), "user-123", "email-456", map[string]bool{"archive-id": true})
+
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !errors.Is(err, ErrTransactionFailed) {
+		t.Errorf("Expected ErrTransactionFailed, got %v", err)
+	}
+}

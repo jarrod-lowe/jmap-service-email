@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, and `Thread/get` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Email/set`, `Email/changes`, `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`, and `Thread/get` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -77,6 +77,7 @@ jmap-service-email/
 │   ├── email-import/          # Email/import Lambda
 │   ├── email-get/             # Email/get Lambda
 │   ├── email-query/           # Email/query Lambda
+│   ├── email-set/             # Email/set Lambda
 │   ├── email-changes/         # Email/changes Lambda
 │   ├── mailbox-get/           # Mailbox/get Lambda
 │   ├── mailbox-set/           # Mailbox/set Lambda
@@ -111,6 +112,7 @@ Methods:
 - `Email/get` - Retrieve emails by ID with optional property filtering
 - `Email/import` - Import RFC 5322 messages from blobs
 - `Email/query` - Query emails with `inMailbox` filter and `receivedAt` sorting
+- `Email/set` - Update email mailbox assignments (move between mailboxes)
 - `Email/changes` - Get email changes since a given state (for delta sync)
 - `Mailbox/get` - Retrieve mailboxes by ID or get all
 - `Mailbox/set` - Create, update, and destroy mailboxes
@@ -161,13 +163,16 @@ The following enhancements are planned for future versions:
 - **Hierarchical mailboxes not supported**: `parentId` is always `null`; attempts to set `parentId` to non-null return `invalidProperties`
 - **onDestroyRemoveEmails**: Not fully implemented; only checks if mailbox is empty
 
+### Email/set
+
+- **Keywords updates**: Only `mailboxIds` updates are supported; `keywords` updates are not yet implemented
+- **Create/destroy**: `Email/set` only supports `update`; use `Email/import` to create emails
+
 ### General
 
-- **Email/set**: Implement email mutations (keywords, mailbox assignments); wire in state tracking when implemented
 - **Mailbox/query**: Implement mailbox query support
 - **Thread/changes**: Implement state tracking for threads (currently returns `cannotCalculateChanges`)
 - **Email/queryChanges**: Implement query result change tracking
-- **ifInState support**: Add optimistic concurrency control to `Email/set` and `Mailbox/set`
 
 ## License
 

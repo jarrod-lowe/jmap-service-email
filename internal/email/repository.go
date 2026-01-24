@@ -546,3 +546,94 @@ func unmarshalStringList(list []types.AttributeValue) []string {
 	}
 	return strs
 }
+
+// UpdateEmailMailboxes updates an email's mailbox memberships in a transaction.
+// Returns the old mailboxIds (for counter calculations) and the email item.
+func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailID string,
+	newMailboxIDs map[string]bool) (oldMailboxIDs map[string]bool, email *EmailItem, err error) {
+	// Fetch existing email
+	email, err = r.GetEmail(ctx, accountID, emailID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	oldMailboxIDs = make(map[string]bool)
+	for k, v := range email.MailboxIDs {
+		oldMailboxIDs[k] = v
+	}
+
+	// Calculate added and removed mailboxes
+	addedMailboxes := make([]string, 0)
+	for mailboxID := range newMailboxIDs {
+		if !oldMailboxIDs[mailboxID] {
+			addedMailboxes = append(addedMailboxes, mailboxID)
+		}
+	}
+
+	removedMailboxes := make([]string, 0)
+	for mailboxID := range oldMailboxIDs {
+		if !newMailboxIDs[mailboxID] {
+			removedMailboxes = append(removedMailboxes, mailboxID)
+		}
+	}
+
+	// Build transaction items
+	transactItems := make([]types.TransactWriteItem, 0, 1+len(addedMailboxes)+len(removedMailboxes))
+
+	// Update email's mailboxIds
+	email.MailboxIDs = newMailboxIDs
+	emailItem := r.marshalEmailItem(email)
+	transactItems = append(transactItems, types.TransactWriteItem{
+		Put: &types.Put{
+			TableName:           aws.String(r.tableName),
+			Item:                emailItem,
+			ConditionExpression: aws.String("attribute_exists(pk)"),
+		},
+	})
+
+	// Add new membership items
+	for _, mailboxID := range addedMailboxes {
+		membership := &MailboxMembershipItem{
+			AccountID:  accountID,
+			MailboxID:  mailboxID,
+			ReceivedAt: email.ReceivedAt,
+			EmailID:    emailID,
+		}
+		membershipItem := r.marshalMembershipItem(membership)
+		transactItems = append(transactItems, types.TransactWriteItem{
+			Put: &types.Put{
+				TableName: aws.String(r.tableName),
+				Item:      membershipItem,
+			},
+		})
+	}
+
+	// Delete removed membership items
+	for _, mailboxID := range removedMailboxes {
+		membership := &MailboxMembershipItem{
+			AccountID:  accountID,
+			MailboxID:  mailboxID,
+			ReceivedAt: email.ReceivedAt,
+			EmailID:    emailID,
+		}
+		transactItems = append(transactItems, types.TransactWriteItem{
+			Delete: &types.Delete{
+				TableName: aws.String(r.tableName),
+				Key: map[string]types.AttributeValue{
+					"pk": &types.AttributeValueMemberS{Value: membership.PK()},
+					"sk": &types.AttributeValueMemberS{Value: membership.SK()},
+				},
+			},
+		})
+	}
+
+	// Execute transaction
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrTransactionFailed, err)
+	}
+
+	return oldMailboxIDs, email, nil
+}
