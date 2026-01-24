@@ -297,6 +297,61 @@ func TestMarshalEmailItem_IncludesBodyStructure(t *testing.T) {
 	}
 }
 
+func TestMarshalUnmarshal_FromField_RoundTrip(t *testing.T) {
+	original := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC),
+		From: []EmailAddress{
+			{Name: "Test Sender", Email: "sender@example.com"},
+		},
+		To: []EmailAddress{
+			{Name: "Test Recipient", Email: "recipient@example.com"},
+		},
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), original)
+
+	// Verify "from" was marshaled
+	if _, ok := capturedItem["from"]; !ok {
+		t.Fatal("From field not marshaled to DynamoDB")
+	}
+
+	// Now unmarshal and verify
+	mockClient.getItemFunc = func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+		return &dynamodb.GetItemOutput{Item: capturedItem}, nil
+	}
+
+	retrieved, err := repo.GetEmail(context.Background(), "user-123", "email-456")
+	if err != nil {
+		t.Fatalf("GetEmail failed: %v", err)
+	}
+
+	// Verify From
+	if len(retrieved.From) != 1 {
+		t.Fatalf("From length = %d, want 1", len(retrieved.From))
+	}
+	if retrieved.From[0].Name != "Test Sender" {
+		t.Errorf("From[0].Name = %q, want %q", retrieved.From[0].Name, "Test Sender")
+	}
+	if retrieved.From[0].Email != "sender@example.com" {
+		t.Errorf("From[0].Email = %q, want %q", retrieved.From[0].Email, "sender@example.com")
+	}
+
+	// Verify To for comparison
+	if len(retrieved.To) != 1 {
+		t.Fatalf("To length = %d, want 1", len(retrieved.To))
+	}
+}
+
 func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 	original := &EmailItem{
 		AccountID:     "user-123",

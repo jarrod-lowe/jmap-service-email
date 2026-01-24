@@ -437,6 +437,49 @@ Simple message without encoding header.
 	}
 }
 
+func TestParseRFC5322Stream_FromField_WithCRLF(t *testing.T) {
+	// Exactly match the E2E test format (CRLF line endings)
+	email := "From: Test Sender <sender@example.com>\r\n" +
+		"To: Test Recipient <recipient@example.com>\r\n" +
+		"Subject: Test Email for E2E Import Verification\r\n" +
+		"Date: Sat, 20 Jan 2024 10:00:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"This is the test email body content.\r\n"
+
+	uploader := &mockUploader{blobID: "test-blob", size: 100}
+
+	parsed, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"email-blob-123",
+		"account-456",
+		uploader,
+	)
+	if err != nil {
+		t.Fatalf("ParseRFC5322Stream error = %v", err)
+	}
+
+	// Verify From field
+	if len(parsed.From) != 1 {
+		t.Fatalf("From length = %d, want 1; From=%v", len(parsed.From), parsed.From)
+	}
+	if parsed.From[0].Name != "Test Sender" {
+		t.Errorf("From[0].Name = %q, want %q", parsed.From[0].Name, "Test Sender")
+	}
+	if parsed.From[0].Email != "sender@example.com" {
+		t.Errorf("From[0].Email = %q, want %q", parsed.From[0].Email, "sender@example.com")
+	}
+
+	// Verify To field for comparison
+	if len(parsed.To) != 1 {
+		t.Fatalf("To length = %d, want 1; To=%v", len(parsed.To), parsed.To)
+	}
+	if parsed.To[0].Email != "recipient@example.com" {
+		t.Errorf("To[0].Email = %q, want %q", parsed.To[0].Email, "recipient@example.com")
+	}
+}
+
 func TestIsIdentityEncoding(t *testing.T) {
 	tests := []struct {
 		encoding string

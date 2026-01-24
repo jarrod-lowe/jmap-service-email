@@ -102,6 +102,8 @@ Core infrastructure values (DynamoDB table, API URL, etc.) are automatically dis
 4. **OTel Tracing** - All Lambdas instrumented with X-Ray via ADOT layer
 5. **Lint** - All code must pass golangci-lint
 
+**ALWAYS** write into any plans to write or modify code that you must use the TDD superpower, and that RED tests must SUCCESSFULLY fail (that is, compile, run, not panic, and return a failure).
+
 ## Current Status
 
 The repository contains infrastructure setup only:

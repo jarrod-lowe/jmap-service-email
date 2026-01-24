@@ -168,6 +168,70 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 	}
 }
 
+func TestHandler_SingleEmailImport_VerifiesFromField(t *testing.T) {
+	var capturedEmail *emailItem
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			capturedEmail = email
+			return nil
+		},
+	}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox-id": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Verify From field was parsed and stored
+	if capturedEmail == nil {
+		t.Fatal("CreateEmail was not called")
+	}
+	if len(capturedEmail.From) != 1 {
+		t.Fatalf("From length = %d, want 1; From=%v", len(capturedEmail.From), capturedEmail.From)
+	}
+	if capturedEmail.From[0].Name != "Alice" {
+		t.Errorf("From[0].Name = %q, want %q", capturedEmail.From[0].Name, "Alice")
+	}
+	if capturedEmail.From[0].Email != "alice@example.com" {
+		t.Errorf("From[0].Email = %q, want %q", capturedEmail.From[0].Email, "alice@example.com")
+	}
+
+	// Also verify To for comparison
+	if len(capturedEmail.To) != 1 {
+		t.Fatalf("To length = %d, want 1; To=%v", len(capturedEmail.To), capturedEmail.To)
+	}
+	if capturedEmail.To[0].Email != "bob@example.com" {
+		t.Errorf("To[0].Email = %q, want %q", capturedEmail.To[0].Email, "bob@example.com")
+	}
+}
+
 func TestHandler_BlobStreamError(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 	mockStreamer := &mockBlobStreamer{

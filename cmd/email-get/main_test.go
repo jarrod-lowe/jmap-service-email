@@ -546,6 +546,70 @@ func TestHandler_BodyValuesAlwaysEmpty(t *testing.T) {
 	}
 }
 
+func TestHandler_FromFieldValue(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Verify from field is present and has correct value
+	from, ok := emailMap["from"].([]map[string]any)
+	if !ok {
+		t.Fatalf("from should be []map[string]any, got %T: %v", emailMap["from"], emailMap["from"])
+	}
+	if len(from) != 1 {
+		t.Fatalf("from length = %d, want 1", len(from))
+	}
+	if from[0]["name"] != "Alice" {
+		t.Errorf("from[0].name = %q, want %q", from[0]["name"], "Alice")
+	}
+	if from[0]["email"] != "alice@example.com" {
+		t.Errorf("from[0].email = %q, want %q", from[0]["email"], "alice@example.com")
+	}
+
+	// Also verify 'to' for comparison
+	to, ok := emailMap["to"].([]map[string]any)
+	if !ok {
+		t.Fatalf("to should be []map[string]any, got %T: %v", emailMap["to"], emailMap["to"])
+	}
+	if len(to) != 1 {
+		t.Fatalf("to length = %d, want 1", len(to))
+	}
+	if to[0]["email"] != "bob@example.com" {
+		t.Errorf("to[0].email = %q, want %q", to[0]["email"], "bob@example.com")
+	}
+}
+
 func TestHandler_InvalidIDType(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
