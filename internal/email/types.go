@@ -67,6 +67,26 @@ func (e *EmailItem) LSI1SK() string {
 	return fmt.Sprintf("RCVD#%s#%s", e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
 }
 
+// LSI2SK returns the DynamoDB LSI sort key for Message-ID lookup.
+// Format: MSGID#{messageId}
+// Returns empty string if no Message-ID is present.
+func (e *EmailItem) LSI2SK() string {
+	if len(e.MessageID) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("MSGID#%s", e.MessageID[0])
+}
+
+// LSI3SK returns the DynamoDB LSI sort key for thread queries.
+// Format: THREAD#{threadId}#RCVD#{receivedAt}#{emailId}
+// Returns empty string if no ThreadID is present.
+func (e *EmailItem) LSI3SK() string {
+	if e.ThreadID == "" {
+		return ""
+	}
+	return fmt.Sprintf("THREAD#%s#RCVD#%s#%s", e.ThreadID, e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
+}
+
 // QueryRequest represents an Email/query request parameters.
 type QueryRequest struct {
 	Filter       *QueryFilter

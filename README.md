@@ -4,7 +4,7 @@ Email plugin for [jmap-service-core](https://github.com/jarrod-lowe/jmap-service
 
 ## Status
 
-**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Mailbox/get`, and `Mailbox/set` are functional. Other methods return `serverFail`.
+**Partial implementation** - `Email/import`, `Email/get`, `Email/query`, `Mailbox/get`, `Mailbox/set`, and `Thread/get` are functional. Other methods return `serverFail`.
 
 ## Prerequisites
 
@@ -78,7 +78,8 @@ jmap-service-email/
 │   ├── email-get/             # Email/get Lambda
 │   ├── email-query/           # Email/query Lambda
 │   ├── mailbox-get/           # Mailbox/get Lambda
-│   └── mailbox-set/           # Mailbox/set Lambda
+│   ├── mailbox-set/           # Mailbox/set Lambda
+│   └── thread-get/            # Thread/get Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
 │   ├── mailbox/               # Mailbox types and repository
@@ -109,6 +110,17 @@ Methods:
 - `Email/query` - Query emails with `inMailbox` filter and `receivedAt` sorting
 - `Mailbox/get` - Retrieve mailboxes by ID or get all
 - `Mailbox/set` - Create, update, and destroy mailboxes
+- `Thread/get` - Retrieve threads by ID (returns emailIds in receivedAt order)
+
+## DynamoDB Indexes
+
+The email data table uses the following Local Secondary Indexes:
+
+| Index | Sort Key Pattern | Purpose |
+|-------|------------------|---------|
+| LSI1 | `RCVD#{receivedAt}#{emailId}` | Query all emails sorted by receivedAt (Email/query without filter) |
+| LSI2 | `MSGID#{messageId}` | Find email by Message-ID header (threading parent lookup) |
+| LSI3 | `THREAD#{threadId}#RCVD#{receivedAt}#{emailId}` | Query all emails in a thread sorted by receivedAt (Thread/get) |
 
 ## TODOs
 
@@ -127,12 +139,15 @@ The following enhancements are planned for future versions:
 - **canCalculateChanges**: Always returns `false`; `Email/queryChanges` not implemented
 - **Additional filters**: Only `inMailbox` is supported; other filters return `unsupportedFilter`
 - **Additional sorts**: Only `receivedAt` is supported; other sorts return `unsupportedSort`
-- **collapseThreads**: Always `false` (threads not implemented)
+- **collapseThreads**: Always `false` (collapsing not implemented, but basic threading is available)
 - **Anchor pagination**: Anchor validation is implemented but anchor-based querying is not yet functional
 
-### Email/import
+### Threading
 
-- **Threading**: Implement proper thread assignment based on References/In-Reply-To headers (currently uses email ID as thread ID)
+- **References header**: Currently only `In-Reply-To` is used for threading; `References` header could improve thread grouping
+- **Subject matching**: Implement subject-based threading for emails without `In-Reply-To` header
+- **Out-of-order delivery**: Thread merging when reply arrives before parent is not implemented (creates fragmented threads)
+- **Thread/changes**: Returns `cannotCalculateChanges` (not implemented)
 
 ### Mailbox
 

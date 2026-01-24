@@ -158,6 +158,82 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	}, nil
 }
 
+// FindByMessageID finds an email by its Message-ID header.
+// Returns nil if no email is found with the given Message-ID.
+func (r *Repository) FindByMessageID(ctx context.Context, accountID, messageID string) (*EmailItem, error) {
+	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
+	lsi2sk := fmt.Sprintf("MSGID#%s", messageID)
+
+	output, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("lsi2"),
+		KeyConditionExpression: aws.String("pk = :pk AND lsi2sk = :lsi2sk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: pk},
+			":lsi2sk": &types.AttributeValueMemberS{Value: lsi2sk},
+		},
+		Limit: aws.Int32(1),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query by message ID: %w", err)
+	}
+
+	if len(output.Items) == 0 {
+		return nil, nil
+	}
+
+	// Extract emailId and threadId from the LSI projection
+	item := output.Items[0]
+	email := &EmailItem{}
+	if v, ok := item["emailId"].(*types.AttributeValueMemberS); ok {
+		email.EmailID = v.Value
+	}
+	if v, ok := item["threadId"].(*types.AttributeValueMemberS); ok {
+		email.ThreadID = v.Value
+	}
+
+	return email, nil
+}
+
+// FindByThreadID finds all emails in a thread, sorted by receivedAt ascending.
+func (r *Repository) FindByThreadID(ctx context.Context, accountID, threadID string) ([]*EmailItem, error) {
+	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
+	threadPrefix := fmt.Sprintf("THREAD#%s#RCVD#", threadID)
+
+	output, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("lsi3"),
+		KeyConditionExpression: aws.String("pk = :pk AND begins_with(lsi3sk, :threadPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":           &types.AttributeValueMemberS{Value: pk},
+			":threadPrefix": &types.AttributeValueMemberS{Value: threadPrefix},
+		},
+		ScanIndexForward: aws.Bool(true), // Ascending order by receivedAt
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query by thread ID: %w", err)
+	}
+
+	emails := make([]*EmailItem, 0, len(output.Items))
+	for _, item := range output.Items {
+		email := &EmailItem{}
+		if v, ok := item["emailId"].(*types.AttributeValueMemberS); ok {
+			email.EmailID = v.Value
+		}
+		if v, ok := item["threadId"].(*types.AttributeValueMemberS); ok {
+			email.ThreadID = v.Value
+		}
+		if v, ok := item["receivedAt"].(*types.AttributeValueMemberS); ok {
+			if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
+				email.ReceivedAt = t
+			}
+		}
+		emails = append(emails, email)
+	}
+
+	return emails, nil
+}
+
 // GetEmail retrieves an email by account ID and email ID.
 func (r *Repository) GetEmail(ctx context.Context, accountID, emailID string) (*EmailItem, error) {
 	email := &EmailItem{AccountID: accountID, EmailID: emailID}
@@ -195,6 +271,16 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		"size":          &types.AttributeValueMemberN{Value: strconv.FormatInt(email.Size, 10)},
 		"hasAttachment": &types.AttributeValueMemberBOOL{Value: email.HasAttachment},
 		"preview":       &types.AttributeValueMemberS{Value: email.Preview},
+	}
+
+	// LSI2 key for Message-ID lookup (only if Message-ID is present)
+	if lsi2sk := email.LSI2SK(); lsi2sk != "" {
+		item["lsi2sk"] = &types.AttributeValueMemberS{Value: lsi2sk}
+	}
+
+	// LSI3 key for thread queries (only if ThreadID is present)
+	if lsi3sk := email.LSI3SK(); lsi3sk != "" {
+		item["lsi3sk"] = &types.AttributeValueMemberS{Value: lsi3sk}
 	}
 
 	// MailboxIDs

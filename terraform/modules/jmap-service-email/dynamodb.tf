@@ -21,13 +21,41 @@ resource "aws_dynamodb_table" "email_data" {
     type = "S"
   }
 
-  # LSI for querying all emails sorted by receivedAt
+  attribute {
+    name = "lsi2sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "lsi3sk"
+    type = "S"
+  }
+
+  # LSI1 for querying all emails sorted by receivedAt
   # Format: RCVD#{receivedAt}#{emailId}
   local_secondary_index {
     name               = "lsi1"
     range_key          = "lsi1sk"
     projection_type    = "INCLUDE"
     non_key_attributes = ["emailId"]
+  }
+
+  # LSI2 for finding emails by Message-ID header (threading parent lookup)
+  # Format: MSGID#{messageId}
+  local_secondary_index {
+    name               = "lsi2"
+    range_key          = "lsi2sk"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["emailId", "threadId"]
+  }
+
+  # LSI3 for querying all emails in a thread sorted by receivedAt
+  # Format: THREAD#{threadId}#RCVD#{receivedAt}#{emailId}
+  local_secondary_index {
+    name               = "lsi3"
+    range_key          = "lsi3sk"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["emailId", "threadId", "receivedAt"]
   }
 
   point_in_time_recovery {

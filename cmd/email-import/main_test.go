@@ -50,7 +50,8 @@ func (m *mockBlobUploader) Upload(ctx context.Context, accountID, parentBlobID, 
 
 // mockEmailRepository implements the EmailRepository interface for testing.
 type mockEmailRepository struct {
-	createFunc func(ctx context.Context, email *emailItem) error
+	createFunc          func(ctx context.Context, email *emailItem) error
+	findByMessageIDFunc func(ctx context.Context, accountID, messageID string) (*emailItem, error)
 }
 
 func (m *mockEmailRepository) CreateEmail(ctx context.Context, email *emailItem) error {
@@ -58,6 +59,13 @@ func (m *mockEmailRepository) CreateEmail(ctx context.Context, email *emailItem)
 		return m.createFunc(ctx, email)
 	}
 	return nil
+}
+
+func (m *mockEmailRepository) FindByMessageID(ctx context.Context, accountID, messageID string) (*emailItem, error) {
+	if m.findByMessageIDFunc != nil {
+		return m.findByMessageIDFunc(ctx, accountID, messageID)
+	}
+	return nil, nil
 }
 
 // mockMailboxRepository implements the MailboxRepository interface for testing.
@@ -843,5 +851,265 @@ func TestHandler_IncrementCountError(t *testing.T) {
 	}
 	if _, ok := created["client-ref-1"]; !ok {
 		t.Fatal("created should contain client-ref-1 even when increment fails")
+	}
+}
+
+// Email without In-Reply-To header
+const testEmailNoReply = `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: New Thread
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Message-ID: <new-msg@example.com>
+
+This starts a new thread.
+`
+
+// Email with In-Reply-To header
+const testEmailWithReply = `From: Bob <bob@example.com>
+To: Alice <alice@example.com>
+Subject: Re: New Thread
+Date: Sat, 20 Jan 2024 11:00:00 +0000
+Message-ID: <reply-msg@example.com>
+In-Reply-To: <parent-msg@example.com>
+
+This is a reply.
+`
+
+// Test: Email without In-Reply-To gets new threadId
+func TestHandler_Threading_NoInReplyTo_NewThread(t *testing.T) {
+	var capturedEmail *emailItem
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			capturedEmail = email
+			return nil
+		},
+		findByMessageIDFunc: func(ctx context.Context, accountID, messageID string) (*emailItem, error) {
+			t.Error("FindByMessageID should not be called when there's no In-Reply-To")
+			return nil, nil
+		},
+	}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(testEmailNoReply)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId":     "blob-456",
+					"mailboxIds": map[string]any{"inbox": true},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Verify email was created with a threadId
+	if capturedEmail == nil {
+		t.Fatal("CreateEmail was not called")
+	}
+	if capturedEmail.ThreadID == "" {
+		t.Error("ThreadID should not be empty")
+	}
+	// ThreadID should equal EmailID when no parent exists (our implementation)
+	if capturedEmail.ThreadID != capturedEmail.EmailID {
+		t.Errorf("ThreadID = %q, expected to match EmailID %q for new thread", capturedEmail.ThreadID, capturedEmail.EmailID)
+	}
+}
+
+// Test: Email with In-Reply-To finds parent and inherits threadId
+func TestHandler_Threading_InReplyTo_InheritsThread(t *testing.T) {
+	parentThreadID := "parent-thread-123"
+	var capturedEmail *emailItem
+
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			capturedEmail = email
+			return nil
+		},
+		findByMessageIDFunc: func(ctx context.Context, accountID, messageID string) (*emailItem, error) {
+			if messageID == "<parent-msg@example.com>" {
+				return &emailItem{
+					EmailID:  "parent-email-id",
+					ThreadID: parentThreadID,
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(testEmailWithReply)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId":     "blob-456",
+					"mailboxIds": map[string]any{"inbox": true},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Verify email inherited parent's threadId
+	if capturedEmail == nil {
+		t.Fatal("CreateEmail was not called")
+	}
+	if capturedEmail.ThreadID != parentThreadID {
+		t.Errorf("ThreadID = %q, want %q (inherited from parent)", capturedEmail.ThreadID, parentThreadID)
+	}
+}
+
+// Test: Email with In-Reply-To but parent not found gets new threadId
+func TestHandler_Threading_InReplyTo_ParentNotFound(t *testing.T) {
+	var capturedEmail *emailItem
+
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			capturedEmail = email
+			return nil
+		},
+		findByMessageIDFunc: func(ctx context.Context, accountID, messageID string) (*emailItem, error) {
+			return nil, nil // Parent not found
+		},
+	}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(testEmailWithReply)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId":     "blob-456",
+					"mailboxIds": map[string]any{"inbox": true},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Verify email was created with a new threadId
+	if capturedEmail == nil {
+		t.Fatal("CreateEmail was not called")
+	}
+	if capturedEmail.ThreadID == "" {
+		t.Error("ThreadID should not be empty")
+	}
+}
+
+// Test: Thread assignment error is non-fatal - falls back to new thread
+func TestHandler_Threading_LookupError_FallsBackToNewThread(t *testing.T) {
+	var capturedEmail *emailItem
+
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			capturedEmail = email
+			return nil
+		},
+		findByMessageIDFunc: func(ctx context.Context, accountID, messageID string) (*emailItem, error) {
+			return nil, errors.New("database error")
+		},
+	}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(testEmailWithReply)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId":     "blob-456",
+					"mailboxIds": map[string]any{"inbox": true},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should still succeed with a new thread
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	if capturedEmail == nil {
+		t.Fatal("CreateEmail was not called")
+	}
+	if capturedEmail.ThreadID == "" {
+		t.Error("ThreadID should not be empty even when lookup fails")
 	}
 }

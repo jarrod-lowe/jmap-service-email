@@ -638,3 +638,174 @@ func TestRepository_QueryEmails_DefaultLimit(t *testing.T) {
 		t.Errorf("Expected Limit = 25, got %v", capturedInput.Limit)
 	}
 }
+
+func TestRepository_FindByMessageID(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"pk":       &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"lsi2sk":   &types.AttributeValueMemberS{Value: "MSGID#<msg-123@example.com>"},
+						"emailId":  &types.AttributeValueMemberS{Value: "email-456"},
+						"threadId": &types.AttributeValueMemberS{Value: "thread-789"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.FindByMessageID(context.Background(), "user-123", "<msg-123@example.com>")
+	if err != nil {
+		t.Fatalf("FindByMessageID failed: %v", err)
+	}
+
+	// Verify LSI2 was used
+	if capturedInput.IndexName == nil || *capturedInput.IndexName != "lsi2" {
+		t.Errorf("Expected IndexName = lsi2, got %v", capturedInput.IndexName)
+	}
+
+	// Verify key condition
+	if *capturedInput.KeyConditionExpression != "pk = :pk AND lsi2sk = :lsi2sk" {
+		t.Errorf("KeyConditionExpression = %q", *capturedInput.KeyConditionExpression)
+	}
+
+	// Verify result
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+	if result.EmailID != "email-456" {
+		t.Errorf("EmailID = %q, want %q", result.EmailID, "email-456")
+	}
+	if result.ThreadID != "thread-789" {
+		t.Errorf("ThreadID = %q, want %q", result.ThreadID, "thread-789")
+	}
+}
+
+func TestRepository_FindByMessageID_NotFound(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{}, // No results
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.FindByMessageID(context.Background(), "user-123", "<nonexistent@example.com>")
+	if err != nil {
+		t.Fatalf("FindByMessageID failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil result for not found, got %+v", result)
+	}
+}
+
+func TestRepository_FindByMessageID_QueryError(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, err := repo.FindByMessageID(context.Background(), "user-123", "<msg@example.com>")
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+}
+
+func TestRepository_FindByThreadID(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"lsi3sk":     &types.AttributeValueMemberS{Value: "THREAD#thread-789#RCVD#2024-01-20T10:00:00Z#email-1"},
+						"emailId":    &types.AttributeValueMemberS{Value: "email-1"},
+						"threadId":   &types.AttributeValueMemberS{Value: "thread-789"},
+						"receivedAt": &types.AttributeValueMemberS{Value: "2024-01-20T10:00:00Z"},
+					},
+					{
+						"pk":         &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+						"lsi3sk":     &types.AttributeValueMemberS{Value: "THREAD#thread-789#RCVD#2024-01-20T11:00:00Z#email-2"},
+						"emailId":    &types.AttributeValueMemberS{Value: "email-2"},
+						"threadId":   &types.AttributeValueMemberS{Value: "thread-789"},
+						"receivedAt": &types.AttributeValueMemberS{Value: "2024-01-20T11:00:00Z"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	results, err := repo.FindByThreadID(context.Background(), "user-123", "thread-789")
+	if err != nil {
+		t.Fatalf("FindByThreadID failed: %v", err)
+	}
+
+	// Verify LSI3 was used
+	if capturedInput.IndexName == nil || *capturedInput.IndexName != "lsi3" {
+		t.Errorf("Expected IndexName = lsi3, got %v", capturedInput.IndexName)
+	}
+
+	// Verify key condition uses begins_with for thread prefix
+	if *capturedInput.KeyConditionExpression != "pk = :pk AND begins_with(lsi3sk, :threadPrefix)" {
+		t.Errorf("KeyConditionExpression = %q", *capturedInput.KeyConditionExpression)
+	}
+
+	// Verify ascending sort order (oldest first)
+	if capturedInput.ScanIndexForward == nil || !*capturedInput.ScanIndexForward {
+		t.Error("Expected ScanIndexForward = true for ascending receivedAt sort")
+	}
+
+	// Verify results
+	if len(results) != 2 {
+		t.Fatalf("Results length = %d, want 2", len(results))
+	}
+	if results[0].EmailID != "email-1" {
+		t.Errorf("results[0].EmailID = %q, want %q", results[0].EmailID, "email-1")
+	}
+	if results[1].EmailID != "email-2" {
+		t.Errorf("results[1].EmailID = %q, want %q", results[1].EmailID, "email-2")
+	}
+}
+
+func TestRepository_FindByThreadID_Empty(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{}, // No results
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	results, err := repo.FindByThreadID(context.Background(), "user-123", "nonexistent-thread")
+	if err != nil {
+		t.Fatalf("FindByThreadID failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("Expected empty results, got %d", len(results))
+	}
+}
+
+func TestRepository_FindByThreadID_QueryError(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_, err := repo.FindByThreadID(context.Background(), "user-123", "thread-123")
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+}

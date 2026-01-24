@@ -266,3 +266,138 @@ func TestMailboxMembershipItem_SortKeyOrdering(t *testing.T) {
 		}
 	}
 }
+
+func TestEmailItem_LSI2SK(t *testing.T) {
+	tests := []struct {
+		name      string
+		email     EmailItem
+		expected  string
+	}{
+		{
+			name: "single message ID",
+			email: EmailItem{
+				AccountID: "user-123",
+				EmailID:   "email-456",
+				MessageID: []string{"<msg-123@example.com>"},
+			},
+			expected: "MSGID#<msg-123@example.com>",
+		},
+		{
+			name: "multiple message IDs uses first",
+			email: EmailItem{
+				AccountID: "user-123",
+				EmailID:   "email-456",
+				MessageID: []string{"<first@example.com>", "<second@example.com>"},
+			},
+			expected: "MSGID#<first@example.com>",
+		},
+		{
+			name: "empty message ID returns empty string",
+			email: EmailItem{
+				AccountID: "user-123",
+				EmailID:   "email-456",
+				MessageID: []string{},
+			},
+			expected: "",
+		},
+		{
+			name: "nil message ID returns empty string",
+			email: EmailItem{
+				AccountID: "user-123",
+				EmailID:   "email-456",
+				MessageID: nil,
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.email.LSI2SK()
+			if got != tt.expected {
+				t.Errorf("LSI2SK() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEmailItem_LSI3SK(t *testing.T) {
+	tests := []struct {
+		name     string
+		email    EmailItem
+		expected string
+	}{
+		{
+			name: "standard thread key",
+			email: EmailItem{
+				AccountID:  "user-123",
+				EmailID:    "email-456",
+				ThreadID:   "thread-789",
+				ReceivedAt: time.Date(2024, 1, 20, 10, 30, 45, 0, time.UTC),
+			},
+			expected: "THREAD#thread-789#RCVD#2024-01-20T10:30:45Z#email-456",
+		},
+		{
+			name: "empty thread ID returns empty string",
+			email: EmailItem{
+				AccountID:  "user-123",
+				EmailID:    "email-456",
+				ThreadID:   "",
+				ReceivedAt: time.Date(2024, 1, 20, 10, 30, 45, 0, time.UTC),
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.email.LSI3SK()
+			if got != tt.expected {
+				t.Errorf("LSI3SK() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEmailItem_LSI3SK_SortOrdering(t *testing.T) {
+	threadID := "thread-123"
+
+	// Create emails at different times in the same thread
+	email1 := EmailItem{
+		EmailID:    "email-1",
+		ThreadID:   threadID,
+		ReceivedAt: time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC),
+	}
+	email2 := EmailItem{
+		EmailID:    "email-2",
+		ThreadID:   threadID,
+		ReceivedAt: time.Date(2024, 1, 20, 11, 0, 0, 0, time.UTC),
+	}
+	email3 := EmailItem{
+		EmailID:    "email-3",
+		ThreadID:   threadID,
+		ReceivedAt: time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC), // Same time as email-1
+	}
+
+	lsi1 := email1.LSI3SK()
+	lsi2 := email2.LSI3SK()
+	lsi3 := email3.LSI3SK()
+
+	// Earlier time should sort before later time
+	if lsi1 >= lsi2 {
+		t.Errorf("Expected lsi1 < lsi2: %q >= %q", lsi1, lsi2)
+	}
+
+	// Same time, different emailId should produce different sort keys
+	if lsi1 == lsi3 {
+		t.Errorf("Expected lsi1 != lsi3: both are %q", lsi1)
+	}
+
+	// All should have the same thread prefix for thread queries
+	expectedPrefix := "THREAD#thread-123#RCVD#"
+	for i, lsi := range []string{lsi1, lsi2, lsi3} {
+		if len(lsi) < len(expectedPrefix) || lsi[:len(expectedPrefix)] != expectedPrefix {
+			t.Errorf("LSI3SK %d doesn't have expected prefix: got %q, want prefix %q", i, lsi, expectedPrefix)
+		}
+	}
+}

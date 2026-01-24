@@ -43,6 +43,7 @@ type BlobUploader interface {
 // EmailRepository defines the interface for storing emails.
 type EmailRepository interface {
 	CreateEmail(ctx context.Context, email *emailItem) error
+	FindByMessageID(ctx context.Context, accountID, messageID string) (*emailItem, error)
 }
 
 // MailboxRepository defines the interface for mailbox operations.
@@ -241,9 +242,11 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		}
 	}
 
-	// Generate IDs
+	// Generate email ID
 	emailID := uuid.New().String()
-	threadID := emailID // Threading deferred
+
+	// Determine thread ID based on In-Reply-To header
+	threadID := h.determineThreadID(ctx, accountID, parsed.InReplyTo, emailID)
 
 	// Create email item
 	emailItem := &email.EmailItem{
@@ -311,6 +314,36 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		"threadId": threadID,
 		"size":     parsed.Size,
 	}, nil
+}
+
+// determineThreadID determines the thread ID for an email.
+// If the email has an In-Reply-To header and the parent email is found,
+// the parent's thread ID is used. Otherwise, a new UUID is generated.
+func (h *handler) determineThreadID(ctx context.Context, accountID string, inReplyTo []string, fallbackID string) string {
+	// If no In-Reply-To header, this starts a new thread
+	if len(inReplyTo) == 0 {
+		return fallbackID
+	}
+
+	// Look up the parent email by its Message-ID
+	parentMessageID := inReplyTo[0]
+	parent, err := h.repo.FindByMessageID(ctx, accountID, parentMessageID)
+	if err != nil {
+		// Log error but don't fail - fall back to new thread
+		logger.WarnContext(ctx, "Failed to look up parent thread",
+			slog.String("account_id", accountID),
+			slog.String("in_reply_to", parentMessageID),
+			slog.String("error", err.Error()),
+		)
+		return fallbackID
+	}
+
+	if parent != nil && parent.ThreadID != "" {
+		return parent.ThreadID
+	}
+
+	// Parent not found, start a new thread
+	return fallbackID
 }
 
 func main() {
