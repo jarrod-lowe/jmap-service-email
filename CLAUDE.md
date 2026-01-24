@@ -70,6 +70,8 @@ For errors:
 
 See jmap-service-core/docs/plugin-interface.md for the complete contract.
 
+jmap-service-core can usually be found in ../jmap-service-core. If changes are needed in jmap-service-core, provide a prompt for the user to give to an agent in the jmap-service-core repo; do not try to make changes there yourself.
+
 ## Build Commands
 
 ```bash
