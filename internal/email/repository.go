@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
 // Error types for repository operations.
@@ -85,16 +87,16 @@ func (r *Repository) CreateEmail(ctx context.Context, email *EmailItem) error {
 // QueryEmails queries emails based on the provided request.
 // Returns email IDs matching the filter, sorted as requested.
 func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *QueryRequest) (*QueryResult, error) {
-	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
+	pk := dynamo.PrefixAccount + accountID
 
 	// Determine query parameters based on filter
 	var queryInput *dynamodb.QueryInput
 	if req.Filter != nil && req.Filter.InMailbox != "" {
 		// Query mailbox membership items
-		skPrefix := fmt.Sprintf("MBOX#%s#EMAIL#", req.Filter.InMailbox)
+		skPrefix := PrefixMbox + req.Filter.InMailbox + "#" + PrefixEmail
 		queryInput = &dynamodb.QueryInput{
 			TableName:              aws.String(r.tableName),
-			KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :skPrefix)"),
+			KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrSK + ", :skPrefix)"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":pk":       &types.AttributeValueMemberS{Value: pk},
 				":skPrefix": &types.AttributeValueMemberS{Value: skPrefix},
@@ -104,11 +106,11 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 		// Query all emails using LSI
 		queryInput = &dynamodb.QueryInput{
 			TableName:              aws.String(r.tableName),
-			IndexName:              aws.String("lsi1"),
-			KeyConditionExpression: aws.String("pk = :pk AND begins_with(lsi1sk, :lsiPrefix)"),
+			IndexName:              aws.String(dynamo.IndexLSI1),
+			KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrLSI1SK + ", :lsiPrefix)"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":pk":        &types.AttributeValueMemberS{Value: pk},
-				":lsiPrefix": &types.AttributeValueMemberS{Value: "RCVD#"},
+				":lsiPrefix": &types.AttributeValueMemberS{Value: PrefixRcvd},
 			},
 		}
 	}
@@ -136,7 +138,7 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	// Extract email IDs from results
 	allIDs := make([]string, 0, len(output.Items))
 	for _, item := range output.Items {
-		if emailID, ok := item["emailId"].(*types.AttributeValueMemberS); ok {
+		if emailID, ok := item[AttrEmailID].(*types.AttributeValueMemberS); ok {
 			allIDs = append(allIDs, emailID.Value)
 		}
 	}
@@ -161,13 +163,13 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 // FindByMessageID finds an email by its Message-ID header.
 // Returns nil if no email is found with the given Message-ID.
 func (r *Repository) FindByMessageID(ctx context.Context, accountID, messageID string) (*EmailItem, error) {
-	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
-	lsi2sk := fmt.Sprintf("MSGID#%s", messageID)
+	pk := dynamo.PrefixAccount + accountID
+	lsi2sk := PrefixMsgID + messageID
 
 	output, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("lsi2"),
-		KeyConditionExpression: aws.String("pk = :pk AND lsi2sk = :lsi2sk"),
+		IndexName:              aws.String(dynamo.IndexLSI2),
+		KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND " + dynamo.AttrLSI2SK + " = :lsi2sk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":     &types.AttributeValueMemberS{Value: pk},
 			":lsi2sk": &types.AttributeValueMemberS{Value: lsi2sk},
@@ -185,10 +187,10 @@ func (r *Repository) FindByMessageID(ctx context.Context, accountID, messageID s
 	// Extract emailId and threadId from the LSI projection
 	item := output.Items[0]
 	email := &EmailItem{}
-	if v, ok := item["emailId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrEmailID].(*types.AttributeValueMemberS); ok {
 		email.EmailID = v.Value
 	}
-	if v, ok := item["threadId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrThreadID].(*types.AttributeValueMemberS); ok {
 		email.ThreadID = v.Value
 	}
 
@@ -197,13 +199,13 @@ func (r *Repository) FindByMessageID(ctx context.Context, accountID, messageID s
 
 // FindByThreadID finds all emails in a thread, sorted by receivedAt ascending.
 func (r *Repository) FindByThreadID(ctx context.Context, accountID, threadID string) ([]*EmailItem, error) {
-	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
-	threadPrefix := fmt.Sprintf("THREAD#%s#RCVD#", threadID)
+	pk := dynamo.PrefixAccount + accountID
+	threadPrefix := PrefixThread + threadID + "#" + PrefixRcvd
 
 	output, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("lsi3"),
-		KeyConditionExpression: aws.String("pk = :pk AND begins_with(lsi3sk, :threadPrefix)"),
+		IndexName:              aws.String(dynamo.IndexLSI3),
+		KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrLSI3SK + ", :threadPrefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":           &types.AttributeValueMemberS{Value: pk},
 			":threadPrefix": &types.AttributeValueMemberS{Value: threadPrefix},
@@ -217,13 +219,13 @@ func (r *Repository) FindByThreadID(ctx context.Context, accountID, threadID str
 	emails := make([]*EmailItem, 0, len(output.Items))
 	for _, item := range output.Items {
 		email := &EmailItem{}
-		if v, ok := item["emailId"].(*types.AttributeValueMemberS); ok {
+		if v, ok := item[AttrEmailID].(*types.AttributeValueMemberS); ok {
 			email.EmailID = v.Value
 		}
-		if v, ok := item["threadId"].(*types.AttributeValueMemberS); ok {
+		if v, ok := item[AttrThreadID].(*types.AttributeValueMemberS); ok {
 			email.ThreadID = v.Value
 		}
-		if v, ok := item["receivedAt"].(*types.AttributeValueMemberS); ok {
+		if v, ok := item[AttrReceivedAt].(*types.AttributeValueMemberS); ok {
 			if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
 				email.ReceivedAt = t
 			}
@@ -241,8 +243,8 @@ func (r *Repository) GetEmail(ctx context.Context, accountID, emailID string) (*
 	output, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: email.PK()},
-			"sk": &types.AttributeValueMemberS{Value: email.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: email.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: email.SK()},
 		},
 	})
 	if err != nil {
@@ -259,28 +261,28 @@ func (r *Repository) GetEmail(ctx context.Context, accountID, emailID string) (*
 // marshalEmailItem converts an EmailItem to DynamoDB attribute values.
 func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.AttributeValue {
 	item := map[string]types.AttributeValue{
-		"pk":            &types.AttributeValueMemberS{Value: email.PK()},
-		"sk":            &types.AttributeValueMemberS{Value: email.SK()},
-		"lsi1sk":        &types.AttributeValueMemberS{Value: email.LSI1SK()},
-		"emailId":       &types.AttributeValueMemberS{Value: email.EmailID},
-		"accountId":     &types.AttributeValueMemberS{Value: email.AccountID},
-		"blobId":        &types.AttributeValueMemberS{Value: email.BlobID},
-		"threadId":      &types.AttributeValueMemberS{Value: email.ThreadID},
-		"subject":       &types.AttributeValueMemberS{Value: email.Subject},
-		"receivedAt":    &types.AttributeValueMemberS{Value: email.ReceivedAt.UTC().Format(time.RFC3339)},
-		"size":          &types.AttributeValueMemberN{Value: strconv.FormatInt(email.Size, 10)},
-		"hasAttachment": &types.AttributeValueMemberBOOL{Value: email.HasAttachment},
-		"preview":       &types.AttributeValueMemberS{Value: email.Preview},
+		dynamo.AttrPK:     &types.AttributeValueMemberS{Value: email.PK()},
+		dynamo.AttrSK:     &types.AttributeValueMemberS{Value: email.SK()},
+		dynamo.AttrLSI1SK: &types.AttributeValueMemberS{Value: email.LSI1SK()},
+		AttrEmailID:       &types.AttributeValueMemberS{Value: email.EmailID},
+		AttrAccountID:     &types.AttributeValueMemberS{Value: email.AccountID},
+		AttrBlobID:        &types.AttributeValueMemberS{Value: email.BlobID},
+		AttrThreadID:      &types.AttributeValueMemberS{Value: email.ThreadID},
+		AttrSubject:       &types.AttributeValueMemberS{Value: email.Subject},
+		AttrReceivedAt:    &types.AttributeValueMemberS{Value: email.ReceivedAt.UTC().Format(time.RFC3339)},
+		AttrSize:          &types.AttributeValueMemberN{Value: strconv.FormatInt(email.Size, 10)},
+		AttrHasAttachment: &types.AttributeValueMemberBOOL{Value: email.HasAttachment},
+		AttrPreview:       &types.AttributeValueMemberS{Value: email.Preview},
 	}
 
 	// LSI2 key for Message-ID lookup (only if Message-ID is present)
 	if lsi2sk := email.LSI2SK(); lsi2sk != "" {
-		item["lsi2sk"] = &types.AttributeValueMemberS{Value: lsi2sk}
+		item[dynamo.AttrLSI2SK] = &types.AttributeValueMemberS{Value: lsi2sk}
 	}
 
 	// LSI3 key for thread queries (only if ThreadID is present)
 	if lsi3sk := email.LSI3SK(); lsi3sk != "" {
-		item["lsi3sk"] = &types.AttributeValueMemberS{Value: lsi3sk}
+		item[dynamo.AttrLSI3SK] = &types.AttributeValueMemberS{Value: lsi3sk}
 	}
 
 	// MailboxIDs
@@ -289,7 +291,7 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		for k, v := range email.MailboxIDs {
 			mailboxMap[k] = &types.AttributeValueMemberBOOL{Value: v}
 		}
-		item["mailboxIds"] = &types.AttributeValueMemberM{Value: mailboxMap}
+		item[AttrMailboxIDs] = &types.AttributeValueMemberM{Value: mailboxMap}
 	}
 
 	// Keywords
@@ -298,68 +300,68 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		for k, v := range email.Keywords {
 			keywordMap[k] = &types.AttributeValueMemberBOOL{Value: v}
 		}
-		item["keywords"] = &types.AttributeValueMemberM{Value: keywordMap}
+		item[AttrKeywords] = &types.AttributeValueMemberM{Value: keywordMap}
 	}
 
 	// From addresses
 	if len(email.From) > 0 {
-		item["from"] = marshalAddressList(email.From)
+		item[AttrFrom] = marshalAddressList(email.From)
 	}
 
 	// To addresses
 	if len(email.To) > 0 {
-		item["to"] = marshalAddressList(email.To)
+		item[AttrTo] = marshalAddressList(email.To)
 	}
 
 	// CC addresses
 	if len(email.CC) > 0 {
-		item["cc"] = marshalAddressList(email.CC)
+		item[AttrCC] = marshalAddressList(email.CC)
 	}
 
 	// ReplyTo addresses
 	if len(email.ReplyTo) > 0 {
-		item["replyTo"] = marshalAddressList(email.ReplyTo)
+		item[AttrReplyTo] = marshalAddressList(email.ReplyTo)
 	}
 
 	// SentAt
 	if !email.SentAt.IsZero() {
-		item["sentAt"] = &types.AttributeValueMemberS{Value: email.SentAt.UTC().Format(time.RFC3339)}
+		item[AttrSentAt] = &types.AttributeValueMemberS{Value: email.SentAt.UTC().Format(time.RFC3339)}
 	}
 
 	// MessageID
 	if len(email.MessageID) > 0 {
-		item["messageId"] = marshalStringList(email.MessageID)
+		item[AttrMessageID] = marshalStringList(email.MessageID)
 	}
 
 	// InReplyTo
 	if len(email.InReplyTo) > 0 {
-		item["inReplyTo"] = marshalStringList(email.InReplyTo)
+		item[AttrInReplyTo] = marshalStringList(email.InReplyTo)
 	}
 
 	// References
 	if len(email.References) > 0 {
-		item["references"] = marshalStringList(email.References)
+		item[AttrReferences] = marshalStringList(email.References)
 	}
 
 	// TextBody
 	if len(email.TextBody) > 0 {
-		item["textBody"] = marshalStringList(email.TextBody)
+		item[AttrTextBody] = marshalStringList(email.TextBody)
 	}
 
 	// HTMLBody
 	if len(email.HTMLBody) > 0 {
-		item["htmlBody"] = marshalStringList(email.HTMLBody)
+		item[AttrHTMLBody] = marshalStringList(email.HTMLBody)
 	}
 
 	// Attachments
 	if len(email.Attachments) > 0 {
-		item["attachments"] = marshalStringList(email.Attachments)
+		item[AttrAttachments] = marshalStringList(email.Attachments)
 	}
 
 	// BodyStructure - serialize as JSON string for simplicity
 	if email.BodyStructure.PartID != "" {
 		bodyStructureJSON, _ := json.Marshal(email.BodyStructure)
-		item["bodyStructure"] = &types.AttributeValueMemberS{Value: string(bodyStructureJSON)}
+		item[AttrBodyStructure] = &types.AttributeValueMemberS{Value: string(bodyStructureJSON)}
 	}
 
 	return item
@@ -368,9 +370,9 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 // marshalMembershipItem converts a MailboxMembershipItem to DynamoDB attribute values.
 func (r *Repository) marshalMembershipItem(membership *MailboxMembershipItem) map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{
-		"pk":      &types.AttributeValueMemberS{Value: membership.PK()},
-		"sk":      &types.AttributeValueMemberS{Value: membership.SK()},
-		"emailId": &types.AttributeValueMemberS{Value: membership.EmailID},
+		dynamo.AttrPK: &types.AttributeValueMemberS{Value: membership.PK()},
+		dynamo.AttrSK: &types.AttributeValueMemberS{Value: membership.SK()},
+		AttrEmailID:   &types.AttributeValueMemberS{Value: membership.EmailID},
 	}
 }
 
@@ -378,40 +380,40 @@ func (r *Repository) marshalMembershipItem(membership *MailboxMembershipItem) ma
 func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*EmailItem, error) {
 	email := &EmailItem{}
 
-	if v, ok := item["emailId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrEmailID].(*types.AttributeValueMemberS); ok {
 		email.EmailID = v.Value
 	}
-	if v, ok := item["accountId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrAccountID].(*types.AttributeValueMemberS); ok {
 		email.AccountID = v.Value
 	}
-	if v, ok := item["blobId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrBlobID].(*types.AttributeValueMemberS); ok {
 		email.BlobID = v.Value
 	}
-	if v, ok := item["threadId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrThreadID].(*types.AttributeValueMemberS); ok {
 		email.ThreadID = v.Value
 	}
-	if v, ok := item["subject"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrSubject].(*types.AttributeValueMemberS); ok {
 		email.Subject = v.Value
 	}
-	if v, ok := item["receivedAt"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrReceivedAt].(*types.AttributeValueMemberS); ok {
 		if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
 			email.ReceivedAt = t
 		}
 	}
-	if v, ok := item["size"].(*types.AttributeValueMemberN); ok {
+	if v, ok := item[AttrSize].(*types.AttributeValueMemberN); ok {
 		if n, err := strconv.ParseInt(v.Value, 10, 64); err == nil {
 			email.Size = n
 		}
 	}
-	if v, ok := item["hasAttachment"].(*types.AttributeValueMemberBOOL); ok {
+	if v, ok := item[AttrHasAttachment].(*types.AttributeValueMemberBOOL); ok {
 		email.HasAttachment = v.Value
 	}
-	if v, ok := item["preview"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrPreview].(*types.AttributeValueMemberS); ok {
 		email.Preview = v.Value
 	}
 
 	// MailboxIDs
-	if v, ok := item["mailboxIds"].(*types.AttributeValueMemberM); ok {
+	if v, ok := item[AttrMailboxIDs].(*types.AttributeValueMemberM); ok {
 		email.MailboxIDs = make(map[string]bool)
 		for k, val := range v.Value {
 			if b, ok := val.(*types.AttributeValueMemberBOOL); ok {
@@ -421,7 +423,7 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	}
 
 	// Keywords
-	if v, ok := item["keywords"].(*types.AttributeValueMemberM); ok {
+	if v, ok := item[AttrKeywords].(*types.AttributeValueMemberM); ok {
 		email.Keywords = make(map[string]bool)
 		for k, val := range v.Value {
 			if b, ok := val.(*types.AttributeValueMemberBOOL); ok {
@@ -431,64 +433,64 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	}
 
 	// From addresses
-	if v, ok := item["from"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrFrom].(*types.AttributeValueMemberL); ok {
 		email.From = unmarshalAddressList(v.Value)
 	}
 
 	// To addresses
-	if v, ok := item["to"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrTo].(*types.AttributeValueMemberL); ok {
 		email.To = unmarshalAddressList(v.Value)
 	}
 
 	// CC addresses
-	if v, ok := item["cc"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrCC].(*types.AttributeValueMemberL); ok {
 		email.CC = unmarshalAddressList(v.Value)
 	}
 
 	// ReplyTo addresses
-	if v, ok := item["replyTo"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrReplyTo].(*types.AttributeValueMemberL); ok {
 		email.ReplyTo = unmarshalAddressList(v.Value)
 	}
 
 	// SentAt
-	if v, ok := item["sentAt"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrSentAt].(*types.AttributeValueMemberS); ok {
 		if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
 			email.SentAt = t
 		}
 	}
 
 	// MessageID
-	if v, ok := item["messageId"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrMessageID].(*types.AttributeValueMemberL); ok {
 		email.MessageID = unmarshalStringList(v.Value)
 	}
 
 	// InReplyTo
-	if v, ok := item["inReplyTo"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrInReplyTo].(*types.AttributeValueMemberL); ok {
 		email.InReplyTo = unmarshalStringList(v.Value)
 	}
 
 	// References
-	if v, ok := item["references"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrReferences].(*types.AttributeValueMemberL); ok {
 		email.References = unmarshalStringList(v.Value)
 	}
 
 	// TextBody
-	if v, ok := item["textBody"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrTextBody].(*types.AttributeValueMemberL); ok {
 		email.TextBody = unmarshalStringList(v.Value)
 	}
 
 	// HTMLBody
-	if v, ok := item["htmlBody"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrHTMLBody].(*types.AttributeValueMemberL); ok {
 		email.HTMLBody = unmarshalStringList(v.Value)
 	}
 
 	// Attachments
-	if v, ok := item["attachments"].(*types.AttributeValueMemberL); ok {
+	if v, ok := item[AttrAttachments].(*types.AttributeValueMemberL); ok {
 		email.Attachments = unmarshalStringList(v.Value)
 	}
 
 	// BodyStructure - deserialize from JSON string
-	if v, ok := item["bodyStructure"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrBodyStructure].(*types.AttributeValueMemberS); ok {
 		_ = json.Unmarshal([]byte(v.Value), &email.BodyStructure)
 	}
 
@@ -501,8 +503,8 @@ func marshalAddressList(addrs []EmailAddress) types.AttributeValue {
 	for i, addr := range addrs {
 		list[i] = &types.AttributeValueMemberM{
 			Value: map[string]types.AttributeValue{
-				"name":  &types.AttributeValueMemberS{Value: addr.Name},
-				"email": &types.AttributeValueMemberS{Value: addr.Email},
+				AttrName:  &types.AttributeValueMemberS{Value: addr.Name},
+				AttrEmail: &types.AttributeValueMemberS{Value: addr.Email},
 			},
 		}
 	}
@@ -515,10 +517,10 @@ func unmarshalAddressList(list []types.AttributeValue) []EmailAddress {
 	for _, item := range list {
 		if m, ok := item.(*types.AttributeValueMemberM); ok {
 			addr := EmailAddress{}
-			if v, ok := m.Value["name"].(*types.AttributeValueMemberS); ok {
+			if v, ok := m.Value[AttrName].(*types.AttributeValueMemberS); ok {
 				addr.Name = v.Value
 			}
-			if v, ok := m.Value["email"].(*types.AttributeValueMemberS); ok {
+			if v, ok := m.Value[AttrEmail].(*types.AttributeValueMemberS); ok {
 				addr.Email = v.Value
 			}
 			addrs = append(addrs, addr)
@@ -587,7 +589,7 @@ func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailI
 		Put: &types.Put{
 			TableName:           aws.String(r.tableName),
 			Item:                emailItem,
-			ConditionExpression: aws.String("attribute_exists(pk)"),
+			ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
 		},
 	})
 
@@ -620,8 +622,8 @@ func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailI
 			Delete: &types.Delete{
 				TableName: aws.String(r.tableName),
 				Key: map[string]types.AttributeValue{
-					"pk": &types.AttributeValueMemberS{Value: membership.PK()},
-					"sk": &types.AttributeValueMemberS{Value: membership.SK()},
+					dynamo.AttrPK: &types.AttributeValueMemberS{Value: membership.PK()},
+					dynamo.AttrSK: &types.AttributeValueMemberS{Value: membership.SK()},
 				},
 			},
 		})

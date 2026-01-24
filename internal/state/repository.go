@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
 // Error types for repository operations.
@@ -52,8 +54,8 @@ func (r *Repository) GetCurrentState(ctx context.Context, accountID string, obje
 	output, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: stateItem.PK()},
-			"sk": &types.AttributeValueMemberS{Value: stateItem.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: stateItem.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: stateItem.SK()},
 		},
 	})
 	if err != nil {
@@ -64,7 +66,7 @@ func (r *Repository) GetCurrentState(ctx context.Context, accountID string, obje
 		return 0, nil
 	}
 
-	if v, ok := output.Item["currentState"].(*types.AttributeValueMemberN); ok {
+	if v, ok := output.Item[AttrCurrentState].(*types.AttributeValueMemberN); ok {
 		state, err := strconv.ParseInt(v.Value, 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("failed to parse state: %w", err)
@@ -105,10 +107,10 @@ func (r *Repository) IncrementStateAndLogChange(ctx context.Context, accountID s
 			Update: &types.Update{
 				TableName: aws.String(r.tableName),
 				Key: map[string]types.AttributeValue{
-					"pk": &types.AttributeValueMemberS{Value: stateItem.PK()},
-					"sk": &types.AttributeValueMemberS{Value: stateItem.SK()},
+					dynamo.AttrPK: &types.AttributeValueMemberS{Value: stateItem.PK()},
+					dynamo.AttrSK: &types.AttributeValueMemberS{Value: stateItem.SK()},
 				},
-				UpdateExpression: aws.String("SET currentState = if_not_exists(currentState, :zero) + :one, updatedAt = :now"),
+				UpdateExpression: aws.String("SET " + AttrCurrentState + " = if_not_exists(" + AttrCurrentState + ", :zero) + :one, " + AttrUpdatedAt + " = :now"),
 				ExpressionAttributeValues: map[string]types.AttributeValue{
 					":zero": &types.AttributeValueMemberN{Value: "0"},
 					":one":  &types.AttributeValueMemberN{Value: "1"},
@@ -121,13 +123,13 @@ func (r *Repository) IncrementStateAndLogChange(ctx context.Context, accountID s
 			Put: &types.Put{
 				TableName: aws.String(r.tableName),
 				Item: map[string]types.AttributeValue{
-					"pk":         &types.AttributeValueMemberS{Value: changeRecord.PK()},
-					"sk":         &types.AttributeValueMemberS{Value: changeRecord.SK()},
-					"objectId":   &types.AttributeValueMemberS{Value: objectID},
-					"changeType": &types.AttributeValueMemberS{Value: string(changeType)},
-					"timestamp":  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-					"state":      &types.AttributeValueMemberN{Value: strconv.FormatInt(newState, 10)},
-					"ttl":        &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+					dynamo.AttrPK:  &types.AttributeValueMemberS{Value: changeRecord.PK()},
+					dynamo.AttrSK:  &types.AttributeValueMemberS{Value: changeRecord.SK()},
+					AttrObjectID:   &types.AttributeValueMemberS{Value: objectID},
+					AttrChangeType: &types.AttributeValueMemberS{Value: string(changeType)},
+					AttrTimestamp:  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+					AttrState:      &types.AttributeValueMemberN{Value: strconv.FormatInt(newState, 10)},
+					AttrTTL:        &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
 				},
 			},
 		},
@@ -145,15 +147,15 @@ func (r *Repository) IncrementStateAndLogChange(ctx context.Context, accountID s
 
 // QueryChanges retrieves change log entries since a given state.
 func (r *Repository) QueryChanges(ctx context.Context, accountID string, objectType ObjectType, sinceState int64, maxChanges int) ([]ChangeRecord, error) {
-	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
+	pk := dynamo.PrefixAccount + accountID
 	// Start from sinceState + 1 (we want changes AFTER sinceState)
-	skStart := fmt.Sprintf("CHANGE#%s#%010d", objectType, sinceState+1)
+	skStart := fmt.Sprintf("%s%s#%010d", PrefixChange, objectType, sinceState+1)
 	// End at max possible state for this type
-	skEnd := fmt.Sprintf("CHANGE#%s#%010d", objectType, MaxStateValue)
+	skEnd := fmt.Sprintf("%s%s#%010d", PrefixChange, objectType, MaxStateValue)
 
 	queryInput := &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
-		KeyConditionExpression: aws.String("pk = :pk AND sk BETWEEN :skStart AND :skEnd"),
+		KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND " + dynamo.AttrSK + " BETWEEN :skStart AND :skEnd"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":      &types.AttributeValueMemberS{Value: pk},
 			":skStart": &types.AttributeValueMemberS{Value: skStart},
@@ -178,18 +180,18 @@ func (r *Repository) QueryChanges(ctx context.Context, accountID string, objectT
 			ObjectType: objectType,
 		}
 
-		if v, ok := item["objectId"].(*types.AttributeValueMemberS); ok {
+		if v, ok := item[AttrObjectID].(*types.AttributeValueMemberS); ok {
 			record.ObjectID = v.Value
 		}
-		if v, ok := item["changeType"].(*types.AttributeValueMemberS); ok {
+		if v, ok := item[AttrChangeType].(*types.AttributeValueMemberS); ok {
 			record.ChangeType = ChangeType(v.Value)
 		}
-		if v, ok := item["timestamp"].(*types.AttributeValueMemberS); ok {
+		if v, ok := item[AttrTimestamp].(*types.AttributeValueMemberS); ok {
 			if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
 				record.Timestamp = t
 			}
 		}
-		if v, ok := item["state"].(*types.AttributeValueMemberN); ok {
+		if v, ok := item[AttrState].(*types.AttributeValueMemberN); ok {
 			if n, err := strconv.ParseInt(v.Value, 10, 64); err == nil {
 				record.State = n
 			}
@@ -204,12 +206,12 @@ func (r *Repository) QueryChanges(ctx context.Context, accountID string, objectT
 // GetOldestAvailableState returns the oldest state still in the change log.
 // Returns 0 if no changes exist (we can calculate from the beginning).
 func (r *Repository) GetOldestAvailableState(ctx context.Context, accountID string, objectType ObjectType) (int64, error) {
-	pk := fmt.Sprintf("ACCOUNT#%s", accountID)
-	skPrefix := fmt.Sprintf("CHANGE#%s#", objectType)
+	pk := dynamo.PrefixAccount + accountID
+	skPrefix := PrefixChange + string(objectType) + "#"
 
 	output, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
-		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :skPrefix)"),
+		KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrSK + ", :skPrefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":       &types.AttributeValueMemberS{Value: pk},
 			":skPrefix": &types.AttributeValueMemberS{Value: skPrefix},
@@ -225,7 +227,7 @@ func (r *Repository) GetOldestAvailableState(ctx context.Context, accountID stri
 		return 0, nil
 	}
 
-	if v, ok := output.Items[0]["state"].(*types.AttributeValueMemberN); ok {
+	if v, ok := output.Items[0][AttrState].(*types.AttributeValueMemberN); ok {
 		state, err := strconv.ParseInt(v.Value, 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("failed to parse state: %w", err)

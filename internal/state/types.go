@@ -4,6 +4,8 @@ package state
 import (
 	"fmt"
 	"time"
+
+	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
 // ObjectType represents the type of JMAP object being tracked.
@@ -40,12 +42,12 @@ type StateItem struct {
 
 // PK returns the DynamoDB partition key for this state item.
 func (s *StateItem) PK() string {
-	return fmt.Sprintf("ACCOUNT#%s", s.AccountID)
+	return dynamo.PrefixAccount + s.AccountID
 }
 
 // SK returns the DynamoDB sort key for this state item.
 func (s *StateItem) SK() string {
-	return fmt.Sprintf("STATE#%s", s.ObjectType)
+	return PrefixState + string(s.ObjectType)
 }
 
 // ChangeRecord represents a change log entry stored in DynamoDB.
@@ -63,13 +65,13 @@ type ChangeRecord struct {
 
 // PK returns the DynamoDB partition key for this change record.
 func (c *ChangeRecord) PK() string {
-	return fmt.Sprintf("ACCOUNT#%s", c.AccountID)
+	return dynamo.PrefixAccount + c.AccountID
 }
 
 // SK returns the DynamoDB sort key for this change record.
 // State is zero-padded to 10 digits to ensure lexicographic ordering.
 func (c *ChangeRecord) SK() string {
-	return fmt.Sprintf("CHANGE#%s#%010d", c.ObjectType, c.State)
+	return fmt.Sprintf("%s%s#%010d", PrefixChange, c.ObjectType, c.State)
 }
 
 // ChangesResult represents the result of a /changes query.

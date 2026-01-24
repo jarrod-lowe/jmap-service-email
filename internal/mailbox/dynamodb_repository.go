@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
 // DynamoDBClient defines the interface for DynamoDB operations.
@@ -42,8 +44,8 @@ func (r *DynamoDBRepository) GetMailbox(ctx context.Context, accountID, mailboxI
 	output, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: mailbox.PK()},
-			"sk": &types.AttributeValueMemberS{Value: mailbox.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: mailbox.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.SK()},
 		},
 	})
 	if err != nil {
@@ -61,10 +63,10 @@ func (r *DynamoDBRepository) GetMailbox(ctx context.Context, accountID, mailboxI
 func (r *DynamoDBRepository) GetAllMailboxes(ctx context.Context, accountID string) ([]*MailboxItem, error) {
 	output, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
-		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :prefix)"),
+		KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrSK + ", :prefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":     &types.AttributeValueMemberS{Value: "ACCOUNT#" + accountID},
-			":prefix": &types.AttributeValueMemberS{Value: "MAILBOX#"},
+			":pk":     &types.AttributeValueMemberS{Value: dynamo.PrefixAccount + accountID},
+			":prefix": &types.AttributeValueMemberS{Value: PrefixMailbox},
 		},
 	})
 	if err != nil {
@@ -97,7 +99,7 @@ func (r *DynamoDBRepository) CreateMailbox(ctx context.Context, mailbox *Mailbox
 	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName:           aws.String(r.tableName),
 		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(pk)"),
+		ConditionExpression: aws.String("attribute_not_exists(" + dynamo.AttrPK + ")"),
 	})
 	return err
 }
@@ -117,9 +119,9 @@ func (r *DynamoDBRepository) UpdateMailbox(ctx context.Context, mailbox *Mailbox
 		}
 	}
 
-	updateExpr := "SET #name = :name, sortOrder = :sortOrder, isSubscribed = :isSubscribed, updatedAt = :updatedAt"
+	updateExpr := "SET #name = :name, " + AttrSortOrder + " = :sortOrder, " + AttrIsSubscribed + " = :isSubscribed, " + AttrUpdatedAt + " = :updatedAt"
 	exprAttrNames := map[string]string{
-		"#name": "name",
+		"#name": AttrName,
 	}
 	exprAttrValues := map[string]types.AttributeValue{
 		":name":         &types.AttributeValueMemberS{Value: mailbox.Name},
@@ -130,23 +132,23 @@ func (r *DynamoDBRepository) UpdateMailbox(ctx context.Context, mailbox *Mailbox
 
 	if mailbox.Role != "" {
 		updateExpr += ", #role = :role"
-		exprAttrNames["#role"] = "role"
+		exprAttrNames["#role"] = AttrRole
 		exprAttrValues[":role"] = &types.AttributeValueMemberS{Value: mailbox.Role}
 	} else {
 		updateExpr += " REMOVE #role"
-		exprAttrNames["#role"] = "role"
+		exprAttrNames["#role"] = AttrRole
 	}
 
 	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: mailbox.PK()},
-			"sk": &types.AttributeValueMemberS{Value: mailbox.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: mailbox.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.SK()},
 		},
 		UpdateExpression:          aws.String(updateExpr),
 		ExpressionAttributeNames:  exprAttrNames,
 		ExpressionAttributeValues: exprAttrValues,
-		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ConditionExpression:       aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
 	})
 	if err != nil {
 		var ccf *types.ConditionalCheckFailedException
@@ -166,10 +168,10 @@ func (r *DynamoDBRepository) DeleteMailbox(ctx context.Context, accountID, mailb
 	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: mailbox.PK()},
-			"sk": &types.AttributeValueMemberS{Value: mailbox.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: mailbox.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.SK()},
 		},
-		ConditionExpression: aws.String("attribute_exists(pk)"),
+		ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
 	})
 	if err != nil {
 		// Check for ConditionalCheckFailedException
@@ -186,25 +188,25 @@ func (r *DynamoDBRepository) DeleteMailbox(ctx context.Context, accountID, mailb
 func (r *DynamoDBRepository) IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error {
 	mailbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}
 
-	updateExpr := "SET totalEmails = totalEmails + :one, updatedAt = :updatedAt"
+	updateExpr := "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " + :one, " + AttrUpdatedAt + " = :updatedAt"
 	exprAttrValues := map[string]types.AttributeValue{
 		":one":       &types.AttributeValueMemberN{Value: "1"},
 		":updatedAt": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 	}
 
 	if incrementUnread {
-		updateExpr = "SET totalEmails = totalEmails + :one, unreadEmails = unreadEmails + :one, updatedAt = :updatedAt"
+		updateExpr = "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " + :one, " + AttrUnreadEmails + " = " + AttrUnreadEmails + " + :one, " + AttrUpdatedAt + " = :updatedAt"
 	}
 
 	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: mailbox.PK()},
-			"sk": &types.AttributeValueMemberS{Value: mailbox.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: mailbox.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.SK()},
 		},
 		UpdateExpression:          aws.String(updateExpr),
 		ExpressionAttributeValues: exprAttrValues,
-		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ConditionExpression:       aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
 	})
 	if err != nil {
 		var ccf *types.ConditionalCheckFailedException
@@ -220,25 +222,25 @@ func (r *DynamoDBRepository) IncrementCounts(ctx context.Context, accountID, mai
 func (r *DynamoDBRepository) DecrementCounts(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error {
 	mailbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}
 
-	updateExpr := "SET totalEmails = totalEmails - :one, updatedAt = :updatedAt"
+	updateExpr := "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " - :one, " + AttrUpdatedAt + " = :updatedAt"
 	exprAttrValues := map[string]types.AttributeValue{
 		":one":       &types.AttributeValueMemberN{Value: "1"},
 		":updatedAt": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 	}
 
 	if decrementUnread {
-		updateExpr = "SET totalEmails = totalEmails - :one, unreadEmails = unreadEmails - :one, updatedAt = :updatedAt"
+		updateExpr = "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " - :one, " + AttrUnreadEmails + " = " + AttrUnreadEmails + " - :one, " + AttrUpdatedAt + " = :updatedAt"
 	}
 
 	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: mailbox.PK()},
-			"sk": &types.AttributeValueMemberS{Value: mailbox.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: mailbox.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.SK()},
 		},
 		UpdateExpression:          aws.String(updateExpr),
 		ExpressionAttributeValues: exprAttrValues,
-		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ConditionExpression:       aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
 	})
 	if err != nil {
 		var ccf *types.ConditionalCheckFailedException
@@ -257,10 +259,10 @@ func (r *DynamoDBRepository) MailboxExists(ctx context.Context, accountID, mailb
 	output, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
-			"pk": &types.AttributeValueMemberS{Value: mailbox.PK()},
-			"sk": &types.AttributeValueMemberS{Value: mailbox.SK()},
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: mailbox.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: mailbox.SK()},
 		},
-		ProjectionExpression: aws.String("pk"),
+		ProjectionExpression: aws.String(dynamo.AttrPK),
 	})
 	if err != nil {
 		return false, err
@@ -272,21 +274,21 @@ func (r *DynamoDBRepository) MailboxExists(ctx context.Context, accountID, mailb
 // marshalMailboxItem converts a MailboxItem to DynamoDB attribute values.
 func marshalMailboxItem(mailbox *MailboxItem) map[string]types.AttributeValue {
 	item := map[string]types.AttributeValue{
-		"pk":           &types.AttributeValueMemberS{Value: mailbox.PK()},
-		"sk":           &types.AttributeValueMemberS{Value: mailbox.SK()},
-		"mailboxId":    &types.AttributeValueMemberS{Value: mailbox.MailboxID},
-		"accountId":    &types.AttributeValueMemberS{Value: mailbox.AccountID},
-		"name":         &types.AttributeValueMemberS{Value: mailbox.Name},
-		"sortOrder":    &types.AttributeValueMemberN{Value: strconv.Itoa(mailbox.SortOrder)},
-		"totalEmails":  &types.AttributeValueMemberN{Value: strconv.Itoa(mailbox.TotalEmails)},
-		"unreadEmails": &types.AttributeValueMemberN{Value: strconv.Itoa(mailbox.UnreadEmails)},
-		"isSubscribed": &types.AttributeValueMemberBOOL{Value: mailbox.IsSubscribed},
-		"createdAt":    &types.AttributeValueMemberS{Value: mailbox.CreatedAt.UTC().Format(time.RFC3339)},
-		"updatedAt":    &types.AttributeValueMemberS{Value: mailbox.UpdatedAt.UTC().Format(time.RFC3339)},
+		dynamo.AttrPK:    &types.AttributeValueMemberS{Value: mailbox.PK()},
+		dynamo.AttrSK:    &types.AttributeValueMemberS{Value: mailbox.SK()},
+		AttrMailboxID:    &types.AttributeValueMemberS{Value: mailbox.MailboxID},
+		AttrAccountID:    &types.AttributeValueMemberS{Value: mailbox.AccountID},
+		AttrName:         &types.AttributeValueMemberS{Value: mailbox.Name},
+		AttrSortOrder:    &types.AttributeValueMemberN{Value: strconv.Itoa(mailbox.SortOrder)},
+		AttrTotalEmails:  &types.AttributeValueMemberN{Value: strconv.Itoa(mailbox.TotalEmails)},
+		AttrUnreadEmails: &types.AttributeValueMemberN{Value: strconv.Itoa(mailbox.UnreadEmails)},
+		AttrIsSubscribed: &types.AttributeValueMemberBOOL{Value: mailbox.IsSubscribed},
+		AttrCreatedAt:    &types.AttributeValueMemberS{Value: mailbox.CreatedAt.UTC().Format(time.RFC3339)},
+		AttrUpdatedAt:    &types.AttributeValueMemberS{Value: mailbox.UpdatedAt.UTC().Format(time.RFC3339)},
 	}
 
 	if mailbox.Role != "" {
-		item["role"] = &types.AttributeValueMemberS{Value: mailbox.Role}
+		item[AttrRole] = &types.AttributeValueMemberS{Value: mailbox.Role}
 	}
 
 	return item
@@ -296,42 +298,42 @@ func marshalMailboxItem(mailbox *MailboxItem) map[string]types.AttributeValue {
 func unmarshalMailboxItem(item map[string]types.AttributeValue) *MailboxItem {
 	mailbox := &MailboxItem{}
 
-	if v, ok := item["mailboxId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrMailboxID].(*types.AttributeValueMemberS); ok {
 		mailbox.MailboxID = v.Value
 	}
-	if v, ok := item["accountId"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrAccountID].(*types.AttributeValueMemberS); ok {
 		mailbox.AccountID = v.Value
 	}
-	if v, ok := item["name"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrName].(*types.AttributeValueMemberS); ok {
 		mailbox.Name = v.Value
 	}
-	if v, ok := item["role"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrRole].(*types.AttributeValueMemberS); ok {
 		mailbox.Role = v.Value
 	}
-	if v, ok := item["sortOrder"].(*types.AttributeValueMemberN); ok {
+	if v, ok := item[AttrSortOrder].(*types.AttributeValueMemberN); ok {
 		if n, err := strconv.Atoi(v.Value); err == nil {
 			mailbox.SortOrder = n
 		}
 	}
-	if v, ok := item["totalEmails"].(*types.AttributeValueMemberN); ok {
+	if v, ok := item[AttrTotalEmails].(*types.AttributeValueMemberN); ok {
 		if n, err := strconv.Atoi(v.Value); err == nil {
 			mailbox.TotalEmails = n
 		}
 	}
-	if v, ok := item["unreadEmails"].(*types.AttributeValueMemberN); ok {
+	if v, ok := item[AttrUnreadEmails].(*types.AttributeValueMemberN); ok {
 		if n, err := strconv.Atoi(v.Value); err == nil {
 			mailbox.UnreadEmails = n
 		}
 	}
-	if v, ok := item["isSubscribed"].(*types.AttributeValueMemberBOOL); ok {
+	if v, ok := item[AttrIsSubscribed].(*types.AttributeValueMemberBOOL); ok {
 		mailbox.IsSubscribed = v.Value
 	}
-	if v, ok := item["createdAt"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrCreatedAt].(*types.AttributeValueMemberS); ok {
 		if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
 			mailbox.CreatedAt = t
 		}
 	}
-	if v, ok := item["updatedAt"].(*types.AttributeValueMemberS); ok {
+	if v, ok := item[AttrUpdatedAt].(*types.AttributeValueMemberS); ok {
 		if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
 			mailbox.UpdatedAt = t
 		}

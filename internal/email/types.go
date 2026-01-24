@@ -4,6 +4,8 @@ package email
 import (
 	"fmt"
 	"time"
+
+	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
 // EmailAddress represents an email address with optional display name.
@@ -53,18 +55,18 @@ type EmailItem struct {
 
 // PK returns the DynamoDB partition key for this email.
 func (e *EmailItem) PK() string {
-	return fmt.Sprintf("ACCOUNT#%s", e.AccountID)
+	return dynamo.PrefixAccount + e.AccountID
 }
 
 // SK returns the DynamoDB sort key for this email.
 func (e *EmailItem) SK() string {
-	return fmt.Sprintf("EMAIL#%s", e.EmailID)
+	return PrefixEmail + e.EmailID
 }
 
 // LSI1SK returns the DynamoDB LSI sort key for receivedAt sorting.
 // Format: RCVD#{receivedAt}#{emailId}
 func (e *EmailItem) LSI1SK() string {
-	return fmt.Sprintf("RCVD#%s#%s", e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
+	return fmt.Sprintf("%s%s#%s", PrefixRcvd, e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
 }
 
 // LSI2SK returns the DynamoDB LSI sort key for Message-ID lookup.
@@ -74,7 +76,7 @@ func (e *EmailItem) LSI2SK() string {
 	if len(e.MessageID) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("MSGID#%s", e.MessageID[0])
+	return PrefixMsgID + e.MessageID[0]
 }
 
 // LSI3SK returns the DynamoDB LSI sort key for thread queries.
@@ -84,7 +86,7 @@ func (e *EmailItem) LSI3SK() string {
 	if e.ThreadID == "" {
 		return ""
 	}
-	return fmt.Sprintf("THREAD#%s#RCVD#%s#%s", e.ThreadID, e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
+	return fmt.Sprintf("%s%s#%s%s#%s", PrefixThread, e.ThreadID, PrefixRcvd, e.ReceivedAt.UTC().Format(time.RFC3339), e.EmailID)
 }
 
 // QueryRequest represents an Email/query request parameters.
@@ -125,10 +127,10 @@ type MailboxMembershipItem struct {
 
 // PK returns the DynamoDB partition key for this membership.
 func (m *MailboxMembershipItem) PK() string {
-	return fmt.Sprintf("ACCOUNT#%s", m.AccountID)
+	return dynamo.PrefixAccount + m.AccountID
 }
 
 // SK returns the DynamoDB sort key for this membership.
 func (m *MailboxMembershipItem) SK() string {
-	return fmt.Sprintf("MBOX#%s#EMAIL#%s#%s", m.MailboxID, m.ReceivedAt.UTC().Format(time.RFC3339), m.EmailID)
+	return fmt.Sprintf("%s%s#%s%s#%s", PrefixMbox, m.MailboxID, PrefixEmail, m.ReceivedAt.UTC().Format(time.RFC3339), m.EmailID)
 }

@@ -2,8 +2,9 @@
 package mailbox
 
 import (
-	"fmt"
 	"time"
+
+	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
 // ValidRoles defines the valid mailbox roles per RFC 8621.
@@ -60,10 +61,10 @@ type MailboxItem struct {
 
 // PK returns the DynamoDB partition key for this mailbox.
 func (m *MailboxItem) PK() string {
-	return fmt.Sprintf("ACCOUNT#%s", m.AccountID)
+	return dynamo.PrefixAccount + m.AccountID
 }
 
 // SK returns the DynamoDB sort key for this mailbox.
 func (m *MailboxItem) SK() string {
-	return fmt.Sprintf("MAILBOX#%s", m.MailboxID)
+	return PrefixMailbox + m.MailboxID
 }
