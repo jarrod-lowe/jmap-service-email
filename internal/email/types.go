@@ -39,8 +39,10 @@ type EmailItem struct {
 	HasAttachment bool            `json:"hasAttachment"`
 	Subject       string          `json:"subject"`
 	From          []EmailAddress  `json:"from"`
+	Sender        []EmailAddress  `json:"sender"`
 	To            []EmailAddress  `json:"to"`
 	CC            []EmailAddress  `json:"cc"`
+	Bcc           []EmailAddress  `json:"bcc"`
 	ReplyTo       []EmailAddress  `json:"replyTo"`
 	SentAt        time.Time       `json:"sentAt"`
 	MessageID     []string        `json:"messageId"`

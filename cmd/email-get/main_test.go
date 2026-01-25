@@ -737,3 +737,204 @@ func TestHandler_StateRepositoryError(t *testing.T) {
 		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "serverFail")
 	}
 }
+
+func TestHandler_SenderFieldPresent(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.Sender = []email.EmailAddress{{Name: "Secretary", Email: "secretary@example.com"}}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Verify sender field is present and has correct value
+	sender, ok := emailMap["sender"].([]map[string]any)
+	if !ok {
+		t.Fatalf("sender should be []map[string]any, got %T: %v", emailMap["sender"], emailMap["sender"])
+	}
+	if len(sender) != 1 {
+		t.Fatalf("sender length = %d, want 1", len(sender))
+	}
+	if sender[0]["name"] != "Secretary" {
+		t.Errorf("sender[0].name = %q, want %q", sender[0]["name"], "Secretary")
+	}
+	if sender[0]["email"] != "secretary@example.com" {
+		t.Errorf("sender[0].email = %q, want %q", sender[0]["email"], "secretary@example.com")
+	}
+}
+
+func TestHandler_BccFieldPresent(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.Bcc = []email.EmailAddress{
+		{Name: "Secret", Email: "secret@example.com"},
+		{Name: "Hidden", Email: "hidden@example.com"},
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Verify bcc field is present and has correct value
+	bcc, ok := emailMap["bcc"].([]map[string]any)
+	if !ok {
+		t.Fatalf("bcc should be []map[string]any, got %T: %v", emailMap["bcc"], emailMap["bcc"])
+	}
+	if len(bcc) != 2 {
+		t.Fatalf("bcc length = %d, want 2", len(bcc))
+	}
+	if bcc[0]["name"] != "Secret" {
+		t.Errorf("bcc[0].name = %q, want %q", bcc[0]["name"], "Secret")
+	}
+	if bcc[0]["email"] != "secret@example.com" {
+		t.Errorf("bcc[0].email = %q, want %q", bcc[0]["email"], "secret@example.com")
+	}
+}
+
+func TestHandler_SenderNullWhenEmpty(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	// Sender is nil (empty) - should return null per RFC 8621
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Per RFC 8621, empty address lists should be null, not empty array
+	sender := emailMap["sender"]
+	if sender != nil {
+		t.Errorf("sender should be nil when empty, got %T: %v", sender, sender)
+	}
+}
+
+func TestHandler_BccNullWhenEmpty(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	// Bcc is nil (empty) - should return null per RFC 8621
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Per RFC 8621, empty address lists should be null, not empty array
+	bcc := emailMap["bcc"]
+	if bcc != nil {
+		t.Errorf("bcc should be nil when empty, got %T: %v", bcc, bcc)
+	}
+}

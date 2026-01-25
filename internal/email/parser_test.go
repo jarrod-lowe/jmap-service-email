@@ -293,3 +293,87 @@ func TestParser_Size(t *testing.T) {
 		t.Errorf("Size = %d, want %d", parsed.Size, expectedSize)
 	}
 }
+
+// Email with Sender header (different from From)
+const senderEmail = `From: Alice <alice@example.com>
+Sender: Secretary <secretary@example.com>
+To: Bob <bob@example.com>
+Subject: Email with Sender
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Message-ID: <msg-sender@example.com>
+
+Body text here.
+`
+
+// Email with Bcc header
+const bccEmail = `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Bcc: Secret <secret@example.com>, Hidden <hidden@example.com>
+Subject: Email with Bcc
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Message-ID: <msg-bcc@example.com>
+
+Body text here.
+`
+
+func TestParser_Sender(t *testing.T) {
+	parsed, err := ParseRFC5322([]byte(senderEmail))
+	if err != nil {
+		t.Fatalf("ParseRFC5322 failed: %v", err)
+	}
+
+	if len(parsed.Sender) != 1 {
+		t.Fatalf("Sender length = %d, want 1", len(parsed.Sender))
+	}
+	if parsed.Sender[0].Name != "Secretary" {
+		t.Errorf("Sender[0].Name = %q, want %q", parsed.Sender[0].Name, "Secretary")
+	}
+	if parsed.Sender[0].Email != "secretary@example.com" {
+		t.Errorf("Sender[0].Email = %q, want %q", parsed.Sender[0].Email, "secretary@example.com")
+	}
+}
+
+func TestParser_Bcc(t *testing.T) {
+	parsed, err := ParseRFC5322([]byte(bccEmail))
+	if err != nil {
+		t.Fatalf("ParseRFC5322 failed: %v", err)
+	}
+
+	if len(parsed.Bcc) != 2 {
+		t.Fatalf("Bcc length = %d, want 2", len(parsed.Bcc))
+	}
+	if parsed.Bcc[0].Name != "Secret" {
+		t.Errorf("Bcc[0].Name = %q, want %q", parsed.Bcc[0].Name, "Secret")
+	}
+	if parsed.Bcc[0].Email != "secret@example.com" {
+		t.Errorf("Bcc[0].Email = %q, want %q", parsed.Bcc[0].Email, "secret@example.com")
+	}
+	if parsed.Bcc[1].Name != "Hidden" {
+		t.Errorf("Bcc[1].Name = %q, want %q", parsed.Bcc[1].Name, "Hidden")
+	}
+	if parsed.Bcc[1].Email != "hidden@example.com" {
+		t.Errorf("Bcc[1].Email = %q, want %q", parsed.Bcc[1].Email, "hidden@example.com")
+	}
+}
+
+func TestParser_EmptySenderAndBcc(t *testing.T) {
+	// simpleEmail has no Sender or Bcc headers
+	parsed, err := ParseRFC5322([]byte(simpleEmail))
+	if err != nil {
+		t.Fatalf("ParseRFC5322 failed: %v", err)
+	}
+
+	// Sender and Bcc should be empty slices, not nil
+	if parsed.Sender == nil {
+		t.Error("Sender should be empty slice, not nil")
+	}
+	if len(parsed.Sender) != 0 {
+		t.Errorf("Sender length = %d, want 0", len(parsed.Sender))
+	}
+	if parsed.Bcc == nil {
+		t.Error("Bcc should be empty slice, not nil")
+	}
+	if len(parsed.Bcc) != 0 {
+		t.Errorf("Bcc length = %d, want 0", len(parsed.Bcc))
+	}
+}

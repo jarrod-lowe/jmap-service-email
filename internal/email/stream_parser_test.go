@@ -508,3 +508,115 @@ func TestIsIdentityEncoding(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRFC5322Stream_SenderHeader(t *testing.T) {
+	email := `From: Alice <alice@example.com>
+Sender: Secretary <secretary@example.com>
+To: Bob <bob@example.com>
+Subject: Email with Sender
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Content-Type: text/plain
+
+Body text here.
+`
+	uploader := &mockUploader{}
+
+	parsed, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"email-blob-123",
+		"account-456",
+		uploader,
+	)
+	if err != nil {
+		t.Fatalf("ParseRFC5322Stream error = %v", err)
+	}
+
+	if len(parsed.Sender) != 1 {
+		t.Fatalf("Sender length = %d, want 1", len(parsed.Sender))
+	}
+	if parsed.Sender[0].Name != "Secretary" {
+		t.Errorf("Sender[0].Name = %q, want %q", parsed.Sender[0].Name, "Secretary")
+	}
+	if parsed.Sender[0].Email != "secretary@example.com" {
+		t.Errorf("Sender[0].Email = %q, want %q", parsed.Sender[0].Email, "secretary@example.com")
+	}
+}
+
+func TestParseRFC5322Stream_BccHeader(t *testing.T) {
+	email := `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Bcc: Secret <secret@example.com>, Hidden <hidden@example.com>
+Subject: Email with Bcc
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Content-Type: text/plain
+
+Body text here.
+`
+	uploader := &mockUploader{}
+
+	parsed, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"email-blob-123",
+		"account-456",
+		uploader,
+	)
+	if err != nil {
+		t.Fatalf("ParseRFC5322Stream error = %v", err)
+	}
+
+	if len(parsed.Bcc) != 2 {
+		t.Fatalf("Bcc length = %d, want 2", len(parsed.Bcc))
+	}
+	if parsed.Bcc[0].Name != "Secret" {
+		t.Errorf("Bcc[0].Name = %q, want %q", parsed.Bcc[0].Name, "Secret")
+	}
+	if parsed.Bcc[0].Email != "secret@example.com" {
+		t.Errorf("Bcc[0].Email = %q, want %q", parsed.Bcc[0].Email, "secret@example.com")
+	}
+	if parsed.Bcc[1].Name != "Hidden" {
+		t.Errorf("Bcc[1].Name = %q, want %q", parsed.Bcc[1].Name, "Hidden")
+	}
+	if parsed.Bcc[1].Email != "hidden@example.com" {
+		t.Errorf("Bcc[1].Email = %q, want %q", parsed.Bcc[1].Email, "hidden@example.com")
+	}
+}
+
+func TestParseRFC5322Stream_EmptySenderAndBcc(t *testing.T) {
+	// Simple email without Sender or Bcc headers
+	email := `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: Simple
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Content-Type: text/plain
+
+Body.
+`
+	uploader := &mockUploader{}
+
+	parsed, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"email-blob-123",
+		"account-456",
+		uploader,
+	)
+	if err != nil {
+		t.Fatalf("ParseRFC5322Stream error = %v", err)
+	}
+
+	// Sender and Bcc should be empty slices, not nil
+	if parsed.Sender == nil {
+		t.Error("Sender should be empty slice, not nil")
+	}
+	if len(parsed.Sender) != 0 {
+		t.Errorf("Sender length = %d, want 0", len(parsed.Sender))
+	}
+	if parsed.Bcc == nil {
+		t.Error("Bcc should be empty slice, not nil")
+	}
+	if len(parsed.Bcc) != 0 {
+		t.Errorf("Bcc length = %d, want 0", len(parsed.Bcc))
+	}
+}

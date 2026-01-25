@@ -199,8 +199,10 @@ func transformEmail(e *email.EmailItem, properties []string) map[string]any {
 		"inReplyTo":     e.InReplyTo,
 		"references":    e.References,
 		"from":          transformAddresses(e.From),
+		"sender":        transformAddressesNullable(e.Sender),
 		"to":            transformAddresses(e.To),
 		"cc":            transformAddresses(e.CC),
+		"bcc":           transformAddressesNullable(e.Bcc),
 		"replyTo":       transformAddresses(e.ReplyTo),
 		"subject":       e.Subject,
 		"sentAt":        formatTime(e.SentAt),
@@ -242,6 +244,15 @@ func transformAddresses(addrs []email.EmailAddress) []map[string]any {
 		}
 	}
 	return result
+}
+
+// transformAddressesNullable returns nil (JSON null) for empty address lists.
+// Per RFC 8621, some address fields should be null when empty rather than an empty array.
+func transformAddressesNullable(addrs []email.EmailAddress) any {
+	if len(addrs) == 0 {
+		return nil
+	}
+	return transformAddresses(addrs)
 }
 
 // transformBodyPart converts a BodyPart to JMAP format.

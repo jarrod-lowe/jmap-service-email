@@ -15,8 +15,10 @@ import (
 type ParsedEmail struct {
 	Subject       string
 	From          []EmailAddress
+	Sender        []EmailAddress
 	To            []EmailAddress
 	CC            []EmailAddress
+	Bcc           []EmailAddress
 	ReplyTo       []EmailAddress
 	SentAt        time.Time
 	MessageID     []string
@@ -40,8 +42,10 @@ func ParseRFC5322(data []byte) (*ParsedEmail, error) {
 
 	parsed := &ParsedEmail{
 		Size:        int64(len(data)),
+		Sender:      []EmailAddress{},
 		To:          []EmailAddress{},
 		CC:          []EmailAddress{},
+		Bcc:         []EmailAddress{},
 		ReplyTo:     []EmailAddress{},
 		MessageID:   []string{},
 		InReplyTo:   []string{},
@@ -57,8 +61,14 @@ func ParseRFC5322(data []byte) (*ParsedEmail, error) {
 	// Parse From
 	parsed.From = parseAddressList(msg.Header.Get("From"))
 
+	// Parse Sender
+	parsed.Sender = parseAddressList(msg.Header.Get("Sender"))
+
 	// Parse To
 	parsed.To = parseAddressList(msg.Header.Get("To"))
+
+	// Parse Bcc
+	parsed.Bcc = parseAddressList(msg.Header.Get("Bcc"))
 
 	// Parse CC
 	parsed.CC = parseAddressList(msg.Header.Get("Cc"))

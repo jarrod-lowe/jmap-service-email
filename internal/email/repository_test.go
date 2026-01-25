@@ -1226,3 +1226,126 @@ func TestRepository_UpdateEmailMailboxes_TransactionError(t *testing.T) {
 		t.Errorf("Expected ErrTransactionFailed, got %v", err)
 	}
 }
+
+func TestMarshalEmailItem_IncludesSender(t *testing.T) {
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Now(),
+		Sender: []EmailAddress{
+			{Name: "Secretary", Email: "secretary@example.com"},
+		},
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	if _, ok := capturedItem[AttrSender]; !ok {
+		t.Error("marshalEmailItem missing sender field")
+	}
+}
+
+func TestMarshalEmailItem_IncludesBcc(t *testing.T) {
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Now(),
+		Bcc: []EmailAddress{
+			{Name: "Secret", Email: "secret@example.com"},
+		},
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	if _, ok := capturedItem[AttrBcc]; !ok {
+		t.Error("marshalEmailItem missing bcc field")
+	}
+}
+
+func TestMarshalUnmarshal_SenderAndBcc_RoundTrip(t *testing.T) {
+	original := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC),
+		Sender: []EmailAddress{
+			{Name: "Secretary", Email: "secretary@example.com"},
+		},
+		Bcc: []EmailAddress{
+			{Name: "Secret", Email: "secret@example.com"},
+			{Name: "Hidden", Email: "hidden@example.com"},
+		},
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), original)
+
+	// Verify "sender" was marshaled
+	if _, ok := capturedItem[AttrSender]; !ok {
+		t.Fatal("Sender field not marshaled to DynamoDB")
+	}
+
+	// Verify "bcc" was marshaled
+	if _, ok := capturedItem[AttrBcc]; !ok {
+		t.Fatal("Bcc field not marshaled to DynamoDB")
+	}
+
+	// Now unmarshal and verify
+	mockClient.getItemFunc = func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+		return &dynamodb.GetItemOutput{Item: capturedItem}, nil
+	}
+
+	retrieved, err := repo.GetEmail(context.Background(), "user-123", "email-456")
+	if err != nil {
+		t.Fatalf("GetEmail failed: %v", err)
+	}
+
+	// Verify Sender
+	if len(retrieved.Sender) != 1 {
+		t.Fatalf("Sender length = %d, want 1", len(retrieved.Sender))
+	}
+	if retrieved.Sender[0].Name != "Secretary" {
+		t.Errorf("Sender[0].Name = %q, want %q", retrieved.Sender[0].Name, "Secretary")
+	}
+	if retrieved.Sender[0].Email != "secretary@example.com" {
+		t.Errorf("Sender[0].Email = %q, want %q", retrieved.Sender[0].Email, "secretary@example.com")
+	}
+
+	// Verify Bcc
+	if len(retrieved.Bcc) != 2 {
+		t.Fatalf("Bcc length = %d, want 2", len(retrieved.Bcc))
+	}
+	if retrieved.Bcc[0].Name != "Secret" {
+		t.Errorf("Bcc[0].Name = %q, want %q", retrieved.Bcc[0].Name, "Secret")
+	}
+	if retrieved.Bcc[0].Email != "secret@example.com" {
+		t.Errorf("Bcc[0].Email = %q, want %q", retrieved.Bcc[0].Email, "secret@example.com")
+	}
+	if retrieved.Bcc[1].Name != "Hidden" {
+		t.Errorf("Bcc[1].Name = %q, want %q", retrieved.Bcc[1].Name, "Hidden")
+	}
+	if retrieved.Bcc[1].Email != "hidden@example.com" {
+		t.Errorf("Bcc[1].Email = %q, want %q", retrieved.Bcc[1].Email, "hidden@example.com")
+	}
+}

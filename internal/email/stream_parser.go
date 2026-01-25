@@ -43,8 +43,10 @@ func ParseRFC5322Stream(
 
 	parsed := &ParsedEmail{
 		Size:        int64(len(data)),
+		Sender:      []EmailAddress{},
 		To:          []EmailAddress{},
 		CC:          []EmailAddress{},
+		Bcc:         []EmailAddress{},
 		ReplyTo:     []EmailAddress{},
 		MessageID:   []string{},
 		InReplyTo:   []string{},
@@ -104,8 +106,10 @@ func ParseRFC5322Stream(
 func parseHeaders(parsed *ParsedEmail, header mail.Header) {
 	parsed.Subject = decodeHeader(header.Get("Subject"))
 	parsed.From = parseAddressList(header.Get("From"))
+	parsed.Sender = parseAddressList(header.Get("Sender"))
 	parsed.To = parseAddressList(header.Get("To"))
 	parsed.CC = parseAddressList(header.Get("Cc"))
+	parsed.Bcc = parseAddressList(header.Get("Bcc"))
 	parsed.ReplyTo = parseAddressList(header.Get("Reply-To"))
 
 	if dateStr := header.Get("Date"); dateStr != "" {

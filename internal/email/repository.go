@@ -310,6 +310,11 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		item[AttrFrom] = marshalAddressList(email.From)
 	}
 
+	// Sender addresses
+	if len(email.Sender) > 0 {
+		item[AttrSender] = marshalAddressList(email.Sender)
+	}
+
 	// To addresses
 	if len(email.To) > 0 {
 		item[AttrTo] = marshalAddressList(email.To)
@@ -318,6 +323,11 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 	// CC addresses
 	if len(email.CC) > 0 {
 		item[AttrCC] = marshalAddressList(email.CC)
+	}
+
+	// Bcc addresses
+	if len(email.Bcc) > 0 {
+		item[AttrBcc] = marshalAddressList(email.Bcc)
 	}
 
 	// ReplyTo addresses
@@ -442,6 +452,11 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 		email.From = unmarshalAddressList(v.Value)
 	}
 
+	// Sender addresses
+	if v, ok := item[AttrSender].(*types.AttributeValueMemberL); ok {
+		email.Sender = unmarshalAddressList(v.Value)
+	}
+
 	// To addresses
 	if v, ok := item[AttrTo].(*types.AttributeValueMemberL); ok {
 		email.To = unmarshalAddressList(v.Value)
@@ -450,6 +465,11 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	// CC addresses
 	if v, ok := item[AttrCC].(*types.AttributeValueMemberL); ok {
 		email.CC = unmarshalAddressList(v.Value)
+	}
+
+	// Bcc addresses
+	if v, ok := item[AttrBcc].(*types.AttributeValueMemberL); ok {
+		email.Bcc = unmarshalAddressList(v.Value)
 	}
 
 	// ReplyTo addresses
