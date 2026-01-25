@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1001,6 +1002,110 @@ func TestHandler_UpdateKeywords_VersionConflictRetry(t *testing.T) {
 	// Should have called GetEmail 3 times (initial + 2 retries)
 	if callCount != 3 {
 		t.Errorf("GetEmail called %d times, want 3", callCount)
+	}
+}
+
+// Test: Keywords update - invalid nested path returns invalidPatch
+func TestHandler_UpdateKeywords_InvalidNestedPath(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"keywords/nested/deep": true, // Invalid: nested path
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	notUpdated, ok := resp.MethodResponse.Args["notUpdated"].(map[string]any)
+	if !ok {
+		t.Fatalf("notUpdated not a map: %T", resp.MethodResponse.Args["notUpdated"])
+	}
+	item, ok := notUpdated["email-456"].(map[string]any)
+	if !ok {
+		t.Fatalf("notUpdated[email-456] not a map: %T", notUpdated["email-456"])
+	}
+	if item["type"] != "invalidPatch" {
+		t.Errorf("type = %v, want %q", item["type"], "invalidPatch")
+	}
+	desc, _ := item["description"].(string)
+	if !strings.Contains(desc, "keywords/nested/deep") {
+		t.Errorf("description = %q, want it to contain the invalid path", desc)
+	}
+}
+
+// Test: MailboxIds update - invalid nested path returns invalidPatch
+func TestHandler_UpdateMailboxIds_InvalidNestedPath(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    emailID,
+				AccountID:  accountID,
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{},
+				Version:    1,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"mailboxIds/folder/subfolder": true, // Invalid: nested path
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	notUpdated, ok := resp.MethodResponse.Args["notUpdated"].(map[string]any)
+	if !ok {
+		t.Fatalf("notUpdated not a map: %T", resp.MethodResponse.Args["notUpdated"])
+	}
+	item, ok := notUpdated["email-456"].(map[string]any)
+	if !ok {
+		t.Fatalf("notUpdated[email-456] not a map: %T", notUpdated["email-456"])
+	}
+	if item["type"] != "invalidPatch" {
+		t.Errorf("type = %v, want %q", item["type"], "invalidPatch")
+	}
+	desc, _ := item["description"].(string)
+	if !strings.Contains(desc, "mailboxIds/folder/subfolder") {
+		t.Errorf("description = %q, want it to contain the invalid path", desc)
 	}
 }
 

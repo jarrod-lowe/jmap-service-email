@@ -386,6 +386,10 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 			continue
 		}
 		mailboxID := strings.TrimPrefix(key, "mailboxIds/")
+		// Validate that the mailboxID doesn't contain nested paths (RFC 8620 Section 5.3)
+		if strings.Contains(mailboxID, "/") {
+			return nil, setError("invalidPatch", "invalid patch path: "+key)
+		}
 
 		if value == nil {
 			// Remove from mailbox
@@ -500,7 +504,12 @@ func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[s
 		if !strings.HasPrefix(key, "keywords/") {
 			continue
 		}
-		keyword := email.NormalizeKeyword(strings.TrimPrefix(key, "keywords/"))
+		keyword := strings.TrimPrefix(key, "keywords/")
+		// Validate that the keyword doesn't contain nested paths (RFC 8620 Section 5.3)
+		if strings.Contains(keyword, "/") {
+			return nil, setError("invalidPatch", "invalid patch path: "+key)
+		}
+		keyword = email.NormalizeKeyword(keyword)
 
 		if value == nil {
 			// Remove keyword
