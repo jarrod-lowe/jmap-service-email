@@ -266,6 +266,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		Keywords:      keywords,
 		ReceivedAt:    receivedAt,
 		Size:          parsed.Size,
+		HeaderSize:    parsed.HeaderSize,
 		HasAttachment: parsed.HasAttachment,
 		Subject:       parsed.Subject,
 		From:          parsed.From,

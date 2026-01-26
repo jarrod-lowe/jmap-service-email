@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +38,18 @@ func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID str
 		return m.getCurrentStateFunc(ctx, accountID, objectType)
 	}
 	return 0, nil
+}
+
+// mockBlobStreamer implements the BlobStreamer interface for testing.
+type mockBlobStreamer struct {
+	streamFunc func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error)
+}
+
+func (m *mockBlobStreamer) Stream(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+	if m.streamFunc != nil {
+		return m.streamFunc(ctx, accountID, blobID)
+	}
+	return io.NopCloser(strings.NewReader("")), nil
 }
 
 // Helper to create a test email item.
@@ -78,7 +92,7 @@ func TestHandler_SingleIDFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -154,7 +168,7 @@ func TestHandler_SingleIDNotFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -216,7 +230,7 @@ func TestHandler_MultipleIDsMixedResults(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -264,7 +278,7 @@ func TestHandler_PropertyFiltering(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -326,10 +340,30 @@ func TestHandler_PropertyFiltering(t *testing.T) {
 	}
 }
 
-func TestHandler_HeaderPropertyRejection(t *testing.T) {
-	mockRepo := &mockEmailRepository{}
+func TestHandler_HeaderPropertySupported(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.HeaderSize = 150 // Simulate stored header size
 
-	h := newHandler(mockRepo, nil)
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	// Raw email headers for blob streaming
+	rawHeaders := "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Subject: Test Subject\r\n" +
+		"X-Custom-Header: custom-value\r\n" +
+		"\r\n"
+
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(rawHeaders)), nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -348,7 +382,56 @@ func TestHandler_HeaderPropertyRejection(t *testing.T) {
 		t.Fatalf("handle failed: %v", err)
 	}
 
-	// Should return error response
+	// Should return Email/get response (not error)
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Should have header:X-Custom-Header property
+	headerVal, ok := emailMap["header:X-Custom-Header"]
+	if !ok {
+		t.Error("header:X-Custom-Header should be present")
+	}
+	if headerVal != "custom-value" {
+		t.Errorf("header:X-Custom-Header = %v, want %q", headerVal, "custom-value")
+	}
+}
+
+func TestHandler_HeaderPropertyInvalidForm(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+	mockBlobStreamer := &mockBlobStreamer{}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer)
+
+	// Try to use asDate form on Subject (not allowed)
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"email-1"},
+			"properties": []any{"id", "header:Subject:asDate"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should return error response for invalid form
 	if response.MethodResponse.Name != "error" {
 		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
 	}
@@ -357,18 +440,75 @@ func TestHandler_HeaderPropertyRejection(t *testing.T) {
 	if !ok || errorType != "invalidArguments" {
 		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "invalidArguments")
 	}
+}
 
-	// Description should mention header
-	description, _ := response.MethodResponse.Args["description"].(string)
-	if description == "" {
-		t.Error("description should be present")
+func TestHandler_HeaderPropertyWithForm(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.HeaderSize = 200
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	rawHeaders := "From: Alice <alice@example.com>\r\n" +
+		"Subject: =?UTF-8?Q?Hello_World?=\r\n" +
+		"\r\n"
+
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(rawHeaders)), nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"email-1"},
+			"properties": []any{"id", "header:Subject:asText"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Subject should be decoded from RFC 2047
+	headerVal, ok := emailMap["header:Subject:asText"]
+	if !ok {
+		t.Error("header:Subject:asText should be present")
+	}
+	if headerVal != "Hello World" {
+		t.Errorf("header:Subject:asText = %v, want %q", headerVal, "Hello World")
 	}
 }
 
 func TestHandler_MissingIDs(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -400,7 +540,7 @@ func TestHandler_MissingIDs(t *testing.T) {
 func TestHandler_EmptyIDsArray(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -455,7 +595,7 @@ func TestHandler_RepositoryError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -487,7 +627,7 @@ func TestHandler_RepositoryError(t *testing.T) {
 func TestHandler_InvalidMethod(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -521,7 +661,7 @@ func TestHandler_BodyValuesAlwaysEmpty(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -567,7 +707,7 @@ func TestHandler_FromFieldValue(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -626,7 +766,7 @@ func TestHandler_FromFieldValue(t *testing.T) {
 func TestHandler_InvalidIDType(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -671,7 +811,7 @@ func TestHandler_ReturnsActualState(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStateRepo)
+	h := newHandler(mockRepo, mockStateRepo, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -710,7 +850,7 @@ func TestHandler_StateRepositoryError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStateRepo)
+	h := newHandler(mockRepo, mockStateRepo, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -748,7 +888,7 @@ func TestHandler_SenderFieldPresent(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -805,7 +945,7 @@ func TestHandler_BccFieldPresent(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -859,7 +999,7 @@ func TestHandler_SenderNullWhenEmpty(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -904,7 +1044,7 @@ func TestHandler_BccNullWhenEmpty(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil)
+	h := newHandler(mockRepo, nil, nil)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -936,5 +1076,103 @@ func TestHandler_BccNullWhenEmpty(t *testing.T) {
 	bcc := emailMap["bcc"]
 	if bcc != nil {
 		t.Errorf("bcc should be nil when empty, got %T: %v", bcc, bcc)
+	}
+}
+
+func TestHandler_HeaderAllModifierReturnEmptyArrayForMissingHeader(t *testing.T) {
+	// RFC 8621 Section 4.1.3:
+	// "If no header fields exist in the message with the requested name,
+	// the value is null if fetching a single instance or an empty array
+	// if requesting :all."
+
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.HeaderSize = 100
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	// Raw email with only standard headers - no X-Nonexistent header
+	rawHeaders := "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Subject: Test Subject\r\n" +
+		"\r\n"
+
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(rawHeaders)), nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+			"properties": []any{
+				"id",
+				"header:X-Nonexistent",      // Without :all - should return null
+				"header:X-Nonexistent:all",  // With :all - should return []
+				"header:X-Also-Missing:all", // Another missing header with :all
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/get" {
+		t.Fatalf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Without :all modifier, missing header should return null
+	headerSingle := emailMap["header:X-Nonexistent"]
+	if headerSingle != nil {
+		t.Errorf("header:X-Nonexistent (without :all) = %v (%T), want nil", headerSingle, headerSingle)
+	}
+
+	// With :all modifier, missing header should return empty array []
+	headerAll, ok := emailMap["header:X-Nonexistent:all"]
+	if !ok {
+		t.Fatal("header:X-Nonexistent:all should be present in response")
+	}
+	headerAllSlice, ok := headerAll.([]any)
+	if !ok {
+		t.Fatalf("header:X-Nonexistent:all should be []any, got %T: %v", headerAll, headerAll)
+	}
+	if len(headerAllSlice) != 0 {
+		t.Errorf("header:X-Nonexistent:all = %v, want empty array []", headerAllSlice)
+	}
+
+	// Another missing header with :all should also return []
+	headerAlsoMissing, ok := emailMap["header:X-Also-Missing:all"]
+	if !ok {
+		t.Fatal("header:X-Also-Missing:all should be present in response")
+	}
+	headerAlsoMissingSlice, ok := headerAlsoMissing.([]any)
+	if !ok {
+		t.Fatalf("header:X-Also-Missing:all should be []any, got %T: %v", headerAlsoMissing, headerAlsoMissing)
+	}
+	if len(headerAlsoMissingSlice) != 0 {
+		t.Errorf("header:X-Also-Missing:all = %v, want empty array []", headerAlsoMissingSlice)
 	}
 }

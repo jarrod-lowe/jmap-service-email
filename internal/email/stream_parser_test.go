@@ -620,3 +620,73 @@ Body.
 		t.Errorf("Bcc length = %d, want 0", len(parsed.Bcc))
 	}
 }
+
+func TestParseRFC5322Stream_HeaderSize(t *testing.T) {
+	// Test that HeaderSize correctly reports the byte offset where headers end
+	// The headers in this email are exactly 112 bytes (including final CRLF before body)
+	email := "From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: Test\r\n" +
+		"Date: Sat, 20 Jan 2024 10:00:00 +0000\r\n" +
+		"\r\n" +
+		"Body content here."
+
+	uploader := &mockUploader{}
+
+	parsed, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"email-blob-123",
+		"account-456",
+		uploader,
+	)
+	if err != nil {
+		t.Fatalf("ParseRFC5322Stream error = %v", err)
+	}
+
+	// Calculate expected header size: all header lines + blank line separator
+	// "From: alice@example.com\r\n" = 25
+	// "To: bob@example.com\r\n" = 21
+	// "Subject: Test\r\n" = 15
+	// "Date: Sat, 20 Jan 2024 10:00:00 +0000\r\n" = 39
+	// "\r\n" = 2
+	// Total = 102
+	expectedHeaderSize := int64(102)
+
+	if parsed.HeaderSize != expectedHeaderSize {
+		t.Errorf("HeaderSize = %d, want %d", parsed.HeaderSize, expectedHeaderSize)
+	}
+}
+
+func TestParseRFC5322Stream_HeaderSize_LFOnly(t *testing.T) {
+	// Test with LF-only line endings (common in some systems)
+	email := "From: alice@example.com\n" +
+		"To: bob@example.com\n" +
+		"Subject: Test\n" +
+		"\n" +
+		"Body content here."
+
+	uploader := &mockUploader{}
+
+	parsed, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"email-blob-123",
+		"account-456",
+		uploader,
+	)
+	if err != nil {
+		t.Fatalf("ParseRFC5322Stream error = %v", err)
+	}
+
+	// "From: alice@example.com\n" = 24
+	// "To: bob@example.com\n" = 20
+	// "Subject: Test\n" = 14
+	// "\n" = 1
+	// Total = 59
+	expectedHeaderSize := int64(59)
+
+	if parsed.HeaderSize != expectedHeaderSize {
+		t.Errorf("HeaderSize = %d, want %d", parsed.HeaderSize, expectedHeaderSize)
+	}
+}

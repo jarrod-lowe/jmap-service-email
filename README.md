@@ -85,6 +85,7 @@ jmap-service-email/
 │   └── thread-changes/        # Thread/changes Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
+│   ├── headers/               # Header property parsing and form transformations
 │   ├── mailbox/               # Mailbox types and repository
 │   ├── state/                 # State tracking repository
 │   └── blob/                  # Blob API client
@@ -109,7 +110,7 @@ The plugin registers the following capability:
 
 Methods:
 
-- `Email/get` - Retrieve emails by ID with optional property filtering
+- `Email/get` - Retrieve emails by ID with optional property filtering, including `header:*` properties
 - `Email/import` - Import RFC 5322 messages from blobs
 - `Email/query` - Query emails with `inMailbox` filter and `receivedAt` sorting
 - `Email/set` - Update email mailbox assignments (move between mailboxes)
@@ -138,8 +139,7 @@ The following enhancements are planned for future versions:
 
 - **BatchGetItem**: Use `BatchGetItem` instead of sequential `GetItem` calls for multi-ID efficiency
 - **bodyValues**: Implement content fetching from blob storage (currently returns `{}`)
-- **header:\* properties**: Support arbitrary header property syntax (currently rejected with `invalidArguments`)
-- **Additional properties**: Add `sender` and `bcc` fields
+- **header:\* caching**: Header data is fetched on-demand from blob storage; consider caching for repeated requests
 
 ### Email/query
 

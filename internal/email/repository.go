@@ -376,6 +376,11 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		item[AttrBodyStructure] = &types.AttributeValueMemberS{Value: string(bodyStructureJSON)}
 	}
 
+	// HeaderSize (for header:* property retrieval)
+	if email.HeaderSize > 0 {
+		item[AttrHeaderSize] = &types.AttributeValueMemberN{Value: strconv.FormatInt(email.HeaderSize, 10)}
+	}
+
 	// Version
 	item[AttrVersion] = &types.AttributeValueMemberN{Value: strconv.Itoa(email.Version)}
 
@@ -418,6 +423,11 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	if v, ok := item[AttrSize].(*types.AttributeValueMemberN); ok {
 		if n, err := strconv.ParseInt(v.Value, 10, 64); err == nil {
 			email.Size = n
+		}
+	}
+	if v, ok := item[AttrHeaderSize].(*types.AttributeValueMemberN); ok {
+		if n, err := strconv.ParseInt(v.Value, 10, 64); err == nil {
+			email.HeaderSize = n
 		}
 	}
 	if v, ok := item[AttrHasAttachment].(*types.AttributeValueMemberBOOL); ok {

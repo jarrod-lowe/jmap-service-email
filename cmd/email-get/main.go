@@ -2,19 +2,25 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/textproto"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/headers"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
@@ -35,17 +41,24 @@ type StateRepository interface {
 	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 }
 
+// BlobStreamer defines the interface for streaming blob content.
+type BlobStreamer interface {
+	Stream(ctx context.Context, accountID, blobID string) (io.ReadCloser, error)
+}
+
 // handler implements the Email/get logic.
 type handler struct {
-	repo      EmailRepository
-	stateRepo StateRepository
+	repo         EmailRepository
+	stateRepo    StateRepository
+	blobStreamer BlobStreamer
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, stateRepo StateRepository) *handler {
+func newHandler(repo EmailRepository, stateRepo StateRepository, blobStreamer BlobStreamer) *handler {
 	return &handler{
-		repo:      repo,
-		stateRepo: stateRepo,
+		repo:         repo,
+		stateRepo:    stateRepo,
+		blobStreamer: blobStreamer,
 	}
 }
 
@@ -88,6 +101,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Extract and validate properties (optional)
 	var properties []string
+	var headerProps []*headers.HeaderProperty
 	if propsArg, ok := request.Args["properties"]; ok {
 		propsSlice, ok := propsArg.([]any)
 		if !ok {
@@ -98,9 +112,17 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			if !ok {
 				return errorResponse(request.ClientID, "invalidArguments", "properties must contain strings"), nil
 			}
-			// Reject header:* properties
-			if strings.HasPrefix(prop, "header:") {
-				return errorResponse(request.ClientID, "invalidArguments", "header:* properties are not supported"), nil
+			// Parse and validate header:* properties
+			if headers.IsHeaderProperty(prop) {
+				headerProp, err := headers.ParseHeaderProperty(prop)
+				if err != nil {
+					return errorResponse(request.ClientID, "invalidArguments", fmt.Sprintf("invalid header property %q: %v", prop, err)), nil
+				}
+				// Validate form is allowed for this header
+				if err := headers.ValidateForm(headerProp.Name, headerProp.Form); err != nil {
+					return errorResponse(request.ClientID, "invalidArguments", err.Error()), nil
+				}
+				headerProps = append(headerProps, headerProp)
 			}
 			properties = append(properties, prop)
 		}
@@ -136,8 +158,25 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
 		}
 
+		// Fetch raw headers if header:* properties requested
+		var rawHeaders textproto.MIMEHeader
+		if len(headerProps) > 0 && h.blobStreamer != nil && emailItem.HeaderSize > 0 {
+			// Build range blob ID: {blobId},0,{headerSize}
+			rangeBlobID := fmt.Sprintf("%s,0,%d", emailItem.BlobID, emailItem.HeaderSize)
+			headerReader, err := h.blobStreamer.Stream(ctx, accountID, rangeBlobID)
+			if err != nil {
+				logger.WarnContext(ctx, "Failed to fetch headers",
+					slog.String("email_id", emailID),
+					slog.String("error", err.Error()),
+				)
+			} else {
+				rawHeaders, _ = textproto.NewReader(bufio.NewReader(headerReader)).ReadMIMEHeader()
+				headerReader.Close()
+			}
+		}
+
 		// Transform email to response format
-		emailMap := transformEmail(emailItem, properties)
+		emailMap := transformEmail(emailItem, properties, headerProps, rawHeaders)
 		list = append(list, emailMap)
 	}
 
@@ -185,7 +224,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 // transformEmail converts an EmailItem to the JMAP response format.
 // If properties is non-empty, only those properties are included.
-func transformEmail(e *email.EmailItem, properties []string) map[string]any {
+func transformEmail(e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader) map[string]any {
 	// Build full email map
 	full := map[string]any{
 		"id":            e.EmailID,
@@ -215,6 +254,12 @@ func transformEmail(e *email.EmailItem, properties []string) map[string]any {
 		"bodyValues":    map[string]any{}, // Always empty for v1
 	}
 
+	// Add header:* properties if requested
+	for _, hp := range headerProps {
+		propName := buildHeaderPropertyName(hp)
+		full[propName] = getHeaderValue(rawHeaders, hp)
+	}
+
 	// If no properties specified, return all
 	if len(properties) == 0 {
 		return full
@@ -229,6 +274,64 @@ func transformEmail(e *email.EmailItem, properties []string) map[string]any {
 	}
 
 	return filtered
+}
+
+// buildHeaderPropertyName constructs the property name for a header property.
+func buildHeaderPropertyName(hp *headers.HeaderProperty) string {
+	name := "header:" + hp.Name
+	switch hp.Form {
+	case headers.FormText:
+		name += ":asText"
+	case headers.FormAddresses:
+		name += ":asAddresses"
+	case headers.FormGroupedAddresses:
+		name += ":asGroupedAddresses"
+	case headers.FormMessageIds:
+		name += ":asMessageIds"
+	case headers.FormDate:
+		name += ":asDate"
+	case headers.FormURLs:
+		name += ":asURLs"
+	// FormRaw is default, no suffix needed
+	}
+	if hp.All {
+		name += ":all"
+	}
+	return name
+}
+
+// getHeaderValue retrieves and transforms a header value based on the header property.
+func getHeaderValue(rawHeaders textproto.MIMEHeader, hp *headers.HeaderProperty) any {
+	if rawHeaders == nil {
+		return nil
+	}
+
+	// Get header values (case-insensitive via textproto)
+	values := rawHeaders.Values(hp.Name)
+	if len(values) == 0 {
+		// RFC 8621 Section 4.1.3: "If no header fields exist in the message
+		// with the requested name, the value is null if fetching a single
+		// instance or an empty array if requesting :all."
+		if hp.All {
+			return []any{}
+		}
+		return nil
+	}
+
+	// If :all suffix, return array of all values
+	if hp.All {
+		results := make([]any, len(values))
+		for i, v := range values {
+			result, _ := headers.ApplyForm(v, hp.Form)
+			results[i] = result
+		}
+		return results
+	}
+
+	// Otherwise, return last value (per RFC 8621)
+	lastValue := values[len(values)-1]
+	result, _ := headers.ApplyForm(lastValue, hp.Form)
+	return result
 }
 
 // transformAddresses converts EmailAddress slice to JMAP format.
@@ -330,6 +433,7 @@ func main() {
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
+	coreAPIURL := os.Getenv("CORE_API_URL")
 
 	// Initialize AWS config
 	cfg, err := config.LoadDefaultConfig(ctx)
@@ -343,6 +447,11 @@ func main() {
 	repo := email.NewRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	h := newHandler(repo, stateRepo)
+	// Create blob client with SigV4 signing for header:* properties
+	transport := blob.NewSigV4Transport(http.DefaultTransport, cfg.Credentials, cfg.Region)
+	httpClient := &http.Client{Transport: transport}
+	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
+
+	h := newHandler(repo, stateRepo, blobClient)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

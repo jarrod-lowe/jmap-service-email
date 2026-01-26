@@ -1314,6 +1314,61 @@ func TestHandler_StateTracking_ThreadUpdated_ForReply(t *testing.T) {
 	}
 }
 
+func TestHandler_SingleEmailImport_StoresHeaderSize(t *testing.T) {
+	var capturedEmail *emailItem
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			capturedEmail = email
+			return nil
+		},
+	}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox-id": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Verify HeaderSize was stored (testEmailContent headers end at position 133)
+	if capturedEmail == nil {
+		t.Fatal("CreateEmail was not called")
+	}
+	if capturedEmail.HeaderSize == 0 {
+		t.Error("HeaderSize should not be zero for a valid email")
+	}
+	// testEmailContent has headers ending before "This is a test email body."
+	// Headers: From, To, Subject, Date, Message-ID, blank line
+	if capturedEmail.HeaderSize < 100 {
+		t.Errorf("HeaderSize = %d, expected > 100 for testEmailContent", capturedEmail.HeaderSize)
+	}
+}
+
 func TestHandler_StateTracking_IncludesThread(t *testing.T) {
 	mockRepo := &mockEmailRepository{
 		createFunc: func(ctx context.Context, email *emailItem) error {

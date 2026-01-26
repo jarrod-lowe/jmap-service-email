@@ -401,3 +401,31 @@ func TestEmailItem_LSI3SK_SortOrdering(t *testing.T) {
 		}
 	}
 }
+
+func TestEmailItem_HeaderSize(t *testing.T) {
+	email := EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		BlobID:     "blob-789",
+		HeaderSize: 512,
+	}
+
+	if email.HeaderSize != 512 {
+		t.Errorf("HeaderSize = %d, want 512", email.HeaderSize)
+	}
+
+	// Verify JSON round-trip preserves HeaderSize
+	data, err := json.Marshal(email)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var parsed EmailItem
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if parsed.HeaderSize != 512 {
+		t.Errorf("After round-trip HeaderSize = %d, want 512", parsed.HeaderSize)
+	}
+}

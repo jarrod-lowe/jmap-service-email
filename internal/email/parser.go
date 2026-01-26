@@ -31,6 +31,7 @@ type ParsedEmail struct {
 	Attachments   []string
 	HasAttachment bool
 	Size          int64
+	HeaderSize    int64
 }
 
 // ParseRFC5322 parses raw RFC5322 message bytes into a ParsedEmail struct.

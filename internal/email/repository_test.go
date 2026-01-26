@@ -1349,3 +1349,121 @@ func TestMarshalUnmarshal_SenderAndBcc_RoundTrip(t *testing.T) {
 		t.Errorf("Bcc[1].Email = %q, want %q", retrieved.Bcc[1].Email, "hidden@example.com")
 	}
 }
+
+func TestMarshalEmailItem_IncludesHeaderSize(t *testing.T) {
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Now(),
+		HeaderSize: 512, // Non-zero HeaderSize should be marshaled
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	headerSizeAttr, ok := capturedItem[AttrHeaderSize]
+	if !ok {
+		t.Fatal("marshalEmailItem missing headerSize field when HeaderSize > 0")
+	}
+	headerSizeVal := headerSizeAttr.(*types.AttributeValueMemberN).Value
+	if headerSizeVal != "512" {
+		t.Errorf("headerSize = %q, want %q", headerSizeVal, "512")
+	}
+}
+
+func TestMarshalEmailItem_OmitsHeaderSizeWhenZero(t *testing.T) {
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Now(),
+		HeaderSize: 0, // Zero HeaderSize should NOT be marshaled
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	if _, ok := capturedItem[AttrHeaderSize]; ok {
+		t.Error("marshalEmailItem should NOT include headerSize field when HeaderSize == 0")
+	}
+}
+
+func TestUnmarshalEmailItem_IncludesHeaderSize(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{
+				Item: map[string]types.AttributeValue{
+					"pk":            &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+					"sk":            &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+					"emailId":       &types.AttributeValueMemberS{Value: "email-456"},
+					"accountId":     &types.AttributeValueMemberS{Value: "user-123"},
+					"receivedAt":    &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+					AttrHeaderSize:  &types.AttributeValueMemberN{Value: "1024"},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	email, err := repo.GetEmail(context.Background(), "user-123", "email-456")
+	if err != nil {
+		t.Fatalf("GetEmail failed: %v", err)
+	}
+
+	if email.HeaderSize != 1024 {
+		t.Errorf("HeaderSize = %d, want %d", email.HeaderSize, 1024)
+	}
+}
+
+func TestMarshalUnmarshal_HeaderSize_RoundTrip(t *testing.T) {
+	original := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC),
+		HeaderSize: 2048,
+	}
+
+	var capturedItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedItem = input.TransactItems[0].Put.Item
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), original)
+
+	// Verify headerSize was marshaled
+	if _, ok := capturedItem[AttrHeaderSize]; !ok {
+		t.Fatal("HeaderSize field not marshaled to DynamoDB")
+	}
+
+	// Now unmarshal and verify round-trip
+	mockClient.getItemFunc = func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+		return &dynamodb.GetItemOutput{Item: capturedItem}, nil
+	}
+
+	retrieved, err := repo.GetEmail(context.Background(), "user-123", "email-456")
+	if err != nil {
+		t.Fatalf("GetEmail failed: %v", err)
+	}
+
+	if retrieved.HeaderSize != 2048 {
+		t.Errorf("HeaderSize = %d, want %d", retrieved.HeaderSize, 2048)
+	}
+}

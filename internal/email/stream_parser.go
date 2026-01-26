@@ -62,6 +62,9 @@ func ParseRFC5322Stream(
 	// Find body start position (after headers + blank line)
 	bodyStart := findBodyStart(data)
 
+	// Store header size for later retrieval (e.g., header:* properties)
+	parsed.HeaderSize = int64(bodyStart)
+
 	// Parse body structure
 	contentType := msg.Header.Get("Content-Type")
 	if contentType == "" {

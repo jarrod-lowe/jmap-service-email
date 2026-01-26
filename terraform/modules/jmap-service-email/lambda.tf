@@ -60,6 +60,7 @@ resource "aws_lambda_function" "email_get" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
     }
   }
 
@@ -67,7 +68,8 @@ resource "aws_lambda_function" "email_get" {
     aws_cloudwatch_log_group.email_get,
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
-    aws_iam_role_policy_attachment.dynamodb_email_data
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.api_gateway_invoke
   ]
 }
 

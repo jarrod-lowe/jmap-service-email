@@ -19,6 +19,7 @@ const (
 	AttrKeywords      = "keywords"
 	AttrReceivedAt    = "receivedAt"
 	AttrSize          = "size"
+	AttrHeaderSize    = "headerSize"
 	AttrHasAttachment = "hasAttachment"
 	AttrSubject       = "subject"
 	AttrFrom          = "from"

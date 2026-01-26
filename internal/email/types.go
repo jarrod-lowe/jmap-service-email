@@ -36,6 +36,7 @@ type EmailItem struct {
 	Keywords      map[string]bool `json:"keywords"`
 	ReceivedAt    time.Time       `json:"receivedAt"`
 	Size          int64           `json:"size"`
+	HeaderSize    int64           `json:"headerSize"`
 	HasAttachment bool            `json:"hasAttachment"`
 	Subject       string          `json:"subject"`
 	From          []EmailAddress  `json:"from"`
