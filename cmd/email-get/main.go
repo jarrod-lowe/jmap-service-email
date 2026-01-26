@@ -222,6 +222,15 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}, nil
 }
 
+// ensureMap returns an empty map if the input is nil.
+// This ensures JSON serialization produces {} instead of null.
+func ensureMap(m map[string]bool) map[string]bool {
+	if m == nil {
+		return map[string]bool{}
+	}
+	return m
+}
+
 // transformEmail converts an EmailItem to the JMAP response format.
 // If properties is non-empty, only those properties are included.
 func transformEmail(e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader) map[string]any {
@@ -231,7 +240,7 @@ func transformEmail(e *email.EmailItem, properties []string, headerProps []*head
 		"blobId":        e.BlobID,
 		"threadId":      e.ThreadID,
 		"mailboxIds":    e.MailboxIDs,
-		"keywords":      e.Keywords,
+		"keywords":      ensureMap(e.Keywords),
 		"size":          e.Size,
 		"receivedAt":    formatTime(e.ReceivedAt),
 		"messageId":     e.MessageID,
@@ -272,6 +281,9 @@ func transformEmail(e *email.EmailItem, properties []string, headerProps []*head
 			filtered[prop] = val
 		}
 	}
+
+	// RFC 8621 Section 4.1: id is always returned regardless of properties list
+	filtered["id"] = full["id"]
 
 	return filtered
 }

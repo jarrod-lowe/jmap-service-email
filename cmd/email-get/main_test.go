@@ -1079,6 +1079,137 @@ func TestHandler_BccNullWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestHandler_PropertyFiltering_IDAlwaysReturned(t *testing.T) {
+	// RFC 8621 Section 4.1:
+	// "The id property is always returned, regardless of whether it is in the properties argument."
+	testEmail := testEmailItem("user-123", "email-1")
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	// Request specific properties WITHOUT "id"
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"email-1"},
+			"properties": []any{"threadId", "from", "subject"}, // Note: "id" is NOT in this list
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/get" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/get")
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("list should have one email, got %v", list)
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// RFC 8621: id MUST always be returned even if not in properties list
+	if emailMap["id"] != "email-1" {
+		t.Errorf("id = %v, want %q (id must always be returned per RFC 8621)", emailMap["id"], "email-1")
+	}
+
+	// Should have requested properties
+	if emailMap["threadId"] != "thread-email-1" {
+		t.Errorf("threadId = %v, want %q", emailMap["threadId"], "thread-email-1")
+	}
+	if emailMap["subject"] != "Test Subject" {
+		t.Errorf("subject = %v, want %q", emailMap["subject"], "Test Subject")
+	}
+	if _, ok := emailMap["from"]; !ok {
+		t.Error("from should be present")
+	}
+
+	// Should NOT have unrequested properties (other than id)
+	if _, ok := emailMap["blobId"]; ok {
+		t.Error("blobId should NOT be present (not requested)")
+	}
+	if _, ok := emailMap["size"]; ok {
+		t.Error("size should NOT be present (not requested)")
+	}
+}
+
+func TestHandler_KeywordsEmptyObjectWhenNil(t *testing.T) {
+	// RFC 8621 Section 4.1: keywords default is {} (empty object), not null.
+	// A nil Keywords map should serialize to {} in JSON, not null.
+	// This prevents client crashes like: "TypeError can't access property '$seen', keywords is null"
+
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.Keywords = nil // Explicitly set to nil
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// The keywords field must be a non-nil map so that it serializes to {} in JSON, not null.
+	// A nil map[string]bool would serialize to "null" in JSON, causing client crashes.
+	keywords := emailMap["keywords"]
+	if keywords == nil {
+		t.Fatal("keywords should not be nil (would serialize to null in JSON)")
+	}
+
+	// Verify it's a map and is empty
+	keywordsMap, ok := keywords.(map[string]bool)
+	if !ok {
+		t.Fatalf("keywords should be map[string]bool, got %T: %v", keywords, keywords)
+	}
+	if keywordsMap == nil {
+		t.Fatal("keywords map should not be nil (would serialize to null in JSON)")
+	}
+	if len(keywordsMap) != 0 {
+		t.Errorf("keywords should be empty, got %v", keywordsMap)
+	}
+}
+
 func TestHandler_HeaderAllModifierReturnEmptyArrayForMissingHeader(t *testing.T) {
 	// RFC 8621 Section 4.1.3:
 	// "If no header fields exist in the message with the requested name,
