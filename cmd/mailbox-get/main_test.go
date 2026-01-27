@@ -419,6 +419,123 @@ func TestHandler_ReturnsActualState(t *testing.T) {
 	}
 }
 
+func TestHandler_PropertyFiltering_IDAlwaysReturned(t *testing.T) {
+	// RFC 8620 Section 5.1:
+	// "The id property is always returned, regardless of whether it was requested."
+	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	mock := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:    accountID,
+				MailboxID:    mailboxID,
+				Name:         "Test Mailbox",
+				Role:         "inbox",
+				SortOrder:    1,
+				TotalEmails:  10,
+				UnreadEmails: 5,
+				IsSubscribed: true,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}, nil
+		},
+	}
+
+	h := newHandler(mock, nil)
+
+	// Request specific properties WITHOUT "id"
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Mailbox/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"mailbox-1"},
+			"properties": []any{"name", "role", "sortOrder"}, // Note: "id" NOT in list
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if resp.MethodResponse.Name != "Mailbox/get" {
+		t.Errorf("Name = %q, want %q", resp.MethodResponse.Name, "Mailbox/get")
+	}
+
+	list, ok := resp.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("list should have one mailbox, got %v", list)
+	}
+
+	mailboxMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// RFC 8620: id MUST always be returned even if not in properties list
+	if mailboxMap["id"] != "mailbox-1" {
+		t.Errorf("id = %v, want %q (id must always be returned per RFC 8620)", mailboxMap["id"], "mailbox-1")
+	}
+
+	// Should have requested properties
+	if mailboxMap["name"] != "Test Mailbox" {
+		t.Errorf("name = %v, want %q", mailboxMap["name"], "Test Mailbox")
+	}
+	if mailboxMap["role"] != "inbox" {
+		t.Errorf("role = %v, want %q", mailboxMap["role"], "inbox")
+	}
+
+	// Should NOT have unrequested properties (other than id)
+	if _, ok := mailboxMap["totalEmails"]; ok {
+		t.Error("totalEmails should NOT be present (not requested)")
+	}
+}
+
+func TestHandler_EmptyRoleOmittedNotNull(t *testing.T) {
+	// Mailboxes without a role should omit the property entirely,
+	// not return role: null (which breaks client sorting)
+	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	mock := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:    accountID,
+				MailboxID:    mailboxID,
+				Name:         "Custom Folder",
+				Role:         "", // No role
+				SortOrder:    100,
+				TotalEmails:  5,
+				UnreadEmails: 2,
+				IsSubscribed: true,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}, nil
+		},
+	}
+
+	h := newHandler(mock, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/get",
+		Args: map[string]any{
+			"ids": []any{"custom-folder"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	list := resp.MethodResponse.Args["list"].([]any)
+	mbox := list[0].(map[string]any)
+
+	// role should be ABSENT from the response, not present with value nil
+	_, roleExists := mbox["role"]
+	if roleExists {
+		t.Errorf("role should be omitted for mailboxes without a role, got %v", mbox["role"])
+	}
+}
+
 func TestHandler_StateRepositoryError(t *testing.T) {
 	mockRepo := &mockMailboxRepository{
 		getAllMailboxesFunc: func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error) {

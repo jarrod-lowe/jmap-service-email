@@ -1210,6 +1210,403 @@ func TestHandler_KeywordsEmptyObjectWhenNil(t *testing.T) {
 	}
 }
 
+func TestHandler_FetchTextBodyValues(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1", "3"} // Two text body parts
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchTextBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	// Should have entries for partId "1" and "3"
+	for _, partID := range []string{"1", "3"} {
+		entry, ok := bodyValues[partID].(map[string]any)
+		if !ok {
+			t.Fatalf("bodyValues[%q] should be a map, got %T", partID, bodyValues[partID])
+		}
+
+		// value should be empty string
+		if entry["value"] != "" {
+			t.Errorf("bodyValues[%q].value = %v, want empty string", partID, entry["value"])
+		}
+
+		// isTruncated should be true
+		if entry["isTruncated"] != true {
+			t.Errorf("bodyValues[%q].isTruncated = %v, want true", partID, entry["isTruncated"])
+		}
+
+		// isEncodingProblem should be false
+		if entry["isEncodingProblem"] != false {
+			t.Errorf("bodyValues[%q].isEncodingProblem = %v, want false", partID, entry["isEncodingProblem"])
+		}
+	}
+}
+
+func TestHandler_FetchHTMLBodyValues(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.HTMLBody = []string{"2", "4"} // Two HTML body parts
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchHTMLBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	// Should have entries for partId "2" and "4"
+	for _, partID := range []string{"2", "4"} {
+		entry, ok := bodyValues[partID].(map[string]any)
+		if !ok {
+			t.Fatalf("bodyValues[%q] should be a map, got %T", partID, bodyValues[partID])
+		}
+
+		// value should be empty string
+		if entry["value"] != "" {
+			t.Errorf("bodyValues[%q].value = %v, want empty string", partID, entry["value"])
+		}
+
+		// isTruncated should be true
+		if entry["isTruncated"] != true {
+			t.Errorf("bodyValues[%q].isTruncated = %v, want true", partID, entry["isTruncated"])
+		}
+
+		// isEncodingProblem should be false
+		if entry["isEncodingProblem"] != false {
+			t.Errorf("bodyValues[%q].isEncodingProblem = %v, want false", partID, entry["isEncodingProblem"])
+		}
+	}
+}
+
+func TestHandler_FetchAllBodyValues(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	// Create a multipart structure with multiple text/* parts
+	testEmail.BodyStructure = email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/alternative",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", Size: 100},
+			{PartID: "2", Type: "text/html", Size: 200},
+			{PartID: "3", Type: "image/png", Size: 1000}, // Not text/*, should be excluded
+		},
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":          "user-123",
+			"ids":                []any{"email-1"},
+			"fetchAllBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	// Should have entries for text/* parts (1 and 2), but not image/png (3)
+	for _, partID := range []string{"1", "2"} {
+		entry, ok := bodyValues[partID].(map[string]any)
+		if !ok {
+			t.Fatalf("bodyValues[%q] should be a map, got %T", partID, bodyValues[partID])
+		}
+
+		// value should be empty string
+		if entry["value"] != "" {
+			t.Errorf("bodyValues[%q].value = %v, want empty string", partID, entry["value"])
+		}
+
+		// isTruncated should be true
+		if entry["isTruncated"] != true {
+			t.Errorf("bodyValues[%q].isTruncated = %v, want true", partID, entry["isTruncated"])
+		}
+	}
+
+	// Should NOT have entry for non-text part
+	if _, ok := bodyValues["3"]; ok {
+		t.Error("bodyValues should not contain non-text/* part (partId 3)")
+	}
+}
+
+func TestHandler_FetchBodyValuesNoFlags(t *testing.T) {
+	// When no fetch*BodyValues flags are set, bodyValues should be empty
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.HTMLBody = []string{"2"}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+			// No fetch*BodyValues flags
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	// Should be empty when no flags are set
+	if len(bodyValues) != 0 {
+		t.Errorf("bodyValues should be empty when no fetch flags set, got %v", bodyValues)
+	}
+}
+
+func TestHandler_FetchHTMLBodyValuesFallsBackToTextBody(t *testing.T) {
+	// When fetchHTMLBodyValues is true but the email has no HTML body parts,
+	// we should fall back to populating bodyValues for the text body parts.
+	// This matches what users expect - they want to see body content regardless of format.
+
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"} // Plain-text only email
+	testEmail.HTMLBody = nil           // No HTML body parts
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchHTMLBodyValues": true, // Request HTML body values
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	// When fetchHTMLBodyValues is true but no HTML parts exist,
+	// should fall back to text body parts
+	if len(bodyValues) == 0 {
+		t.Fatal("bodyValues should not be empty - should fall back to text body parts")
+	}
+
+	// Should have entry for text body part "1"
+	entry, ok := bodyValues["1"].(map[string]any)
+	if !ok {
+		t.Fatalf("bodyValues[\"1\"] should be a map, got %T", bodyValues["1"])
+	}
+
+	// Verify structure
+	if entry["value"] != "" {
+		t.Errorf("bodyValues[\"1\"].value = %v, want empty string", entry["value"])
+	}
+	if entry["isTruncated"] != true {
+		t.Errorf("bodyValues[\"1\"].isTruncated = %v, want true", entry["isTruncated"])
+	}
+	if entry["isEncodingProblem"] != false {
+		t.Errorf("bodyValues[\"1\"].isEncodingProblem = %v, want false", entry["isEncodingProblem"])
+	}
+}
+
+func TestHandler_FetchHTMLBodyValuesDoesNotFallbackWhenHTMLExists(t *testing.T) {
+	// When fetchHTMLBodyValues is true and HTML body parts exist,
+	// we should NOT include text body parts in bodyValues
+
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}  // Text part
+	testEmail.HTMLBody = []string{"2"}  // HTML part exists
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchHTMLBodyValues": true, // Request HTML body values only
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	// Should have HTML part "2"
+	if _, ok := bodyValues["2"]; !ok {
+		t.Error("bodyValues should contain HTML part \"2\"")
+	}
+
+	// Should NOT have text part "1" (because HTML exists, no fallback needed)
+	if _, ok := bodyValues["1"]; ok {
+		t.Error("bodyValues should NOT contain text part \"1\" when HTML exists (no fallback)")
+	}
+}
+
 func TestHandler_HeaderAllModifierReturnEmptyArrayForMissingHeader(t *testing.T) {
 	// RFC 8621 Section 4.1.3:
 	// "If no header fields exist in the message with the requested name,

@@ -192,7 +192,6 @@ func transformMailbox(m *mailbox.MailboxItem, properties []string) map[string]an
 		"id":            m.MailboxID,
 		"name":          m.Name,
 		"parentId":      nil, // Always null (flat hierarchy)
-		"role":          nilIfEmpty(m.Role),
 		"sortOrder":     m.SortOrder,
 		"totalEmails":   m.TotalEmails,
 		"unreadEmails":  m.UnreadEmails,
@@ -200,6 +199,11 @@ func transformMailbox(m *mailbox.MailboxItem, properties []string) map[string]an
 		"unreadThreads": m.UnreadEmails, // Stubbed: equals unreadEmails
 		"myRights":      transformRights(mailbox.AllRights()),
 		"isSubscribed":  m.IsSubscribed,
+	}
+
+	// Only include role if non-empty (omit rather than null to avoid client sorting issues)
+	if m.Role != "" {
+		full["role"] = m.Role
 	}
 
 	// If no properties specified, return all
@@ -214,6 +218,9 @@ func transformMailbox(m *mailbox.MailboxItem, properties []string) map[string]an
 			filtered[prop] = val
 		}
 	}
+
+	// RFC 8620 Section 5.1: id is always returned regardless of properties list
+	filtered["id"] = full["id"]
 
 	return filtered
 }
@@ -231,14 +238,6 @@ func transformRights(r mailbox.MailboxRights) map[string]any {
 		"mayDelete":      r.MayDelete,
 		"maySubmit":      r.MaySubmit,
 	}
-}
-
-// nilIfEmpty returns nil if the string is empty, otherwise returns the string.
-func nilIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // errorResponse creates an error response.

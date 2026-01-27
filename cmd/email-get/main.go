@@ -12,6 +12,7 @@ import (
 	"net/textproto"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -128,6 +129,11 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 	}
 
+	// Parse fetch body values flags
+	fetchTextBodyValues, _ := request.Args["fetchTextBodyValues"].(bool)
+	fetchHTMLBodyValues, _ := request.Args["fetchHTMLBodyValues"].(bool)
+	fetchAllBodyValues, _ := request.Args["fetchAllBodyValues"].(bool)
+
 	// Convert IDs to strings
 	var ids []string
 	for _, id := range idsSlice {
@@ -176,7 +182,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 
 		// Transform email to response format
-		emailMap := transformEmail(emailItem, properties, headerProps, rawHeaders)
+		emailMap := transformEmail(emailItem, properties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues)
 		list = append(list, emailMap)
 	}
 
@@ -231,9 +237,65 @@ func ensureMap(m map[string]bool) map[string]bool {
 	return m
 }
 
+// buildBodyValues creates bodyValues entries based on fetch flags.
+// Returns entries with isTruncated: true and empty value for experiment.
+func buildBodyValues(e *email.EmailItem, fetchText, fetchHTML, fetchAll bool) map[string]any {
+	result := map[string]any{}
+
+	if fetchText {
+		for _, partID := range e.TextBody {
+			result[partID] = map[string]any{
+				"value":             "",
+				"isTruncated":       true,
+				"isEncodingProblem": false,
+			}
+		}
+	}
+
+	if fetchHTML {
+		// Use htmlBody if available, otherwise fall back to textBody
+		htmlParts := e.HTMLBody
+		if len(htmlParts) == 0 {
+			htmlParts = e.TextBody
+		}
+		for _, partID := range htmlParts {
+			if _, exists := result[partID]; !exists {
+				result[partID] = map[string]any{
+					"value":             "",
+					"isTruncated":       true,
+					"isEncodingProblem": false,
+				}
+			}
+		}
+	}
+
+	if fetchAll {
+		// Add all text/* parts from bodyStructure
+		addAllTextParts(e.BodyStructure, result)
+	}
+
+	return result
+}
+
+// addAllTextParts recursively adds bodyValue entries for all text/* parts.
+func addAllTextParts(bp email.BodyPart, result map[string]any) {
+	if strings.HasPrefix(bp.Type, "text/") {
+		if _, exists := result[bp.PartID]; !exists {
+			result[bp.PartID] = map[string]any{
+				"value":             "",
+				"isTruncated":       true,
+				"isEncodingProblem": false,
+			}
+		}
+	}
+	for _, sub := range bp.SubParts {
+		addAllTextParts(sub, result)
+	}
+}
+
 // transformEmail converts an EmailItem to the JMAP response format.
 // If properties is non-empty, only those properties are included.
-func transformEmail(e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader) map[string]any {
+func transformEmail(e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool) map[string]any {
 	// Build full email map
 	full := map[string]any{
 		"id":            e.EmailID,
@@ -260,7 +322,7 @@ func transformEmail(e *email.EmailItem, properties []string, headerProps []*head
 		"textBody":      transformBodyPartRefs(e.TextBody),
 		"htmlBody":      transformBodyPartRefs(e.HTMLBody),
 		"attachments":   transformBodyPartRefs(e.Attachments),
-		"bodyValues":    map[string]any{}, // Always empty for v1
+		"bodyValues":    buildBodyValues(e, fetchText, fetchHTML, fetchAll),
 	}
 
 	// Add header:* properties if requested
