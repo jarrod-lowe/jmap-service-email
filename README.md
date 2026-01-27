@@ -82,13 +82,15 @@ jmap-service-email/
 │   ├── mailbox-set/           # Mailbox/set Lambda
 │   ├── mailbox-changes/       # Mailbox/changes Lambda
 │   ├── thread-get/            # Thread/get Lambda
-│   └── thread-changes/        # Thread/changes Lambda
+│   ├── thread-changes/        # Thread/changes Lambda
+│   └── blob-delete/           # Blob delete SQS consumer Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
 │   ├── headers/               # Header property parsing and form transformations
 │   ├── mailbox/               # Mailbox types and repository
 │   ├── state/                 # State tracking repository
-│   └── blob/                  # Blob API client
+│   ├── blob/                  # Blob API client
+│   └── blobdelete/            # Async blob deletion SQS publisher
 ├── terraform/
 │   ├── modules/
 │   │   └── jmap-service-email/
@@ -113,13 +115,30 @@ Methods:
 - `Email/get` - Retrieve emails by ID with optional property filtering, including `header:*` properties
 - `Email/import` - Import RFC 5322 messages from blobs
 - `Email/query` - Query emails with `inMailbox` filter and `receivedAt` sorting
-- `Email/set` - Update email mailbox assignments (move between mailboxes)
+- `Email/set` - Update email properties (mailbox assignments, keywords) and destroy emails
 - `Email/changes` - Get email changes since a given state (for delta sync)
 - `Mailbox/get` - Retrieve mailboxes by ID or get all
 - `Mailbox/set` - Create, update, and destroy mailboxes
 - `Mailbox/changes` - Get mailbox changes since a given state (for delta sync)
 - `Thread/get` - Retrieve threads by ID (returns emailIds in receivedAt order)
 - `Thread/changes` - Get thread changes since a given state (for delta sync)
+
+## Async Blob Deletion
+
+When emails are destroyed via `Email/set` or when `Email/import` fails after uploading parts, blob IDs are published to an SQS queue for async deletion. A dedicated `blob-delete` Lambda consumes from this queue and calls `DELETE /delete-iam/{accountId}/{blobId}` for each blob.
+
+```
+Email/set destroy ──┐
+                    ├──> SQS Queue ──> blob-delete Lambda ──> DELETE /delete-iam/...
+Email/import fail ──┘         │
+                              └──> DLQ (after 3 retries) ──> CloudWatch Alarm
+```
+
+**DLQ operational runbook:**
+- The `blob-delete-dlq-depth` CloudWatch alarm fires when messages land in the DLQ
+- Investigate DLQ messages via the AWS Console or `aws sqs receive-message`
+- For transient failures: requeue messages from DLQ back to the main queue
+- For persistent failures: investigate the blob service or message content
 
 ## DynamoDB Indexes
 
@@ -155,6 +174,7 @@ The following enhancements are planned for future versions:
 - **References header**: Currently only `In-Reply-To` is used for threading; `References` header could improve thread grouping
 - **Subject matching**: Implement subject-based threading for emails without `In-Reply-To` header
 - **Out-of-order delivery**: Thread merging when reply arrives before parent is not implemented (creates fragmented threads)
+- **Auto-delete threads**: Threads are not automatically deleted when they have no remaining emails
 
 ### Mailbox
 
@@ -165,8 +185,7 @@ The following enhancements are planned for future versions:
 
 ### Email/set
 
-- **Keywords updates**: Only `mailboxIds` updates are supported; `keywords` updates are not yet implemented
-- **Create/destroy**: `Email/set` only supports `update`; use `Email/import` to create emails
+- **Create**: `Email/set create` is not supported; use `Email/import` to create emails
 
 ### General
 

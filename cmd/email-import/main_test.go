@@ -101,6 +101,18 @@ func (m *mockStateRepository) IncrementStateAndLogChange(ctx context.Context, ac
 	return 1, nil
 }
 
+// mockBlobDeletePublisher implements BlobDeletePublisher for testing.
+type mockBlobDeletePublisher struct {
+	publishFunc func(ctx context.Context, accountID string, blobIDs []string) error
+}
+
+func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+	if m.publishFunc != nil {
+		return m.publishFunc(ctx, accountID, blobIDs)
+	}
+	return nil
+}
+
 func TestHandler_SingleEmailImport(t *testing.T) {
 	var capturedEmail *emailItem
 	mockRepo := &mockEmailRepository{
@@ -1441,5 +1453,84 @@ func TestHandler_StateTracking_IncludesThread(t *testing.T) {
 	}
 	if !threadCreated {
 		t.Errorf("Expected Thread/created state change for new thread, got changes: %v", stateChanges)
+	}
+}
+
+// Test: CreateEmail failure publishes blob cleanup
+func TestHandler_RepositoryError_PublishesBlobCleanup(t *testing.T) {
+	var publishedBlobIDs []string
+
+	// Email with a base64 attachment that gets uploaded as a separate blob
+	emailWithAttachment := `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: With Attachment
+MIME-Version: 1.0
+Content-Type: application/octet-stream; name="test.bin"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="test.bin"
+
+SGVsbG8gV29ybGQ=
+`
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			return errors.New("database error")
+		},
+	}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(emailWithAttachment)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{
+		uploadFunc: func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
+			content, _ := io.ReadAll(body)
+			return "uploaded-part-blob", int64(len(content)), nil
+		},
+	}
+	mockMailboxRepo := &mockMailboxRepository{}
+	mockBlobPub := &mockBlobDeletePublisher{
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+			publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
+			return nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{}, mockBlobPub)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox-id": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should have notCreated entry
+	notCreated, ok := response.MethodResponse.Args["notCreated"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should be a map")
+	}
+	if _, ok := notCreated["client-ref-1"]; !ok {
+		t.Fatal("notCreated should contain client-ref-1")
+	}
+
+	// Should have published blob cleanup for the uploaded part blob
+	if len(publishedBlobIDs) == 0 {
+		t.Error("expected blob cleanup to be published on CreateEmail failure")
 	}
 }

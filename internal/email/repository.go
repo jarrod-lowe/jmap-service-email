@@ -591,6 +591,48 @@ func unmarshalStringList(list []types.AttributeValue) []string {
 	return strs
 }
 
+// BuildDeleteEmailItems returns transaction items to delete an email and all its
+// mailbox membership records. The caller includes these in their own transaction.
+func (r *Repository) BuildDeleteEmailItems(emailItem *EmailItem) []types.TransactWriteItem {
+	items := make([]types.TransactWriteItem, 0, 1+len(emailItem.MailboxIDs))
+
+	// Delete email item with version condition
+	items = append(items, types.TransactWriteItem{
+		Delete: &types.Delete{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: emailItem.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: emailItem.SK()},
+			},
+			ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ") AND " + AttrVersion + " = :expectedVersion"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":expectedVersion": &types.AttributeValueMemberN{Value: strconv.Itoa(emailItem.Version)},
+			},
+		},
+	})
+
+	// Delete mailbox membership items
+	for mailboxID := range emailItem.MailboxIDs {
+		membership := &MailboxMembershipItem{
+			AccountID:  emailItem.AccountID,
+			MailboxID:  mailboxID,
+			ReceivedAt: emailItem.ReceivedAt,
+			EmailID:    emailItem.EmailID,
+		}
+		items = append(items, types.TransactWriteItem{
+			Delete: &types.Delete{
+				TableName: aws.String(r.tableName),
+				Key: map[string]types.AttributeValue{
+					dynamo.AttrPK: &types.AttributeValueMemberS{Value: membership.PK()},
+					dynamo.AttrSK: &types.AttributeValueMemberS{Value: membership.SK()},
+				},
+			},
+		})
+	}
+
+	return items
+}
+
 // UpdateEmailMailboxes updates an email's mailbox memberships in a transaction.
 // Returns the old mailboxIds (for counter calculations) and the email item.
 func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailID string,

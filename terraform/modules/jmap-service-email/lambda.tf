@@ -19,6 +19,7 @@ resource "aws_lambda_function" "email_import" {
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
+      BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
     }
   }
 
@@ -27,7 +28,8 @@ resource "aws_lambda_function" "email_import" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
-    aws_iam_role_policy_attachment.api_gateway_invoke
+    aws_iam_role_policy_attachment.api_gateway_invoke,
+    aws_iam_role_policy_attachment.sqs_blob_delete
   ]
 }
 
@@ -142,6 +144,8 @@ resource "aws_lambda_function" "email_set" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
+      BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
     }
   }
 
@@ -149,7 +153,9 @@ resource "aws_lambda_function" "email_set" {
     aws_cloudwatch_log_group.email_set,
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
-    aws_iam_role_policy_attachment.dynamodb_email_data
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.api_gateway_invoke,
+    aws_iam_role_policy_attachment.sqs_blob_delete
   ]
 }
 
@@ -400,4 +406,45 @@ resource "aws_lambda_permission" "allow_jmap_core_thread_changes" {
   function_name = aws_lambda_function.thread_changes.function_name
   principal     = "lambda.amazonaws.com"
   source_arn    = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:jmap-api-*"
+}
+
+# Lambda function for blob-delete (SQS consumer)
+resource "aws_lambda_function" "blob_delete" {
+  function_name = "${local.name_prefix}-blob-delete"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = 60
+
+  filename         = "${path.module}/../../../build/blob-delete/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/blob-delete/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.blob_delete,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.api_gateway_invoke,
+    aws_iam_role_policy_attachment.sqs_blob_delete
+  ]
+}
+
+# SQS event source mapping for blob-delete Lambda
+resource "aws_lambda_event_source_mapping" "blob_delete_sqs" {
+  event_source_arn                   = aws_sqs_queue.blob_delete.arn
+  function_name                      = aws_lambda_function.blob_delete.arn
+  batch_size                         = 10
+  function_response_types            = ["ReportBatchItemFailures"]
+  maximum_batching_window_in_seconds = 5
 }

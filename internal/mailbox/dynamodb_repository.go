@@ -252,6 +252,34 @@ func (r *DynamoDBRepository) DecrementCounts(ctx context.Context, accountID, mai
 	return nil
 }
 
+// BuildDecrementCountsItems returns a transaction item that decrements totalEmails
+// and optionally unreadEmails. The caller includes this in their own transaction.
+func (r *DynamoDBRepository) BuildDecrementCountsItems(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem {
+	mbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}
+
+	updateExpr := "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " - :one, " + AttrUpdatedAt + " = :updatedAt"
+	exprAttrValues := map[string]types.AttributeValue{
+		":one":       &types.AttributeValueMemberN{Value: "1"},
+		":updatedAt": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+	}
+
+	if decrementUnread {
+		updateExpr = "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " - :one, " + AttrUnreadEmails + " = " + AttrUnreadEmails + " - :one, " + AttrUpdatedAt + " = :updatedAt"
+	}
+
+	return types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: mbox.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: mbox.SK()},
+			},
+			UpdateExpression:          aws.String(updateExpr),
+			ExpressionAttributeValues: exprAttrValues,
+		},
+	}
+}
+
 // MailboxExists checks if a mailbox exists.
 func (r *DynamoDBRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
 	mailbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}

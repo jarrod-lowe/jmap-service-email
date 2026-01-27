@@ -49,3 +49,26 @@ resource "aws_cloudwatch_log_group" "thread_changes" {
   name              = "/aws/lambda/${local.name_prefix}-thread-changes"
   retention_in_days = var.log_retention_days
 }
+
+resource "aws_cloudwatch_log_group" "blob_delete" {
+  name              = "/aws/lambda/${local.name_prefix}-blob-delete"
+  retention_in_days = var.log_retention_days
+}
+
+# CloudWatch alarm for blob-delete DLQ depth
+resource "aws_cloudwatch_metric_alarm" "blob_delete_dlq" {
+  alarm_name          = "${local.name_prefix}-blob-delete-dlq-depth"
+  alarm_description   = "Blob delete DLQ has messages - investigate failed blob deletions"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.blob_delete_dlq.name
+  }
+}

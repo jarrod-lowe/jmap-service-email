@@ -1467,3 +1467,70 @@ func TestMarshalUnmarshal_HeaderSize_RoundTrip(t *testing.T) {
 		t.Errorf("HeaderSize = %d, want %d", retrieved.HeaderSize, 2048)
 	}
 }
+
+func TestRepository_BuildDeleteEmailItems_SingleMailbox(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	emailItem := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: receivedAt,
+		MailboxIDs: map[string]bool{"inbox-id": true},
+		Version:    3,
+	}
+
+	items := repo.BuildDeleteEmailItems(emailItem)
+
+	// 1 email delete + 1 membership delete = 2
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+
+	// First item: delete email with condition check
+	emailDelete := items[0].Delete
+	if emailDelete == nil {
+		t.Fatal("First item should be a Delete")
+	}
+	if *emailDelete.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *emailDelete.TableName, "test-table")
+	}
+	pk := emailDelete.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := emailDelete.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "EMAIL#email-456" {
+		t.Errorf("sk = %q, want %q", sk, "EMAIL#email-456")
+	}
+	// Should have condition expression for version check
+	if emailDelete.ConditionExpression == nil {
+		t.Fatal("Expected condition expression on email delete")
+	}
+
+	// Second item: delete membership
+	memberDelete := items[1].Delete
+	if memberDelete == nil {
+		t.Fatal("Second item should be a Delete")
+	}
+}
+
+func TestRepository_BuildDeleteEmailItems_MultipleMailboxes(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	emailItem := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: receivedAt,
+		MailboxIDs: map[string]bool{"inbox-id": true, "archive-id": true, "label-id": true},
+		Version:    1,
+	}
+
+	items := repo.BuildDeleteEmailItems(emailItem)
+
+	// 1 email delete + 3 membership deletes = 4
+	if len(items) != 4 {
+		t.Fatalf("items count = %d, want 4", len(items))
+	}
+}

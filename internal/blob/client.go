@@ -146,6 +146,42 @@ func (c *HTTPBlobClient) Stream(ctx context.Context, accountID, blobID string) (
 	return resp.Body, nil
 }
 
+// BlobDeleter abstracts blob deletion for dependency inversion.
+type BlobDeleter interface {
+	Delete(ctx context.Context, accountID, blobID string) error
+}
+
+// deleteURL constructs the delete URL for a blob.
+func (c *HTTPBlobClient) deleteURL(accountID, blobID string) string {
+	return c.baseURL + "/delete-iam/" + accountID + "/" + blobID
+}
+
+// Delete deletes a blob by account ID and blob ID.
+// Returns nil on success (204) or if the blob is already deleted (404).
+func (c *HTTPBlobClient) Delete(ctx context.Context, accountID, blobID string) error {
+	url := c.deleteURL(accountID, blobID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 500 {
+		return ErrServerFail
+	}
+
+	return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+}
+
 // uploadURL constructs the upload URL for a blob.
 func (c *HTTPBlobClient) uploadURL(accountID string) string {
 	return c.baseURL + "/upload-iam/" + accountID

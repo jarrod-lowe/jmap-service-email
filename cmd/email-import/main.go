@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"net/http"
 	"os"
 	"time"
@@ -13,9 +14,11 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
+	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
@@ -58,24 +61,34 @@ type StateRepository interface {
 	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
 }
 
+// BlobDeletePublisher publishes blob deletion requests to an async queue.
+type BlobDeletePublisher interface {
+	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error
+}
+
 // handler implements the Email/import logic.
 type handler struct {
-	repo        EmailRepository
-	streamer    BlobStreamer
-	uploader    BlobUploader
-	mailboxRepo MailboxRepository
-	stateRepo   StateRepository
+	repo                EmailRepository
+	streamer            BlobStreamer
+	uploader            BlobUploader
+	mailboxRepo         MailboxRepository
+	stateRepo           StateRepository
+	blobDeletePublisher BlobDeletePublisher
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository, stateRepo StateRepository) *handler {
-	return &handler{
+func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository, stateRepo StateRepository, blobDeletePublisher ...BlobDeletePublisher) *handler {
+	h := &handler{
 		repo:        repo,
 		streamer:    streamer,
 		uploader:    uploader,
 		mailboxRepo: mailboxRepo,
 		stateRepo:   stateRepo,
 	}
+	if len(blobDeletePublisher) > 0 {
+		h.blobDeletePublisher = blobDeletePublisher[0]
+	}
+	return h
 }
 
 // handle processes an Email/import request.
@@ -294,6 +307,8 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 			slog.String("email_id", emailID),
 			slog.String("error", err.Error()),
 		)
+		// Clean up uploaded part blobs on failure
+		h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
 		return nil, map[string]any{
 			"type":        "serverFail",
 			"description": err.Error(),
@@ -366,6 +381,34 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 	}, nil
 }
 
+// publishBlobCleanup publishes blob IDs from a body structure for async deletion.
+func (h *handler) publishBlobCleanup(ctx context.Context, accountID string, bodyStructure *email.BodyPart) {
+	if h.blobDeletePublisher == nil {
+		return
+	}
+	var blobIDs []string
+	collectPartBlobIDs(bodyStructure, &blobIDs)
+	if len(blobIDs) == 0 {
+		return
+	}
+	if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs); err != nil {
+		logger.ErrorContext(ctx, "Failed to publish blob cleanup",
+			slog.String("account_id", accountID),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+// collectPartBlobIDs recursively walks the body structure collecting non-composite blob IDs.
+func collectPartBlobIDs(part *email.BodyPart, ids *[]string) {
+	if part.BlobID != "" && !strings.Contains(part.BlobID, ",") {
+		*ids = append(*ids, part.BlobID)
+	}
+	for i := range part.SubParts {
+		collectPartBlobIDs(&part.SubParts[i], ids)
+	}
+}
+
 // determineThreadID determines the thread ID for an email.
 // If the email has an In-Reply-To header and the parent email is found,
 // the parent's thread ID is used. Otherwise, a new UUID is generated.
@@ -428,7 +471,15 @@ func main() {
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
+	// Set up blob delete publisher
+	blobDeleteQueueURL := os.Getenv("BLOB_DELETE_QUEUE_URL")
+	var blobPub BlobDeletePublisher
+	if blobDeleteQueueURL != "" {
+		sqsClient := sqs.NewFromConfig(cfg)
+		blobPub = blobdelete.NewSQSPublisher(sqsClient, blobDeleteQueueURL)
+	}
+
 	// HTTPBlobClient implements both BlobStreamer and BlobUploader
-	h := newHandler(repo, blobClient, blobClient, mailboxRepo, stateRepo)
+	h := newHandler(repo, blobClient, blobClient, mailboxRepo, stateRepo, blobPub)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

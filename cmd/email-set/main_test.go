@@ -7,15 +7,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
 type mockEmailRepository struct {
-	updateEmailMailboxesFunc func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
-	getEmailFunc             func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
-	updateEmailKeywordsFunc  func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
+	updateEmailMailboxesFunc  func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
+	getEmailFunc              func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	updateEmailKeywordsFunc   func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
+	buildDeleteEmailItemsFunc func(emailItem *email.EmailItem) []types.TransactWriteItem
 }
 
 func (m *mockEmailRepository) UpdateEmailMailboxes(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error) {
@@ -39,10 +42,18 @@ func (m *mockEmailRepository) UpdateEmailKeywords(ctx context.Context, accountID
 	return nil, email.ErrEmailNotFound
 }
 
+func (m *mockEmailRepository) BuildDeleteEmailItems(emailItem *email.EmailItem) []types.TransactWriteItem {
+	if m.buildDeleteEmailItemsFunc != nil {
+		return m.buildDeleteEmailItemsFunc(emailItem)
+	}
+	return []types.TransactWriteItem{}
+}
+
 type mockMailboxRepository struct {
-	mailboxExistsFunc   func(ctx context.Context, accountID, mailboxID string) (bool, error)
-	incrementCountsFunc func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
-	decrementCountsFunc func(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error
+	mailboxExistsFunc            func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	incrementCountsFunc          func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+	decrementCountsFunc          func(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error
+	buildDecrementCountsItemsFunc func(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem
 }
 
 func (m *mockMailboxRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
@@ -66,9 +77,17 @@ func (m *mockMailboxRepository) DecrementCounts(ctx context.Context, accountID, 
 	return nil
 }
 
+func (m *mockMailboxRepository) BuildDecrementCountsItems(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem {
+	if m.buildDecrementCountsItemsFunc != nil {
+		return m.buildDecrementCountsItemsFunc(accountID, mailboxID, decrementUnread)
+	}
+	return types.TransactWriteItem{}
+}
+
 type mockStateRepository struct {
 	getCurrentStateFunc            func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	incrementStateAndLogChangeFunc func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	buildStateChangeItemsFunc      func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
 func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
@@ -85,9 +104,38 @@ func (m *mockStateRepository) IncrementStateAndLogChange(ctx context.Context, ac
 	return 0, nil
 }
 
+func (m *mockStateRepository) BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+	if m.buildStateChangeItemsFunc != nil {
+		return m.buildStateChangeItemsFunc(accountID, objectType, currentState, objectID, changeType)
+	}
+	return currentState + 1, []types.TransactWriteItem{{}, {}}
+}
+
+type mockBlobDeletePublisher struct {
+	publishFunc func(ctx context.Context, accountID string, blobIDs []string) error
+}
+
+func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+	if m.publishFunc != nil {
+		return m.publishFunc(ctx, accountID, blobIDs)
+	}
+	return nil
+}
+
+type mockTransactWriter struct {
+	transactWriteItemsFunc func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+}
+
+func (m *mockTransactWriter) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	if m.transactWriteItemsFunc != nil {
+		return m.transactWriteItemsFunc(ctx, input, opts...)
+	}
+	return &dynamodb.TransactWriteItemsOutput{}, nil
+}
+
 // Test: Wrong method returns unknownMethod error
 func TestHandler_InvalidMethod(t *testing.T) {
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil)
+	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/get", // Wrong method
@@ -123,7 +171,7 @@ func TestHandler_UpdateMailboxIds_FullReplacement(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -194,7 +242,7 @@ func TestHandler_UpdateMailboxIds_PatchAdd(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -256,7 +304,7 @@ func TestHandler_UpdateMailboxIds_PatchRemove(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -299,7 +347,7 @@ func TestHandler_UpdateEmailNotFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -339,7 +387,7 @@ func TestHandler_UpdateInvalidMailbox(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, mockMailboxRepo, nil)
+	h := newHandler(mockEmailRepo, mockMailboxRepo, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -372,7 +420,7 @@ func TestHandler_UpdateInvalidMailbox(t *testing.T) {
 
 // Test: Update removing all mailboxes returns error
 func TestHandler_UpdateNoMailboxes(t *testing.T) {
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil)
+	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -433,7 +481,7 @@ func TestHandler_UpdateMailboxCounters(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, mockMailboxRepo, nil)
+	h := newHandler(mockEmailRepo, mockMailboxRepo, nil, nil, nil)
 	_, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -500,7 +548,7 @@ func TestHandler_StateTracking(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -555,7 +603,7 @@ func TestHandler_IfInStateMismatch(t *testing.T) {
 		},
 	}
 
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, mockStateRepo)
+	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, mockStateRepo, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -590,7 +638,7 @@ func TestHandler_IfInStateMismatch_NumericValue(t *testing.T) {
 		},
 	}
 
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, mockStateRepo)
+	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, mockStateRepo, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -624,7 +672,7 @@ func TestHandler_IfInStateMismatch_InvalidString(t *testing.T) {
 		},
 	}
 
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, mockStateRepo)
+	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, mockStateRepo, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -658,7 +706,7 @@ func TestHandler_TransactionError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -720,7 +768,7 @@ func TestHandler_UpdateKeywords_FullReplacement(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -790,7 +838,7 @@ func TestHandler_UpdateKeywords_PatchAdd(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -854,7 +902,7 @@ func TestHandler_UpdateKeywords_PatchRemove(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -906,7 +954,7 @@ func TestHandler_UpdateKeywords_InvalidKeyword(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -972,7 +1020,7 @@ func TestHandler_UpdateKeywords_VersionConflictRetry(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -1022,7 +1070,7 @@ func TestHandler_UpdateKeywords_InvalidNestedPath(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -1074,7 +1122,7 @@ func TestHandler_UpdateMailboxIds_InvalidNestedPath(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil)
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -1109,11 +1157,10 @@ func TestHandler_UpdateMailboxIds_InvalidNestedPath(t *testing.T) {
 	}
 }
 
-// Test: create/destroy not supported
-func TestHandler_CreateDestroyNotSupported(t *testing.T) {
-	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil)
+// Test: create not supported
+func TestHandler_CreateNotSupported(t *testing.T) {
+	h := newHandler(&mockEmailRepository{}, &mockMailboxRepository{}, nil, nil, nil)
 
-	// Test create not supported
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -1140,9 +1187,161 @@ func TestHandler_CreateDestroyNotSupported(t *testing.T) {
 	if item["type"] != "forbidden" {
 		t.Errorf("type = %v, want %q", item["type"], "forbidden")
 	}
+}
 
-	// Test destroy not supported
-	resp, err = h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+// Test: Destroy email successfully
+func TestHandler_DestroyEmail_Success(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    "email-456",
+				AccountID:  accountID,
+				BlobID:     "blob-root",
+				ThreadID:   "thread-1",
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    2,
+				BodyStructure: email.BodyPart{
+					PartID: "1",
+					BlobID: "blob-part-1",
+					Type:   "text/plain",
+				},
+			}, nil
+		},
+		buildDeleteEmailItemsFunc: func(emailItem *email.EmailItem) []types.TransactWriteItem {
+			return []types.TransactWriteItem{{}, {}} // 2 dummy items
+		},
+	}
+
+	currentState := int64(10)
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return currentState, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, cs int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return cs + 1, []types.TransactWriteItem{{}, {}}
+		},
+	}
+
+	var publishedBlobIDs []string
+	mockBlobPub := &mockBlobDeletePublisher{
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+			publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
+			return nil
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, mockBlobPub, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"email-456"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	if resp.MethodResponse.Name != "Email/set" {
+		t.Errorf("Name = %q, want %q", resp.MethodResponse.Name, "Email/set")
+	}
+
+	destroyed, ok := resp.MethodResponse.Args["destroyed"].([]any)
+	if !ok {
+		t.Fatalf("destroyed not a slice: %T", resp.MethodResponse.Args["destroyed"])
+	}
+	if len(destroyed) != 1 || destroyed[0] != "email-456" {
+		t.Errorf("destroyed = %v, want [email-456]", destroyed)
+	}
+
+	// Verify blobs were published for deletion (root + body part)
+	if len(publishedBlobIDs) != 2 {
+		t.Errorf("published blob count = %d, want 2", len(publishedBlobIDs))
+	}
+}
+
+// Test: Destroy email not found
+func TestHandler_DestroyEmail_NotFound(t *testing.T) {
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return nil, email.ErrEmailNotFound
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"nonexistent"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	notDestroyed, ok := resp.MethodResponse.Args["notDestroyed"].(map[string]any)
+	if !ok {
+		t.Fatalf("notDestroyed not a map: %T", resp.MethodResponse.Args["notDestroyed"])
+	}
+	item, ok := notDestroyed["nonexistent"].(map[string]any)
+	if !ok {
+		t.Fatalf("notDestroyed[nonexistent] not a map: %T", notDestroyed["nonexistent"])
+	}
+	if item["type"] != "notFound" {
+		t.Errorf("type = %v, want %q", item["type"], "notFound")
+	}
+}
+
+// Test: Destroy email - transaction failure
+func TestHandler_DestroyEmail_TransactionFailed(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    "email-456",
+				AccountID:  accountID,
+				BlobID:     "blob-root",
+				ThreadID:   "thread-1",
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    1,
+			}, nil
+		},
+		buildDeleteEmailItemsFunc: func(emailItem *email.EmailItem) []types.TransactWriteItem {
+			return []types.TransactWriteItem{{}}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 5, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, cs int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return cs + 1, []types.TransactWriteItem{{}, {}}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			return nil, errors.New("transaction failed")
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, nil, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
 		Args: map[string]any{
@@ -1159,11 +1358,74 @@ func TestHandler_CreateDestroyNotSupported(t *testing.T) {
 	if !ok {
 		t.Fatalf("notDestroyed not a map: %T", resp.MethodResponse.Args["notDestroyed"])
 	}
-	destroyedItem, ok := notDestroyed["email-456"].(map[string]any)
+	item, ok := notDestroyed["email-456"].(map[string]any)
 	if !ok {
 		t.Fatalf("notDestroyed[email-456] not a map: %T", notDestroyed["email-456"])
 	}
-	if destroyedItem["type"] != "forbidden" {
-		t.Errorf("type = %v, want %q", destroyedItem["type"], "forbidden")
+	if item["type"] != "serverFail" {
+		t.Errorf("type = %v, want %q", item["type"], "serverFail")
+	}
+}
+
+// Test: Destroy with blob delete error is best-effort (still succeeds)
+func TestHandler_DestroyEmail_BlobDeleteError_StillSucceeds(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    "email-456",
+				AccountID:  accountID,
+				BlobID:     "blob-root",
+				ThreadID:   "thread-1",
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{},
+				Version:    1,
+			}, nil
+		},
+		buildDeleteEmailItemsFunc: func(emailItem *email.EmailItem) []types.TransactWriteItem {
+			return []types.TransactWriteItem{{}}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 5, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, cs int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return cs + 1, []types.TransactWriteItem{{}, {}}
+		},
+	}
+
+	mockBlobPub := &mockBlobDeletePublisher{
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+			return errors.New("sqs publish failed")
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, mockBlobPub, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"email-456"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Should still succeed despite blob delete failure
+	destroyed, ok := resp.MethodResponse.Args["destroyed"].([]any)
+	if !ok {
+		t.Fatalf("destroyed not a slice: %T", resp.MethodResponse.Args["destroyed"])
+	}
+	if len(destroyed) != 1 || destroyed[0] != "email-456" {
+		t.Errorf("destroyed = %v, want [email-456]", destroyed)
 	}
 }

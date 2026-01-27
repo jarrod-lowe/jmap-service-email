@@ -145,6 +145,60 @@ func (r *Repository) IncrementStateAndLogChange(ctx context.Context, accountID s
 	return newState, nil
 }
 
+// BuildStateChangeItems returns the transaction items needed to increment state
+// and log a change, without executing the transaction. The caller is responsible
+// for including these items in their own transaction.
+func (r *Repository) BuildStateChangeItems(accountID string, objectType ObjectType, currentState int64, objectID string, changeType ChangeType) (int64, []types.TransactWriteItem) {
+	newState := currentState + 1
+	now := time.Now().UTC()
+	ttl := now.Add(time.Duration(r.retentionDays) * 24 * time.Hour).Unix()
+
+	stateItem := &StateItem{AccountID: accountID, ObjectType: objectType}
+	changeRecord := &ChangeRecord{
+		AccountID:  accountID,
+		ObjectType: objectType,
+		State:      newState,
+		ObjectID:   objectID,
+		ChangeType: changeType,
+		Timestamp:  now,
+		TTL:        ttl,
+	}
+
+	items := []types.TransactWriteItem{
+		{
+			Update: &types.Update{
+				TableName: aws.String(r.tableName),
+				Key: map[string]types.AttributeValue{
+					dynamo.AttrPK: &types.AttributeValueMemberS{Value: stateItem.PK()},
+					dynamo.AttrSK: &types.AttributeValueMemberS{Value: stateItem.SK()},
+				},
+				UpdateExpression: aws.String("SET " + AttrCurrentState + " = if_not_exists(" + AttrCurrentState + ", :zero) + :one, " + AttrUpdatedAt + " = :now"),
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":zero": &types.AttributeValueMemberN{Value: "0"},
+					":one":  &types.AttributeValueMemberN{Value: "1"},
+					":now":  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+				},
+			},
+		},
+		{
+			Put: &types.Put{
+				TableName: aws.String(r.tableName),
+				Item: map[string]types.AttributeValue{
+					dynamo.AttrPK:  &types.AttributeValueMemberS{Value: changeRecord.PK()},
+					dynamo.AttrSK:  &types.AttributeValueMemberS{Value: changeRecord.SK()},
+					AttrObjectID:   &types.AttributeValueMemberS{Value: objectID},
+					AttrChangeType: &types.AttributeValueMemberS{Value: string(changeType)},
+					AttrTimestamp:  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+					AttrState:      &types.AttributeValueMemberN{Value: strconv.FormatInt(newState, 10)},
+					AttrTTL:        &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+				},
+			},
+		},
+	}
+
+	return newState, items
+}
+
 // QueryChanges retrieves change log entries since a given state.
 func (r *Repository) QueryChanges(ctx context.Context, accountID string, objectType ObjectType, sinceState int64, maxChanges int) ([]ChangeRecord, error) {
 	pk := dynamo.PrefixAccount + accountID

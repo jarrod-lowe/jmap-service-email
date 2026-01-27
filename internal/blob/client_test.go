@@ -676,6 +676,122 @@ func TestUpload_Returns5xxAsServerFail(t *testing.T) {
 	}
 }
 
+// Tests for Delete method
+
+func TestDelete_ConstructsCorrectURL(t *testing.T) {
+	var capturedURL string
+	var capturedMethod string
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			capturedURL = req.URL.String()
+			capturedMethod = req.Method
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Fatalf("Delete error = %v, want nil", err)
+	}
+
+	expectedURL := "https://api.example.com/delete-iam/user-123/blob-456"
+	if capturedURL != expectedURL {
+		t.Errorf("URL = %q, want %q", capturedURL, expectedURL)
+	}
+	if capturedMethod != http.MethodDelete {
+		t.Errorf("Method = %q, want %q", capturedMethod, http.MethodDelete)
+	}
+}
+
+func TestDelete_204ReturnsNil(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Errorf("Delete error = %v, want nil", err)
+	}
+}
+
+func TestDelete_404ReturnsNil(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Errorf("Delete error = %v, want nil (404 should be ignored)", err)
+	}
+}
+
+func TestDelete_5xxReturnsError(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if !errors.Is(err, ErrServerFail) {
+		t.Errorf("Delete error = %v, want ErrServerFail", err)
+	}
+}
+
+func TestDelete_NetworkErrorReturnsError(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Error("Delete should return error on network failure")
+	}
+}
+
 func TestUpload_ReturnsNetworkError(t *testing.T) {
 	networkErr := errors.New("connection refused")
 	fake := &fakeHTTPDoer{

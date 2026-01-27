@@ -72,6 +72,16 @@ See jmap-service-core/docs/plugin-interface.md for the complete contract.
 
 jmap-service-core can usually be found in ../jmap-service-core. If changes are needed in jmap-service-core, provide a prompt for the user to give to an agent in the jmap-service-core repo; do not try to make changes there yourself.
 
+## Separation of Concerns
+
+This repo handles the Email (and Mailbox and Threading) part of a JMAP service.
+jmap-service-core (usually in /home/jarrod/git/jmap-service-core) is responsible
+for handling the JMAP protocol itself, and blob storage. This repo must NOT
+reach into resources managed by jmap-service-core - if it wants to change
+something there, it must use jmap-service-core's API. There is one exception -
+registration involves writing a dynamodb record into the jmap-service-core
+dynamodb table; but this is not allowed for anything else.
+
 ## Build Commands
 
 ```bash

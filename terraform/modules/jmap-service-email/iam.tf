@@ -97,9 +97,12 @@ resource "aws_iam_role_policy_attachment" "dynamodb_email_data" {
 # Policy document for invoking core API Gateway (IAM-authenticated download endpoint)
 data "aws_iam_policy_document" "api_gateway_invoke" {
   statement {
-    effect    = "Allow"
-    actions   = ["execute-api:Invoke"]
-    resources = ["${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/GET/download-iam/*"]
+    effect  = "Allow"
+    actions = ["execute-api:Invoke"]
+    resources = [
+      "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/GET/download-iam/*",
+      "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/DELETE/delete-iam/*",
+    ]
   }
 }
 
@@ -112,4 +115,36 @@ resource "aws_iam_policy" "api_gateway_invoke" {
 resource "aws_iam_role_policy_attachment" "api_gateway_invoke" {
   role       = aws_iam_role.lambda_execution.name
   policy_arn = aws_iam_policy.api_gateway_invoke.arn
+}
+
+# Policy document for SQS blob-delete queue operations
+data "aws_iam_policy_document" "sqs_blob_delete" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sqs:SendMessage"
+    ]
+    resources = [aws_sqs_queue.blob_delete.arn]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes"
+    ]
+    resources = [aws_sqs_queue.blob_delete.arn]
+  }
+}
+
+resource "aws_iam_policy" "sqs_blob_delete" {
+  name        = "${local.name_prefix}-sqs-blob-delete"
+  description = "Allow SQS operations on blob-delete queue"
+  policy      = data.aws_iam_policy_document.sqs_blob_delete.json
+}
+
+resource "aws_iam_role_policy_attachment" "sqs_blob_delete" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.sqs_blob_delete.arn
 }

@@ -452,6 +452,68 @@ func TestRepository_IncrementStateAndLogChange_TTL(t *testing.T) {
 	}
 }
 
+func TestRepository_BuildStateChangeItems_ReturnsCorrectItems(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+
+	newState, items := repo.BuildStateChangeItems("user-123", ObjectTypeEmail, 5, "email-456", ChangeTypeDestroyed)
+
+	if newState != 6 {
+		t.Errorf("newState = %d, want 6", newState)
+	}
+
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+
+	// First item: state counter update
+	stateUpdate := items[0].Update
+	if stateUpdate == nil {
+		t.Fatal("First item should be an Update")
+	}
+	if *stateUpdate.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *stateUpdate.TableName, "test-table")
+	}
+	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "STATE#Email" {
+		t.Errorf("sk = %q, want %q", sk, "STATE#Email")
+	}
+
+	// Second item: change log put
+	changePut := items[1].Put
+	if changePut == nil {
+		t.Fatal("Second item should be a Put")
+	}
+	changeSK := changePut.Item["sk"].(*types.AttributeValueMemberS).Value
+	if changeSK != "CHANGE#Email#0000000006" {
+		t.Errorf("change sk = %q, want CHANGE#Email#0000000006", changeSK)
+	}
+	objectID := changePut.Item["objectId"].(*types.AttributeValueMemberS).Value
+	if objectID != "email-456" {
+		t.Errorf("objectId = %q, want %q", objectID, "email-456")
+	}
+	changeType := changePut.Item["changeType"].(*types.AttributeValueMemberS).Value
+	if changeType != "destroyed" {
+		t.Errorf("changeType = %q, want %q", changeType, "destroyed")
+	}
+}
+
+func TestRepository_BuildStateChangeItems_FromZero(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+
+	newState, items := repo.BuildStateChangeItems("user-123", ObjectTypeMailbox, 0, "mbox-1", ChangeTypeUpdated)
+
+	if newState != 1 {
+		t.Errorf("newState = %d, want 1", newState)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+}
+
 // parseInt64 parses a string as int64
 func parseInt64(s string) (int64, error) {
 	var n int64

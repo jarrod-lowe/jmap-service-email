@@ -12,7 +12,10 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
@@ -30,6 +33,7 @@ type EmailRepository interface {
 	UpdateEmailMailboxes(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (oldMailboxIDs map[string]bool, email *email.EmailItem, err error)
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 	UpdateEmailKeywords(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
+	BuildDeleteEmailItems(emailItem *email.EmailItem) []types.TransactWriteItem
 }
 
 // MailboxRepository defines the interface for mailbox operations.
@@ -37,27 +41,38 @@ type MailboxRepository interface {
 	MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error)
 	IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
 	DecrementCounts(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error
+	BuildDecrementCountsItems(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem
 }
 
 // StateRepository defines the interface for state tracking operations.
 type StateRepository interface {
 	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+}
+
+// TransactWriter executes DynamoDB transactions.
+type TransactWriter interface {
+	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
 // handler implements the Email/set logic.
 type handler struct {
-	emailRepo   EmailRepository
-	mailboxRepo MailboxRepository
-	stateRepo   StateRepository
+	emailRepo            EmailRepository
+	mailboxRepo          MailboxRepository
+	stateRepo            StateRepository
+	blobDeletePublisher  blobdelete.BlobDeletePublisher
+	transactor           TransactWriter
 }
 
 // newHandler creates a new handler.
-func newHandler(emailRepo EmailRepository, mailboxRepo MailboxRepository, stateRepo StateRepository) *handler {
+func newHandler(emailRepo EmailRepository, mailboxRepo MailboxRepository, stateRepo StateRepository, blobDeletePublisher blobdelete.BlobDeletePublisher, transactor TransactWriter) *handler {
 	return &handler{
-		emailRepo:   emailRepo,
-		mailboxRepo: mailboxRepo,
-		stateRepo:   stateRepo,
+		emailRepo:           emailRepo,
+		mailboxRepo:         mailboxRepo,
+		stateRepo:           stateRepo,
+		blobDeletePublisher: blobDeletePublisher,
+		transactor:          transactor,
 	}
 }
 
@@ -190,14 +205,22 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 	}
 
-	// Handle destroy (not supported)
+	// Handle destroy
 	if destroyArg, ok := request.Args["destroy"].([]any); ok {
 		for _, id := range destroyArg {
 			emailID, ok := id.(string)
 			if !ok {
 				continue
 			}
-			notDestroyed[emailID] = setError("forbidden", "Email/set destroy is not supported")
+			destroyNewState, destroyErr := h.destroyEmail(ctx, accountID, emailID, affectedMailboxes)
+			if destroyErr != nil {
+				notDestroyed[emailID] = destroyErr
+			} else {
+				destroyed = append(destroyed, emailID)
+				if destroyNewState > newState {
+					newState = destroyNewState
+				}
+			}
 		}
 	}
 
@@ -523,6 +546,137 @@ func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[s
 	return result, nil
 }
 
+// maxDestroyRetries is the number of times to retry destroy on transaction conflict.
+const maxDestroyRetries = 3
+
+// destroyEmail permanently deletes an email, its mailbox memberships, and blobs.
+// Returns the new email state, or a JMAP error map.
+func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, affectedMailboxes map[string]bool) (int64, map[string]any) {
+	for attempt := 0; attempt < maxDestroyRetries; attempt++ {
+		// 1. Fetch email
+		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
+		if err != nil {
+			if errors.Is(err, email.ErrEmailNotFound) {
+				return 0, setError("notFound", "email not found")
+			}
+			return 0, setError("serverFail", err.Error())
+		}
+
+		// 2. Read current states
+		var emailState, threadState int64
+		mailboxStates := make(map[string]int64)
+
+		if h.stateRepo != nil {
+			emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+			if err != nil {
+				return 0, setError("serverFail", err.Error())
+			}
+			threadState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeThread)
+			if err != nil {
+				return 0, setError("serverFail", err.Error())
+			}
+			for mailboxID := range emailItem.MailboxIDs {
+				ms, msErr := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
+				if msErr != nil {
+					return 0, setError("serverFail", msErr.Error())
+				}
+				mailboxStates[mailboxID] = ms
+			}
+		}
+
+		// 3. Build transaction items
+		var transactItems []types.TransactWriteItem
+
+		// Email + membership deletes
+		transactItems = append(transactItems, h.emailRepo.BuildDeleteEmailItems(emailItem)...)
+
+		// Mailbox counter decrements
+		isUnread := emailItem.Keywords == nil || !emailItem.Keywords["$seen"]
+		for mailboxID := range emailItem.MailboxIDs {
+			transactItems = append(transactItems, h.mailboxRepo.BuildDecrementCountsItems(accountID, mailboxID, isUnread))
+			affectedMailboxes[mailboxID] = true
+		}
+
+		// State changes
+		var newEmailState int64
+		if h.stateRepo != nil {
+			var stateItems []types.TransactWriteItem
+
+			// Email destroyed
+			newEmailState, stateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeEmail, emailState, emailID, state.ChangeTypeDestroyed)
+			transactItems = append(transactItems, stateItems...)
+
+			// Each affected mailbox updated
+			for mailboxID := range emailItem.MailboxIDs {
+				_, stateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeMailbox, mailboxStates[mailboxID], mailboxID, state.ChangeTypeUpdated)
+				transactItems = append(transactItems, stateItems...)
+			}
+
+			// Thread updated
+			_, stateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeThread, threadState, emailItem.ThreadID, state.ChangeTypeUpdated)
+			transactItems = append(transactItems, stateItems...)
+		}
+
+		// 4. Execute transaction
+		_, err = h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+			TransactItems: transactItems,
+		})
+		if err != nil {
+			// Check for condition check failure → retry
+			var txCanceled *types.TransactionCanceledException
+			if errors.As(err, &txCanceled) {
+				logger.InfoContext(ctx, "Destroy transaction conflict, retrying",
+					slog.String("account_id", accountID),
+					slog.String("email_id", emailID),
+					slog.Int("attempt", attempt+1),
+				)
+				continue
+			}
+			logger.ErrorContext(ctx, "Destroy transaction failed",
+				slog.String("account_id", accountID),
+				slog.String("email_id", emailID),
+				slog.String("error", err.Error()),
+			)
+			return 0, setError("serverFail", err.Error())
+		}
+
+		// 5. Publish blob deletions to SQS (best-effort)
+		blobIDs := collectBlobIDs(emailItem)
+		if h.blobDeletePublisher != nil && len(blobIDs) > 0 {
+			if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs); err != nil {
+				logger.ErrorContext(ctx, "Failed to publish blob deletions",
+					slog.String("account_id", accountID),
+					slog.String("email_id", emailID),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
+
+		return newEmailState, nil
+	}
+
+	// All retries exhausted
+	return 0, setError("serverFail", "concurrent update conflict, please retry")
+}
+
+// collectBlobIDs returns the root blob ID and any non-composite part blob IDs.
+func collectBlobIDs(emailItem *email.EmailItem) []string {
+	var ids []string
+	ids = append(ids, emailItem.BlobID)
+	collectPartBlobIDs(&emailItem.BodyStructure, &ids)
+	return ids
+}
+
+// collectPartBlobIDs recursively walks the body structure collecting non-composite blob IDs.
+func collectPartBlobIDs(part *email.BodyPart, ids *[]string) {
+	if part.BlobID != "" && !strings.Contains(part.BlobID, ",") {
+		*ids = append(*ids, part.BlobID)
+	}
+	for i := range part.SubParts {
+		collectPartBlobIDs(&part.SubParts[i], ids)
+	}
+}
+
 // setError creates a JMAP SetError response.
 func setError(errorType, description string) map[string]any {
 	return map[string]any{
@@ -563,11 +717,19 @@ func main() {
 		panic(err)
 	}
 
+	blobDeleteQueueURL := os.Getenv("BLOB_DELETE_QUEUE_URL")
+
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	emailRepo := email.NewRepository(dynamoClient, tableName)
 	mailboxRepo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	h := newHandler(emailRepo, mailboxRepo, stateRepo)
+	var blobPub blobdelete.BlobDeletePublisher
+	if blobDeleteQueueURL != "" {
+		sqsClient := sqs.NewFromConfig(cfg)
+		blobPub = blobdelete.NewSQSPublisher(sqsClient, blobDeleteQueueURL)
+	}
+
+	h := newHandler(emailRepo, mailboxRepo, stateRepo, blobPub, dynamoClient)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

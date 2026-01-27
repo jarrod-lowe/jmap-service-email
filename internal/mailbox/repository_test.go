@@ -475,3 +475,65 @@ func TestDynamoDBRepository_DecrementCounts(t *testing.T) {
 		}
 	})
 }
+
+func TestDynamoDBRepository_BuildDecrementCountsItems_TotalOnly(t *testing.T) {
+	repo := NewDynamoDBRepository(&mockDynamoDBClient{}, "test-table")
+
+	item := repo.BuildDecrementCountsItems("user-123", "inbox-id", false)
+
+	if item.Update == nil {
+		t.Fatal("Expected Update item")
+	}
+	if *item.Update.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
+	}
+
+	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "MAILBOX#inbox-id" {
+		t.Errorf("sk = %q, want %q", sk, "MAILBOX#inbox-id")
+	}
+
+	// Should NOT contain unreadEmails in update expression
+	expr := *item.Update.UpdateExpression
+	if !contains(expr, "totalEmails") {
+		t.Errorf("expression %q should contain totalEmails", expr)
+	}
+	if contains(expr, "unreadEmails") {
+		t.Errorf("expression %q should NOT contain unreadEmails when decrementUnread=false", expr)
+	}
+}
+
+func TestDynamoDBRepository_BuildDecrementCountsItems_WithUnread(t *testing.T) {
+	repo := NewDynamoDBRepository(&mockDynamoDBClient{}, "test-table")
+
+	item := repo.BuildDecrementCountsItems("user-123", "inbox-id", true)
+
+	if item.Update == nil {
+		t.Fatal("Expected Update item")
+	}
+
+	expr := *item.Update.UpdateExpression
+	if !contains(expr, "totalEmails") {
+		t.Errorf("expression %q should contain totalEmails", expr)
+	}
+	if !contains(expr, "unreadEmails") {
+		t.Errorf("expression %q should contain unreadEmails when decrementUnread=true", expr)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
