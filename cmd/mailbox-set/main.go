@@ -13,9 +13,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/mailboxcleanup"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
@@ -52,9 +54,10 @@ type TransactWriter interface {
 
 // handler implements the Mailbox/set logic.
 type handler struct {
-	repo       MailboxRepository
-	stateRepo  StateRepository
-	transactor TransactWriter
+	repo              MailboxRepository
+	stateRepo         StateRepository
+	transactor        TransactWriter
+	cleanupPublisher  mailboxcleanup.MailboxCleanupPublisher
 }
 
 // newHandler creates a new handler.
@@ -221,6 +224,11 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 	isSubscribed := true
 	if v, ok := data["isSubscribed"].(bool); ok {
 		isSubscribed = v
+	}
+
+	// Reject non-null parentId — only flat mailboxes supported
+	if parentId, hasParentId := data["parentId"]; hasParentId && parentId != nil {
+		return nil, setError("invalidProperties", "Hierarchical mailboxes are not supported")
 	}
 
 	// Validate role if provided
@@ -460,9 +468,6 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 		return nil, setError("mailboxHasEmail", "Mailbox is not empty")
 	}
 
-	// TODO: If onDestroyRemoveEmails is true, we should remove emails from mailbox
-	// and destroy orphaned emails. For now, just delete the mailbox.
-
 	// If transactor is available, use transaction
 	if h.transactor != nil && h.stateRepo != nil {
 		// Build mailbox deletion item
@@ -486,6 +491,17 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 				slog.String("error", err.Error()),
 			)
 			return nil, setError("serverFail", err.Error())
+		}
+
+		// If onDestroyRemoveEmails and mailbox had emails, publish async cleanup
+		if onDestroyRemoveEmails && mbox.TotalEmails > 0 && h.cleanupPublisher != nil {
+			if pubErr := h.cleanupPublisher.PublishMailboxCleanup(ctx, accountID, mailboxID); pubErr != nil {
+				logger.ErrorContext(ctx, "Failed to publish mailbox cleanup",
+					slog.String("account_id", accountID),
+					slog.String("mailbox_id", mailboxID),
+					slog.String("error", pubErr.Error()),
+				)
+			}
 		}
 
 		return map[string]any{
@@ -564,10 +580,18 @@ func main() {
 		panic(err)
 	}
 
+	mailboxCleanupQueueURL := os.Getenv("MAILBOX_CLEANUP_QUEUE_URL")
+
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
 	h := newHandler(repo, stateRepo, dynamoClient)
+
+	if mailboxCleanupQueueURL != "" {
+		sqsClient := sqs.NewFromConfig(cfg)
+		h.cleanupPublisher = mailboxcleanup.NewSQSPublisher(sqsClient, mailboxCleanupQueueURL)
+	}
+
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

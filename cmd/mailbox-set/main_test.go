@@ -13,6 +13,20 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
+// mockMailboxCleanupPublisher implements MailboxCleanupPublisher for testing.
+type mockMailboxCleanupPublisher struct {
+	publishFunc func(ctx context.Context, accountID, mailboxID string) error
+	calls       []struct{ accountID, mailboxID string }
+}
+
+func (m *mockMailboxCleanupPublisher) PublishMailboxCleanup(ctx context.Context, accountID, mailboxID string) error {
+	m.calls = append(m.calls, struct{ accountID, mailboxID string }{accountID, mailboxID})
+	if m.publishFunc != nil {
+		return m.publishFunc(ctx, accountID, mailboxID)
+	}
+	return nil
+}
+
 type mockMailboxRepository struct {
 	getMailboxFunc             func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
 	getAllMailboxesFunc        func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error)
@@ -234,6 +248,42 @@ func TestHandler_CreateMailboxInvalidRole(t *testing.T) {
 				"c0": map[string]any{
 					"name": "Test",
 					"role": "invalid-role",
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	notCreated, ok := resp.MethodResponse.Args["notCreated"].(map[string]any)
+	if !ok {
+		t.Fatalf("notCreated not a map: %T", resp.MethodResponse.Args["notCreated"])
+	}
+	c0, ok := notCreated["c0"].(map[string]any)
+	if !ok {
+		t.Fatalf("notCreated[c0] not a map: %T", notCreated["c0"])
+	}
+	if c0["type"] != "invalidProperties" {
+		t.Errorf("type = %v, want %q", c0["type"], "invalidProperties")
+	}
+}
+
+// Test: Create mailbox with parentId rejected (flat hierarchy only)
+func TestHandler_CreateMailboxParentIdRejected(t *testing.T) {
+	mock := &mockMailboxRepository{}
+
+	h := newHandler(mock, nil)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		Args: map[string]any{
+			"create": map[string]any{
+				"c0": map[string]any{
+					"name":     "Child",
+					"parentId": "some-parent",
 				},
 			},
 		},
@@ -1036,5 +1086,138 @@ func TestHandler_DestroyMailboxTransaction(t *testing.T) {
 	newState, ok := resp.MethodResponse.Args["newState"].(string)
 	if !ok || newState != "21" {
 		t.Errorf("newState = %v, want %q", resp.MethodResponse.Args["newState"], "21")
+	}
+}
+
+// Test: Destroy non-empty mailbox with onDestroyRemoveEmails publishes cleanup message
+func TestHandler_DestroyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
+	mockRepo := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:   accountID,
+				MailboxID:   mailboxID,
+				Name:        "Test",
+				TotalEmails: 5, // Non-empty
+			}, nil
+		},
+		buildDeleteMailboxItemFunc: func(accountID, mailboxID string) types.TransactWriteItem {
+			return types.TransactWriteItem{
+				Delete: &types.Delete{
+					TableName: aws.String("test-table"),
+					Key: map[string]types.AttributeValue{
+						"pk": &types.AttributeValueMemberS{Value: "ACCOUNT#" + accountID},
+						"sk": &types.AttributeValueMemberS{Value: "MAILBOX#" + mailboxID},
+					},
+				},
+			}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return currentState + 1, []types.TransactWriteItem{}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+	mockCleanupPub := &mockMailboxCleanupPublisher{}
+
+	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
+	h.cleanupPublisher = mockCleanupPub
+
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		Args: map[string]any{
+			"destroy":                []any{"test-mailbox"},
+			"onDestroyRemoveEmails": true,
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Verify mailbox was destroyed
+	destroyed, ok := resp.MethodResponse.Args["destroyed"].([]any)
+	if !ok {
+		t.Fatalf("destroyed not a slice: %T", resp.MethodResponse.Args["destroyed"])
+	}
+	if len(destroyed) != 1 || destroyed[0] != "test-mailbox" {
+		t.Errorf("destroyed = %v, want [test-mailbox]", destroyed)
+	}
+
+	// Verify cleanup was published
+	if len(mockCleanupPub.calls) != 1 {
+		t.Fatalf("expected 1 cleanup publish call, got %d", len(mockCleanupPub.calls))
+	}
+	if mockCleanupPub.calls[0].accountID != "user-123" {
+		t.Errorf("accountID = %q, want %q", mockCleanupPub.calls[0].accountID, "user-123")
+	}
+	if mockCleanupPub.calls[0].mailboxID != "test-mailbox" {
+		t.Errorf("mailboxID = %q, want %q", mockCleanupPub.calls[0].mailboxID, "test-mailbox")
+	}
+}
+
+// Test: Destroy empty mailbox with onDestroyRemoveEmails does NOT publish cleanup
+func TestHandler_DestroyEmptyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
+	mockRepo := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:   accountID,
+				MailboxID:   mailboxID,
+				Name:        "Test",
+				TotalEmails: 0, // Empty
+			}, nil
+		},
+		buildDeleteMailboxItemFunc: func(accountID, mailboxID string) types.TransactWriteItem {
+			return types.TransactWriteItem{
+				Delete: &types.Delete{
+					TableName: aws.String("test-table"),
+					Key: map[string]types.AttributeValue{
+						"pk": &types.AttributeValueMemberS{Value: "ACCOUNT#" + accountID},
+						"sk": &types.AttributeValueMemberS{Value: "MAILBOX#" + mailboxID},
+					},
+				},
+			}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return currentState + 1, []types.TransactWriteItem{}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+	mockCleanupPub := &mockMailboxCleanupPublisher{}
+
+	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
+	h.cleanupPublisher = mockCleanupPub
+
+	_, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		Args: map[string]any{
+			"destroy":                []any{"test-mailbox"},
+			"onDestroyRemoveEmails": true,
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Verify NO cleanup was published (empty mailbox)
+	if len(mockCleanupPub.calls) != 0 {
+		t.Errorf("expected 0 cleanup publish calls, got %d", len(mockCleanupPub.calls))
 	}
 }

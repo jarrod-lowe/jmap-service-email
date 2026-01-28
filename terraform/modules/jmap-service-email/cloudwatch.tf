@@ -55,6 +55,29 @@ resource "aws_cloudwatch_log_group" "blob_delete" {
   retention_in_days = var.log_retention_days
 }
 
+resource "aws_cloudwatch_log_group" "mailbox_cleanup" {
+  name              = "/aws/lambda/${local.name_prefix}-mailbox-cleanup"
+  retention_in_days = var.log_retention_days
+}
+
+# CloudWatch alarm for mailbox-cleanup DLQ depth
+resource "aws_cloudwatch_metric_alarm" "mailbox_cleanup_dlq" {
+  alarm_name          = "${local.name_prefix}-mailbox-cleanup-dlq-depth"
+  alarm_description   = "Mailbox cleanup DLQ has messages - investigate failed mailbox email cleanups"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.mailbox_cleanup_dlq.name
+  }
+}
+
 # CloudWatch alarm for blob-delete DLQ depth
 resource "aws_cloudwatch_metric_alarm" "blob_delete_dlq" {
   alarm_name          = "${local.name_prefix}-blob-delete-dlq-depth"

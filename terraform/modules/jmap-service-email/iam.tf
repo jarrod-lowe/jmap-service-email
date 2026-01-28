@@ -148,3 +148,35 @@ resource "aws_iam_role_policy_attachment" "sqs_blob_delete" {
   role       = aws_iam_role.lambda_execution.name
   policy_arn = aws_iam_policy.sqs_blob_delete.arn
 }
+
+# Policy document for SQS mailbox-cleanup queue operations
+data "aws_iam_policy_document" "sqs_mailbox_cleanup" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sqs:SendMessage"
+    ]
+    resources = [aws_sqs_queue.mailbox_cleanup.arn]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes"
+    ]
+    resources = [aws_sqs_queue.mailbox_cleanup.arn]
+  }
+}
+
+resource "aws_iam_policy" "sqs_mailbox_cleanup" {
+  name        = "${local.name_prefix}-sqs-mailbox-cleanup"
+  description = "Allow SQS operations on mailbox-cleanup queue"
+  policy      = data.aws_iam_policy_document.sqs_mailbox_cleanup.json
+}
+
+resource "aws_iam_role_policy_attachment" "sqs_mailbox_cleanup" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.sqs_mailbox_cleanup.arn
+}

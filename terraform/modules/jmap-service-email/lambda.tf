@@ -228,6 +228,7 @@ resource "aws_lambda_function" "mailbox_set" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      MAILBOX_CLEANUP_QUEUE_URL           = aws_sqs_queue.mailbox_cleanup.url
     }
   }
 
@@ -235,7 +236,8 @@ resource "aws_lambda_function" "mailbox_set" {
     aws_cloudwatch_log_group.mailbox_set,
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
-    aws_iam_role_policy_attachment.dynamodb_email_data
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.sqs_mailbox_cleanup
   ]
 }
 
@@ -447,4 +449,47 @@ resource "aws_lambda_event_source_mapping" "blob_delete_sqs" {
   batch_size                         = 10
   function_response_types            = ["ReportBatchItemFailures"]
   maximum_batching_window_in_seconds = 5
+}
+
+# Lambda function for mailbox-cleanup (SQS consumer)
+resource "aws_lambda_function" "mailbox_cleanup" {
+  function_name = "${local.name_prefix}-mailbox-cleanup"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = 300
+
+  filename         = "${path.module}/../../../build/mailbox-cleanup/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/mailbox-cleanup/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.mailbox_cleanup,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.sqs_blob_delete,
+    aws_iam_role_policy_attachment.sqs_mailbox_cleanup
+  ]
+}
+
+# SQS event source mapping for mailbox-cleanup Lambda
+resource "aws_lambda_event_source_mapping" "mailbox_cleanup_sqs" {
+  event_source_arn                   = aws_sqs_queue.mailbox_cleanup.arn
+  function_name                      = aws_lambda_function.mailbox_cleanup.arn
+  batch_size                         = 1
+  function_response_types            = ["ReportBatchItemFailures"]
+  maximum_batching_window_in_seconds = 0
 }

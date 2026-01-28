@@ -712,6 +712,47 @@ func (r *Repository) BuildUpdateEmailMailboxesItems(emailItem *EmailItem, newMai
 	return
 }
 
+// QueryEmailsByMailbox returns all email IDs that belong to a given mailbox.
+func (r *Repository) QueryEmailsByMailbox(ctx context.Context, accountID, mailboxID string) ([]string, error) {
+	pk := dynamo.PrefixAccount + accountID
+	skPrefix := PrefixMbox + mailboxID + "#" + PrefixEmail
+
+	var emailIDs []string
+	var lastKey map[string]types.AttributeValue
+
+	for {
+		queryInput := &dynamodb.QueryInput{
+			TableName:              aws.String(r.tableName),
+			KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrSK + ", :skPrefix)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pk":       &types.AttributeValueMemberS{Value: pk},
+				":skPrefix": &types.AttributeValueMemberS{Value: skPrefix},
+			},
+		}
+		if lastKey != nil {
+			queryInput.ExclusiveStartKey = lastKey
+		}
+
+		output, err := r.client.Query(ctx, queryInput)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query emails by mailbox: %w", err)
+		}
+
+		for _, item := range output.Items {
+			if v, ok := item[AttrEmailID].(*types.AttributeValueMemberS); ok {
+				emailIDs = append(emailIDs, v.Value)
+			}
+		}
+
+		if output.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = output.LastEvaluatedKey
+	}
+
+	return emailIDs, nil
+}
+
 // UpdateEmailMailboxes updates an email's mailbox memberships in a transaction.
 // Returns the old mailboxIds (for counter calculations) and the email item.
 func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailID string,

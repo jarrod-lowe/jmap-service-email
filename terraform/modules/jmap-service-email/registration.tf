@@ -21,7 +21,7 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
         "urn:ietf:params:jmap:mail" = {
           M = {
             maxMailboxesPerEmail = { NULL = true }
-            maxMailboxDepth      = { N = "10" }
+            maxMailboxDepth      = { N = "1" }
           }
         }
       }
