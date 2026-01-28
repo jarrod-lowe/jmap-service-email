@@ -121,7 +121,8 @@ func (r *Repository) IncrementStateAndLogChange(ctx context.Context, accountID s
 		// Write change log entry
 		{
 			Put: &types.Put{
-				TableName: aws.String(r.tableName),
+				TableName:           aws.String(r.tableName),
+				ConditionExpression: aws.String("attribute_not_exists(pk)"),
 				Item: map[string]types.AttributeValue{
 					dynamo.AttrPK:  &types.AttributeValueMemberS{Value: changeRecord.PK()},
 					dynamo.AttrSK:  &types.AttributeValueMemberS{Value: changeRecord.SK()},
@@ -182,7 +183,8 @@ func (r *Repository) BuildStateChangeItems(accountID string, objectType ObjectTy
 		},
 		{
 			Put: &types.Put{
-				TableName: aws.String(r.tableName),
+				TableName:           aws.String(r.tableName),
+				ConditionExpression: aws.String("attribute_not_exists(pk)"),
 				Item: map[string]types.AttributeValue{
 					dynamo.AttrPK:  &types.AttributeValueMemberS{Value: changeRecord.PK()},
 					dynamo.AttrSK:  &types.AttributeValueMemberS{Value: changeRecord.SK()},
@@ -197,6 +199,109 @@ func (r *Repository) BuildStateChangeItems(accountID string, objectType ObjectTy
 	}
 
 	return newState, items
+}
+
+// BuildStateChangeItemsMulti returns the transaction items needed to increment state
+// by len(objectIDs) and log a change for each object with sequential state numbers.
+// This avoids duplicate SK values when multiple objects of the same type are changed
+// in a single transaction.
+func (r *Repository) BuildStateChangeItemsMulti(accountID string, objectType ObjectType, currentState int64, objectIDs []string, changeType ChangeType) (int64, []types.TransactWriteItem) {
+	n := int64(len(objectIDs))
+	if n == 0 {
+		return currentState, nil
+	}
+
+	now := time.Now().UTC()
+	ttl := now.Add(time.Duration(r.retentionDays) * 24 * time.Hour).Unix()
+	newState := currentState + n
+
+	stateItem := &StateItem{AccountID: accountID, ObjectType: objectType}
+
+	items := make([]types.TransactWriteItem, 0, n+1)
+
+	// State counter update — increment by n
+	items = append(items, types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: stateItem.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: stateItem.SK()},
+			},
+			UpdateExpression: aws.String("SET " + AttrCurrentState + " = if_not_exists(" + AttrCurrentState + ", :zero) + :n, " + AttrUpdatedAt + " = :now"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":zero": &types.AttributeValueMemberN{Value: "0"},
+				":n":    &types.AttributeValueMemberN{Value: strconv.FormatInt(n, 10)},
+				":now":  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+			},
+		},
+	})
+
+	// One change log entry per object, with sequential states
+	for i, objectID := range objectIDs {
+		seqState := currentState + int64(i) + 1
+		changeRecord := &ChangeRecord{
+			AccountID:  accountID,
+			ObjectType: objectType,
+			State:      seqState,
+			ObjectID:   objectID,
+			ChangeType: changeType,
+			Timestamp:  now,
+			TTL:        ttl,
+		}
+		items = append(items, types.TransactWriteItem{
+			Put: &types.Put{
+				TableName:           aws.String(r.tableName),
+				ConditionExpression: aws.String("attribute_not_exists(pk)"),
+				Item: map[string]types.AttributeValue{
+					dynamo.AttrPK:  &types.AttributeValueMemberS{Value: changeRecord.PK()},
+					dynamo.AttrSK:  &types.AttributeValueMemberS{Value: changeRecord.SK()},
+					AttrObjectID:   &types.AttributeValueMemberS{Value: objectID},
+					AttrChangeType: &types.AttributeValueMemberS{Value: string(changeType)},
+					AttrTimestamp:  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+					AttrState:      &types.AttributeValueMemberN{Value: strconv.FormatInt(seqState, 10)},
+					AttrTTL:        &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+				},
+			},
+		})
+	}
+
+	return newState, items
+}
+
+// BuildChangeLogItem returns a single Put transaction item that logs a change
+// for the given object without incrementing the state counter. This is used when
+// multiple objects of the same type are affected in a single transaction and only
+// one state increment is needed (via BuildStateChangeItems), but each object
+// still needs its own change log entry.
+func (r *Repository) BuildChangeLogItem(accountID string, objectType ObjectType, newState int64, objectID string, changeType ChangeType) types.TransactWriteItem {
+	now := time.Now().UTC()
+	ttl := now.Add(time.Duration(r.retentionDays) * 24 * time.Hour).Unix()
+
+	changeRecord := &ChangeRecord{
+		AccountID:  accountID,
+		ObjectType: objectType,
+		State:      newState,
+		ObjectID:   objectID,
+		ChangeType: changeType,
+		Timestamp:  now,
+		TTL:        ttl,
+	}
+
+	return types.TransactWriteItem{
+		Put: &types.Put{
+			TableName:           aws.String(r.tableName),
+			ConditionExpression: aws.String("attribute_not_exists(pk)"),
+			Item: map[string]types.AttributeValue{
+				dynamo.AttrPK:  &types.AttributeValueMemberS{Value: changeRecord.PK()},
+				dynamo.AttrSK:  &types.AttributeValueMemberS{Value: changeRecord.SK()},
+				AttrObjectID:   &types.AttributeValueMemberS{Value: objectID},
+				AttrChangeType: &types.AttributeValueMemberS{Value: string(changeType)},
+				AttrTimestamp:  &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+				AttrState:      &types.AttributeValueMemberN{Value: strconv.FormatInt(newState, 10)},
+				AttrTTL:        &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+			},
+		},
+	}
 }
 
 // QueryChanges retrieves change log entries since a given state.

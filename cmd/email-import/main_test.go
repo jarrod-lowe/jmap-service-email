@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
@@ -51,8 +53,9 @@ func (m *mockBlobUploader) Upload(ctx context.Context, accountID, parentBlobID, 
 
 // mockEmailRepository implements the EmailRepository interface for testing.
 type mockEmailRepository struct {
-	createFunc          func(ctx context.Context, email *emailItem) error
-	findByMessageIDFunc func(ctx context.Context, accountID, messageID string) (*emailItem, error)
+	createFunc               func(ctx context.Context, email *emailItem) error
+	findByMessageIDFunc      func(ctx context.Context, accountID, messageID string) (*emailItem, error)
+	buildCreateEmailItemsFunc func(email *emailItem) []types.TransactWriteItem
 }
 
 func (m *mockEmailRepository) CreateEmail(ctx context.Context, email *emailItem) error {
@@ -69,10 +72,22 @@ func (m *mockEmailRepository) FindByMessageID(ctx context.Context, accountID, me
 	return nil, nil
 }
 
+func (m *mockEmailRepository) BuildCreateEmailItems(email *emailItem) []types.TransactWriteItem {
+	if m.buildCreateEmailItemsFunc != nil {
+		return m.buildCreateEmailItemsFunc(email)
+	}
+	// Default: return 2 items (email + 1 membership for simplicity)
+	return []types.TransactWriteItem{
+		{Put: &types.Put{}}, // Email item
+		{Put: &types.Put{}}, // Membership item
+	}
+}
+
 // mockMailboxRepository implements the MailboxRepository interface for testing.
 type mockMailboxRepository struct {
-	existsFunc         func(ctx context.Context, accountID, mailboxID string) (bool, error)
-	incrementCountFunc func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+	existsFunc                 func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	incrementCountFunc         func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+	buildIncrementCountsItemsFunc func(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem
 }
 
 func (m *mockMailboxRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
@@ -89,9 +104,20 @@ func (m *mockMailboxRepository) IncrementCounts(ctx context.Context, accountID, 
 	return nil
 }
 
+func (m *mockMailboxRepository) BuildIncrementCountsItems(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem {
+	if m.buildIncrementCountsItemsFunc != nil {
+		return m.buildIncrementCountsItemsFunc(accountID, mailboxID, incrementUnread)
+	}
+	// Default: return an Update item
+	return types.TransactWriteItem{Update: &types.Update{}}
+}
+
 // mockStateRepository implements the StateRepository interface for testing.
 type mockStateRepository struct {
-	incrementFunc func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	incrementFunc           func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	getCurrentStateFunc     func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	buildStateChangeItemsFunc func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+	buildStateChangeItemsMultiFunc func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
 func (m *mockStateRepository) IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error) {
@@ -99,6 +125,40 @@ func (m *mockStateRepository) IncrementStateAndLogChange(ctx context.Context, ac
 		return m.incrementFunc(ctx, accountID, objectType, objectID, changeType)
 	}
 	return 1, nil
+}
+
+func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+	if m.getCurrentStateFunc != nil {
+		return m.getCurrentStateFunc(ctx, accountID, objectType)
+	}
+	return 0, nil
+}
+
+func (m *mockStateRepository) BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+	if m.buildStateChangeItemsFunc != nil {
+		return m.buildStateChangeItemsFunc(accountID, objectType, currentState, objectID, changeType)
+	}
+	// Default: return state+1 and 2 items (state update + change log)
+	newState := currentState + 1
+	return newState, []types.TransactWriteItem{
+		{Update: &types.Update{}}, // State update
+		{Put: &types.Put{}},       // Change log
+	}
+}
+
+func (m *mockStateRepository) BuildStateChangeItemsMulti(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+	if m.buildStateChangeItemsMultiFunc != nil {
+		return m.buildStateChangeItemsMultiFunc(accountID, objectType, currentState, objectIDs, changeType)
+	}
+	n := int64(len(objectIDs))
+	items := make([]types.TransactWriteItem, 0, n+1)
+	if n > 0 {
+		items = append(items, types.TransactWriteItem{Update: &types.Update{}})
+		for range objectIDs {
+			items = append(items, types.TransactWriteItem{Put: &types.Put{}})
+		}
+	}
+	return currentState + n, items
 }
 
 // mockBlobDeletePublisher implements BlobDeletePublisher for testing.
@@ -1453,6 +1513,182 @@ func TestHandler_StateTracking_IncludesThread(t *testing.T) {
 	}
 	if !threadCreated {
 		t.Errorf("Expected Thread/created state change for new thread, got changes: %v", stateChanges)
+	}
+}
+
+// mockTransactWriter captures transaction writes for verification.
+type mockTransactWriter struct {
+	transactFunc func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+	capturedInput *dynamodb.TransactWriteItemsInput
+}
+
+func (m *mockTransactWriter) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	m.capturedInput = input
+	if m.transactFunc != nil {
+		return m.transactFunc(ctx, input, opts...)
+	}
+	return &dynamodb.TransactWriteItemsOutput{}, nil
+}
+
+// Test: Import with transactor uses atomic transaction with all items
+func TestHandler_ImportWithTransactor_UsesAtomicTransaction(t *testing.T) {
+	mockRepo := &mockEmailRepository{
+		createFunc: func(ctx context.Context, email *emailItem) error {
+			t.Error("CreateEmail should not be called when transactor is available")
+			return nil
+		},
+	}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+	}
+	mockStateRepo := &mockStateRepository{}
+	mockTransactor := &mockTransactWriter{}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo, mockTransactor)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should succeed
+	created, ok := response.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatal("created should be a map")
+	}
+	if _, ok := created["client-ref-1"]; !ok {
+		t.Fatal("created should contain client-ref-1")
+	}
+
+	// Should have called TransactWriteItems
+	if mockTransactor.capturedInput == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+
+	// Expected item count for 1 mailbox:
+	// - 2 from BuildCreateEmailItems (email + 1 membership)
+	// - 2 from BuildStateChangeItems(Email) (state update + change log)
+	// - 2 from BuildStateChangeItems(Thread) (state update + change log)
+	// - 1 from BuildIncrementCountsItems (mailbox counter)
+	// - 2 from BuildStateChangeItems(Mailbox) (state update + change log)
+	// = 9 total items
+	expectedItems := 9
+	actualItems := len(mockTransactor.capturedInput.TransactItems)
+	if actualItems != expectedItems {
+		t.Errorf("Transaction item count = %d, want %d", actualItems, expectedItems)
+	}
+}
+
+// Test: Transaction failure returns error and triggers blob cleanup
+func TestHandler_TransactionFailure_ReturnsErrorAndCleansUpBlobs(t *testing.T) {
+	var publishedBlobIDs []string
+
+	// Email with a base64 attachment that gets uploaded as a separate blob
+	emailWithAttachment := `From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: With Attachment
+MIME-Version: 1.0
+Content-Type: application/octet-stream; name="test.bin"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="test.bin"
+
+SGVsbG8gV29ybGQ=
+`
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(emailWithAttachment)), nil
+		},
+	}
+	mockUploader := &mockBlobUploader{
+		uploadFunc: func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
+			content, _ := io.ReadAll(body)
+			return "uploaded-part-blob", int64(len(content)), nil
+		},
+	}
+	mockMailboxRepo := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+	}
+	mockStateRepo := &mockStateRepository{}
+	mockBlobPub := &mockBlobDeletePublisher{
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+			publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
+			return nil
+		},
+	}
+	mockTransactor := &mockTransactWriter{
+		transactFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			return nil, errors.New("transaction failed")
+		},
+	}
+
+	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo, mockTransactor, mockBlobPub)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId": "blob-456",
+					"mailboxIds": map[string]any{
+						"inbox": true,
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Should have notCreated entry with serverFail error
+	notCreated, ok := response.MethodResponse.Args["notCreated"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should be a map")
+	}
+
+	errorEntry, ok := notCreated["client-ref-1"].(map[string]any)
+	if !ok {
+		t.Fatal("notCreated should contain client-ref-1")
+	}
+
+	if errorType, ok := errorEntry["type"].(string); !ok || errorType != "serverFail" {
+		t.Errorf("error type = %v, want %q", errorEntry["type"], "serverFail")
+	}
+
+	// Should have published blob cleanup for the uploaded part blob
+	if len(publishedBlobIDs) == 0 {
+		t.Error("expected blob cleanup to be published on transaction failure")
 	}
 }
 

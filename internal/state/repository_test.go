@@ -514,6 +514,157 @@ func TestRepository_BuildStateChangeItems_FromZero(t *testing.T) {
 	}
 }
 
+func TestRepository_BuildStateChangeItemsMulti_MultipleObjects(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+
+	objectIDs := []string{"mbox-1", "mbox-2", "mbox-3"}
+	newState, items := repo.BuildStateChangeItemsMulti("user-123", ObjectTypeMailbox, 5, objectIDs, ChangeTypeUpdated)
+
+	// newState should be currentState + len(objectIDs) = 5 + 3 = 8
+	if newState != 8 {
+		t.Errorf("newState = %d, want 8", newState)
+	}
+
+	// Should have 1 state update + 3 change log puts = 4 items
+	if len(items) != 4 {
+		t.Fatalf("items count = %d, want 4", len(items))
+	}
+
+	// First item: state counter update
+	stateUpdate := items[0].Update
+	if stateUpdate == nil {
+		t.Fatal("First item should be an Update")
+	}
+	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "STATE#Mailbox" {
+		t.Errorf("sk = %q, want %q", sk, "STATE#Mailbox")
+	}
+
+	// Verify the increment expression uses :n (the count) not :one
+	updateExpr := *stateUpdate.UpdateExpression
+	if updateExpr == "" {
+		t.Fatal("UpdateExpression is empty")
+	}
+	incrementVal := stateUpdate.ExpressionAttributeValues[":n"].(*types.AttributeValueMemberN).Value
+	if incrementVal != "3" {
+		t.Errorf("increment value = %q, want %q", incrementVal, "3")
+	}
+
+	// Change log entries should have sequential states: 6, 7, 8
+	expectedSKs := []string{
+		"CHANGE#Mailbox#0000000006",
+		"CHANGE#Mailbox#0000000007",
+		"CHANGE#Mailbox#0000000008",
+	}
+	expectedObjectIDs := []string{"mbox-1", "mbox-2", "mbox-3"}
+
+	for i := 0; i < 3; i++ {
+		put := items[i+1].Put
+		if put == nil {
+			t.Fatalf("items[%d] should be a Put", i+1)
+		}
+		changeSK := put.Item["sk"].(*types.AttributeValueMemberS).Value
+		if changeSK != expectedSKs[i] {
+			t.Errorf("items[%d] sk = %q, want %q", i+1, changeSK, expectedSKs[i])
+		}
+		objectID := put.Item["objectId"].(*types.AttributeValueMemberS).Value
+		if objectID != expectedObjectIDs[i] {
+			t.Errorf("items[%d] objectId = %q, want %q", i+1, objectID, expectedObjectIDs[i])
+		}
+		changeType := put.Item["changeType"].(*types.AttributeValueMemberS).Value
+		if changeType != "updated" {
+			t.Errorf("items[%d] changeType = %q, want %q", i+1, changeType, "updated")
+		}
+	}
+}
+
+func TestRepository_BuildStateChangeItemsMulti_SingleObject(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+
+	newState, items := repo.BuildStateChangeItemsMulti("user-123", ObjectTypeMailbox, 5, []string{"mbox-1"}, ChangeTypeUpdated)
+
+	if newState != 6 {
+		t.Errorf("newState = %d, want 6", newState)
+	}
+	// 1 state update + 1 change log = 2 items
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+}
+
+func TestRepository_BuildStateChangeItemsMulti_EmptySlice(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+
+	newState, items := repo.BuildStateChangeItemsMulti("user-123", ObjectTypeMailbox, 5, []string{}, ChangeTypeUpdated)
+
+	// No objects means no state change
+	if newState != 5 {
+		t.Errorf("newState = %d, want 5", newState)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items count = %d, want 0", len(items))
+	}
+}
+
+func TestChangeLogPuts_HaveConditionExpression(t *testing.T) {
+	t.Run("IncrementStateAndLogChange", func(t *testing.T) {
+		var capturedInput *dynamodb.TransactWriteItemsInput
+		mockClient := &mockDynamoDBClient{
+			transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+				capturedInput = input
+				return &dynamodb.TransactWriteItemsOutput{}, nil
+			},
+		}
+
+		repo := NewRepository(mockClient, "test-table", 7)
+		_, err := repo.IncrementStateAndLogChange(context.Background(), "user-123", ObjectTypeEmail, "email-1", ChangeTypeCreated)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		changePut := capturedInput.TransactItems[1].Put
+		if changePut.ConditionExpression == nil || *changePut.ConditionExpression != "attribute_not_exists(pk)" {
+			t.Errorf("change log Put ConditionExpression = %v, want %q", changePut.ConditionExpression, "attribute_not_exists(pk)")
+		}
+	})
+
+	t.Run("BuildStateChangeItems", func(t *testing.T) {
+		repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+		_, items := repo.BuildStateChangeItems("user-123", ObjectTypeEmail, 5, "email-1", ChangeTypeCreated)
+
+		changePut := items[1].Put
+		if changePut.ConditionExpression == nil || *changePut.ConditionExpression != "attribute_not_exists(pk)" {
+			t.Errorf("change log Put ConditionExpression = %v, want %q", changePut.ConditionExpression, "attribute_not_exists(pk)")
+		}
+	})
+
+	t.Run("BuildStateChangeItemsMulti", func(t *testing.T) {
+		repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+		_, items := repo.BuildStateChangeItemsMulti("user-123", ObjectTypeEmail, 5, []string{"e1", "e2"}, ChangeTypeCreated)
+
+		for i := 1; i < len(items); i++ {
+			put := items[i].Put
+			if put.ConditionExpression == nil || *put.ConditionExpression != "attribute_not_exists(pk)" {
+				t.Errorf("items[%d] Put ConditionExpression = %v, want %q", i, put.ConditionExpression, "attribute_not_exists(pk)")
+			}
+		}
+	})
+
+	t.Run("BuildChangeLogItem", func(t *testing.T) {
+		repo := NewRepository(&mockDynamoDBClient{}, "test-table", 7)
+		item := repo.BuildChangeLogItem("user-123", ObjectTypeEmail, 5, "email-1", ChangeTypeCreated)
+
+		put := item.Put
+		if put.ConditionExpression == nil || *put.ConditionExpression != "attribute_not_exists(pk)" {
+			t.Errorf("BuildChangeLogItem Put ConditionExpression = %v, want %q", put.ConditionExpression, "attribute_not_exists(pk)")
+		}
+	})
+}
+
 // parseInt64 parses a string as int64
 func parseInt64(s string) (int64, error) {
 	var n int64

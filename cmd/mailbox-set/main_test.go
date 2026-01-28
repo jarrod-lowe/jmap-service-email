@@ -5,17 +5,23 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
 type mockMailboxRepository struct {
-	getMailboxFunc      func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
-	getAllMailboxesFunc func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error)
-	createMailboxFunc   func(ctx context.Context, mailbox *mailbox.MailboxItem) error
-	updateMailboxFunc   func(ctx context.Context, mailbox *mailbox.MailboxItem) error
-	deleteMailboxFunc   func(ctx context.Context, accountID, mailboxID string) error
+	getMailboxFunc             func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
+	getAllMailboxesFunc        func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error)
+	createMailboxFunc          func(ctx context.Context, mailbox *mailbox.MailboxItem) error
+	updateMailboxFunc          func(ctx context.Context, mailbox *mailbox.MailboxItem) error
+	deleteMailboxFunc          func(ctx context.Context, accountID, mailboxID string) error
+	buildCreateMailboxItemFunc func(mbox *mailbox.MailboxItem) types.TransactWriteItem
+	buildUpdateMailboxItemFunc func(mbox *mailbox.MailboxItem) types.TransactWriteItem
+	buildDeleteMailboxItemFunc func(accountID, mailboxID string) types.TransactWriteItem
 }
 
 func (m *mockMailboxRepository) GetMailbox(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
@@ -53,10 +59,32 @@ func (m *mockMailboxRepository) DeleteMailbox(ctx context.Context, accountID, ma
 	return nil
 }
 
+func (m *mockMailboxRepository) BuildCreateMailboxItem(mbox *mailbox.MailboxItem) types.TransactWriteItem {
+	if m.buildCreateMailboxItemFunc != nil {
+		return m.buildCreateMailboxItemFunc(mbox)
+	}
+	return types.TransactWriteItem{}
+}
+
+func (m *mockMailboxRepository) BuildUpdateMailboxItem(mbox *mailbox.MailboxItem) types.TransactWriteItem {
+	if m.buildUpdateMailboxItemFunc != nil {
+		return m.buildUpdateMailboxItemFunc(mbox)
+	}
+	return types.TransactWriteItem{}
+}
+
+func (m *mockMailboxRepository) BuildDeleteMailboxItem(accountID, mailboxID string) types.TransactWriteItem {
+	if m.buildDeleteMailboxItemFunc != nil {
+		return m.buildDeleteMailboxItemFunc(accountID, mailboxID)
+	}
+	return types.TransactWriteItem{}
+}
+
 // mockStateRepository implements the StateRepository interface for testing.
 type mockStateRepository struct {
 	getCurrentStateFunc            func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	incrementStateAndLogChangeFunc func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	buildStateChangeItemsFunc      func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
 func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
@@ -71,6 +99,25 @@ func (m *mockStateRepository) IncrementStateAndLogChange(ctx context.Context, ac
 		return m.incrementStateAndLogChangeFunc(ctx, accountID, objectType, objectID, changeType)
 	}
 	return 0, nil
+}
+
+func (m *mockStateRepository) BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+	if m.buildStateChangeItemsFunc != nil {
+		return m.buildStateChangeItemsFunc(accountID, objectType, currentState, objectID, changeType)
+	}
+	return currentState + 1, []types.TransactWriteItem{}
+}
+
+// mockTransactWriter implements the TransactWriter interface for testing.
+type mockTransactWriter struct {
+	transactWriteItemsFunc func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+}
+
+func (m *mockTransactWriter) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	if m.transactWriteItemsFunc != nil {
+		return m.transactWriteItemsFunc(ctx, input, opts...)
+	}
+	return &dynamodb.TransactWriteItemsOutput{}, nil
 }
 
 // Test: Create mailbox with role sets ID to role value
@@ -714,5 +761,280 @@ func TestHandler_StateGetError(t *testing.T) {
 	errorType, ok := resp.MethodResponse.Args["type"].(string)
 	if !ok || errorType != "serverFail" {
 		t.Errorf("error type = %v, want %q", resp.MethodResponse.Args["type"], "serverFail")
+	}
+}
+
+// Test: Create mailbox with transaction combines mailbox creation and state change atomically
+func TestHandler_CreateMailboxTransaction(t *testing.T) {
+	var transactInput *dynamodb.TransactWriteItemsInput
+
+	mockRepo := &mockMailboxRepository{
+		getAllMailboxesFunc: func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error) {
+			return []*mailbox.MailboxItem{}, nil
+		},
+		buildCreateMailboxItemFunc: func(mbox *mailbox.MailboxItem) types.TransactWriteItem {
+			return types.TransactWriteItem{
+				Put: &types.Put{
+					TableName: aws.String("test-table"),
+					Item: map[string]types.AttributeValue{
+						"pk": &types.AttributeValueMemberS{Value: "ACCOUNT#" + mbox.AccountID},
+						"sk": &types.AttributeValueMemberS{Value: "MAILBOX#" + mbox.MailboxID},
+					},
+				},
+			}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 5, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			newState := currentState + 1
+			return newState, []types.TransactWriteItem{
+				{
+					Update: &types.Update{
+						TableName: aws.String("test-table"),
+						Key: map[string]types.AttributeValue{
+							"pk": &types.AttributeValueMemberS{Value: "state-key"},
+						},
+					},
+				},
+			}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			transactInput = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		Args: map[string]any{
+			"create": map[string]any{
+				"c0": map[string]any{
+					"name": "Test Folder",
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Verify mailbox was created
+	created, ok := resp.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatalf("created not a map: %T", resp.MethodResponse.Args["created"])
+	}
+	if _, ok := created["c0"]; !ok {
+		t.Fatal("c0 should be in created")
+	}
+
+	// Verify transaction was executed with both mailbox creation and state change
+	if transactInput == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+	if len(transactInput.TransactItems) != 2 {
+		t.Fatalf("expected 2 transaction items (mailbox + state), got %d", len(transactInput.TransactItems))
+	}
+
+	// Verify state was updated correctly
+	newState, ok := resp.MethodResponse.Args["newState"].(string)
+	if !ok || newState != "6" {
+		t.Errorf("newState = %v, want %q", resp.MethodResponse.Args["newState"], "6")
+	}
+}
+
+// Test: Update mailbox with transaction combines mailbox update and state change atomically
+func TestHandler_UpdateMailboxTransaction(t *testing.T) {
+	var transactInput *dynamodb.TransactWriteItemsInput
+
+	mockRepo := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:    accountID,
+				MailboxID:    mailboxID,
+				Name:         "Old Name",
+				TotalEmails:  5,
+				UnreadEmails: 2,
+				IsSubscribed: true,
+			}, nil
+		},
+		buildUpdateMailboxItemFunc: func(mbox *mailbox.MailboxItem) types.TransactWriteItem {
+			return types.TransactWriteItem{
+				Update: &types.Update{
+					TableName: aws.String("test-table"),
+					Key: map[string]types.AttributeValue{
+						"pk": &types.AttributeValueMemberS{Value: "ACCOUNT#" + mbox.AccountID},
+						"sk": &types.AttributeValueMemberS{Value: "MAILBOX#" + mbox.MailboxID},
+					},
+				},
+			}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			newState := currentState + 1
+			return newState, []types.TransactWriteItem{
+				{
+					Update: &types.Update{
+						TableName: aws.String("test-table"),
+						Key: map[string]types.AttributeValue{
+							"pk": &types.AttributeValueMemberS{Value: "state-key"},
+						},
+					},
+				},
+			}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			transactInput = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		Args: map[string]any{
+			"update": map[string]any{
+				"inbox": map[string]any{
+					"name": "New Name",
+				},
+			},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Verify mailbox was updated
+	updated, ok := resp.MethodResponse.Args["updated"].(map[string]any)
+	if !ok {
+		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
+	}
+	if _, ok := updated["inbox"]; !ok {
+		t.Fatal("inbox should be in updated")
+	}
+
+	// Verify transaction was executed with both mailbox update and state change
+	if transactInput == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+	if len(transactInput.TransactItems) != 2 {
+		t.Fatalf("expected 2 transaction items (mailbox + state), got %d", len(transactInput.TransactItems))
+	}
+
+	// Verify state was updated correctly
+	newState, ok := resp.MethodResponse.Args["newState"].(string)
+	if !ok || newState != "11" {
+		t.Errorf("newState = %v, want %q", resp.MethodResponse.Args["newState"], "11")
+	}
+}
+
+// Test: Destroy mailbox with transaction combines mailbox deletion and state change atomically
+func TestHandler_DestroyMailboxTransaction(t *testing.T) {
+	var transactInput *dynamodb.TransactWriteItemsInput
+
+	mockRepo := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:   accountID,
+				MailboxID:   mailboxID,
+				Name:        "Test",
+				TotalEmails: 0, // Empty
+			}, nil
+		},
+		buildDeleteMailboxItemFunc: func(accountID, mailboxID string) types.TransactWriteItem {
+			return types.TransactWriteItem{
+				Delete: &types.Delete{
+					TableName: aws.String("test-table"),
+					Key: map[string]types.AttributeValue{
+						"pk": &types.AttributeValueMemberS{Value: "ACCOUNT#" + accountID},
+						"sk": &types.AttributeValueMemberS{Value: "MAILBOX#" + mailboxID},
+					},
+				},
+			}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 20, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			newState := currentState + 1
+			return newState, []types.TransactWriteItem{
+				{
+					Update: &types.Update{
+						TableName: aws.String("test-table"),
+						Key: map[string]types.AttributeValue{
+							"pk": &types.AttributeValueMemberS{Value: "state-key"},
+						},
+					},
+				},
+			}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			transactInput = input
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		Args: map[string]any{
+			"destroy": []any{"test-mailbox"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Verify mailbox was destroyed
+	destroyed, ok := resp.MethodResponse.Args["destroyed"].([]any)
+	if !ok {
+		t.Fatalf("destroyed not a slice: %T", resp.MethodResponse.Args["destroyed"])
+	}
+	if len(destroyed) != 1 || destroyed[0] != "test-mailbox" {
+		t.Errorf("destroyed = %v, want [test-mailbox]", destroyed)
+	}
+
+	// Verify transaction was executed with both mailbox deletion and state change
+	if transactInput == nil {
+		t.Fatal("TransactWriteItems was not called")
+	}
+	if len(transactInput.TransactItems) != 2 {
+		t.Fatalf("expected 2 transaction items (mailbox + state), got %d", len(transactInput.TransactItems))
+	}
+
+	// Verify state was updated correctly
+	newState, ok := resp.MethodResponse.Args["newState"].(string)
+	if !ok || newState != "21" {
+		t.Errorf("newState = %v, want %q", resp.MethodResponse.Args["newState"], "21")
 	}
 }

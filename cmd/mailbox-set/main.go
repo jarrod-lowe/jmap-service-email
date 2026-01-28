@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
@@ -32,26 +33,40 @@ type MailboxRepository interface {
 	CreateMailbox(ctx context.Context, mailbox *mailbox.MailboxItem) error
 	UpdateMailbox(ctx context.Context, mailbox *mailbox.MailboxItem) error
 	DeleteMailbox(ctx context.Context, accountID, mailboxID string) error
+	BuildCreateMailboxItem(mbox *mailbox.MailboxItem) types.TransactWriteItem
+	BuildUpdateMailboxItem(mbox *mailbox.MailboxItem) types.TransactWriteItem
+	BuildDeleteMailboxItem(accountID, mailboxID string) types.TransactWriteItem
 }
 
 // StateRepository defines the interface for state tracking operations.
 type StateRepository interface {
 	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+}
+
+// TransactWriter executes DynamoDB transactions.
+type TransactWriter interface {
+	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
 // handler implements the Mailbox/set logic.
 type handler struct {
-	repo      MailboxRepository
-	stateRepo StateRepository
+	repo       MailboxRepository
+	stateRepo  StateRepository
+	transactor TransactWriter
 }
 
 // newHandler creates a new handler.
-func newHandler(repo MailboxRepository, stateRepo StateRepository) *handler {
-	return &handler{
+func newHandler(repo MailboxRepository, stateRepo StateRepository, transactor ...TransactWriter) *handler {
+	h := &handler{
 		repo:      repo,
 		stateRepo: stateRepo,
 	}
+	if len(transactor) > 0 {
+		h.transactor = transactor[0]
+	}
+	return h
 }
 
 // handle processes a Mailbox/set request.
@@ -110,24 +125,13 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				continue
 			}
 
-			result, err := h.createMailbox(ctx, accountID, data)
+			result, err := h.createMailbox(ctx, accountID, data, newState)
 			if err != nil {
 				notCreated[clientID] = err
 			} else {
 				created[clientID] = result
-				// Track state change
-				if h.stateRepo != nil {
-					mailboxID := result["id"].(string)
-					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeCreated); err != nil {
-						logger.ErrorContext(ctx, "Failed to track mailbox state change",
-							slog.String("account_id", accountID),
-							slog.String("mailbox_id", mailboxID),
-							slog.String("error", err.Error()),
-						)
-					} else {
-						newState = s
-					}
-				}
+				// Update newState after successful creation
+				newState = result["newState"].(int64)
 			}
 		}
 	}
@@ -141,22 +145,14 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				continue
 			}
 
-			err := h.updateMailbox(ctx, accountID, mailboxID, data)
+			result, err := h.updateMailbox(ctx, accountID, mailboxID, data, newState)
 			if err != nil {
 				notUpdated[mailboxID] = err
 			} else {
 				updated[mailboxID] = nil
-				// Track state change
-				if h.stateRepo != nil {
-					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeUpdated); err != nil {
-						logger.ErrorContext(ctx, "Failed to track mailbox state change",
-							slog.String("account_id", accountID),
-							slog.String("mailbox_id", mailboxID),
-							slog.String("error", err.Error()),
-						)
-					} else {
-						newState = s
-					}
+				// Update newState after successful update
+				if ns, ok := result["newState"].(int64); ok {
+					newState = ns
 				}
 			}
 		}
@@ -175,22 +171,14 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				continue
 			}
 
-			err := h.destroyMailbox(ctx, accountID, mailboxID, onDestroyRemoveEmails)
+			result, err := h.destroyMailbox(ctx, accountID, mailboxID, onDestroyRemoveEmails, newState)
 			if err != nil {
 				notDestroyed[mailboxID] = err
 			} else {
 				destroyed = append(destroyed, mailboxID)
-				// Track state change
-				if h.stateRepo != nil {
-					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeDestroyed); err != nil {
-						logger.ErrorContext(ctx, "Failed to track mailbox state change",
-							slog.String("account_id", accountID),
-							slog.String("mailbox_id", mailboxID),
-							slog.String("error", err.Error()),
-						)
-					} else {
-						newState = s
-					}
+				// Update newState after successful deletion
+				if ns, ok := result["newState"].(int64); ok {
+					newState = ns
 				}
 			}
 		}
@@ -223,7 +211,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 }
 
 // createMailbox creates a new mailbox.
-func (h *handler) createMailbox(ctx context.Context, accountID string, data map[string]any) (map[string]any, map[string]any) {
+func (h *handler) createMailbox(ctx context.Context, accountID string, data map[string]any, currentState int64) (map[string]any, map[string]any) {
 	name, _ := data["name"].(string)
 	role, _ := data["role"].(string)
 	sortOrder := 0
@@ -238,6 +226,23 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 	// Validate role if provided
 	if role != "" && !mailbox.ValidRoles[role] {
 		return nil, setError("invalidProperties", "Invalid role: "+role)
+	}
+
+	// Check for duplicate roles if transactor is available
+	if h.transactor != nil && role != "" {
+		mailboxes, err := h.repo.GetAllMailboxes(ctx, accountID)
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to get all mailboxes for role check",
+				slog.String("account_id", accountID),
+				slog.String("error", err.Error()),
+			)
+			return nil, setError("serverFail", err.Error())
+		}
+		for _, m := range mailboxes {
+			if m.Role == role {
+				return nil, setError("invalidProperties", "A mailbox with this role already exists")
+			}
+		}
 	}
 
 	// Determine mailbox ID
@@ -262,6 +267,38 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 		UpdatedAt:    now,
 	}
 
+	// If transactor is available, use transaction
+	if h.transactor != nil && h.stateRepo != nil {
+		// Build mailbox creation item
+		mailboxItem := h.repo.BuildCreateMailboxItem(mbox)
+
+		// Build state change items
+		newState, stateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeMailbox, currentState, mailboxID, state.ChangeTypeCreated)
+
+		// Combine all items
+		transactItems := []types.TransactWriteItem{mailboxItem}
+		transactItems = append(transactItems, stateItems...)
+
+		// Execute transaction
+		_, err := h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+			TransactItems: transactItems,
+		})
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to create mailbox transactionally",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+			return nil, setError("serverFail", err.Error())
+		}
+
+		return map[string]any{
+			"id":       mailboxID,
+			"newState": newState,
+		}, nil
+	}
+
+	// Fallback to non-transactional path
 	err := h.repo.CreateMailbox(ctx, mbox)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrRoleAlreadyExists) {
@@ -274,17 +311,34 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 		return nil, setError("serverFail", err.Error())
 	}
 
+	// Track state change separately (old behavior)
+	if h.stateRepo != nil {
+		if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeCreated); err != nil {
+			logger.ErrorContext(ctx, "Failed to track mailbox state change",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			return map[string]any{
+				"id":       mailboxID,
+				"newState": s,
+			}, nil
+		}
+	}
+
 	return map[string]any{
-		"id": mailboxID,
+		"id":       mailboxID,
+		"newState": currentState,
 	}, nil
 }
 
 // updateMailbox updates an existing mailbox.
-func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string, data map[string]any) map[string]any {
+func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string, data map[string]any, currentState int64) (map[string]any, map[string]any) {
 	// Check for parentId - we don't support hierarchy
 	if _, hasParentId := data["parentId"]; hasParentId {
 		if data["parentId"] != nil {
-			return setError("invalidProperties", "Hierarchical mailboxes are not supported")
+			return nil, setError("invalidProperties", "Hierarchical mailboxes are not supported")
 		}
 	}
 
@@ -292,14 +346,14 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 	mbox, err := h.repo.GetMailbox(ctx, accountID, mailboxID)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrMailboxNotFound) {
-			return setError("notFound", "Mailbox not found")
+			return nil, setError("notFound", "Mailbox not found")
 		}
 		logger.ErrorContext(ctx, "Failed to get mailbox",
 			slog.String("account_id", accountID),
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return setError("serverFail", err.Error())
+		return nil, setError("serverFail", err.Error())
 	}
 
 	// Apply updates
@@ -308,7 +362,7 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 	}
 	if role, ok := data["role"].(string); ok {
 		if role != "" && !mailbox.ValidRoles[role] {
-			return setError("invalidProperties", "Invalid role: "+role)
+			return nil, setError("invalidProperties", "Invalid role: "+role)
 		}
 		mbox.Role = role
 	}
@@ -321,46 +375,125 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 
 	mbox.UpdatedAt = time.Now().UTC()
 
+	// If transactor is available, use transaction
+	if h.transactor != nil && h.stateRepo != nil {
+		// Build mailbox update item
+		mailboxItem := h.repo.BuildUpdateMailboxItem(mbox)
+
+		// Build state change items
+		newState, stateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeMailbox, currentState, mailboxID, state.ChangeTypeUpdated)
+
+		// Combine all items
+		transactItems := []types.TransactWriteItem{mailboxItem}
+		transactItems = append(transactItems, stateItems...)
+
+		// Execute transaction
+		_, err = h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+			TransactItems: transactItems,
+		})
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to update mailbox transactionally",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+			return nil, setError("serverFail", err.Error())
+		}
+
+		return map[string]any{
+			"newState": newState,
+		}, nil
+	}
+
+	// Fallback to non-transactional path
 	err = h.repo.UpdateMailbox(ctx, mbox)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrRoleAlreadyExists) {
-			return setError("invalidProperties", "A mailbox with this role already exists")
+			return nil, setError("invalidProperties", "A mailbox with this role already exists")
 		}
 		logger.ErrorContext(ctx, "Failed to update mailbox",
 			slog.String("account_id", accountID),
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return setError("serverFail", err.Error())
+		return nil, setError("serverFail", err.Error())
 	}
 
-	return nil
+	// Track state change separately (old behavior)
+	if h.stateRepo != nil {
+		if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeUpdated); err != nil {
+			logger.ErrorContext(ctx, "Failed to track mailbox state change",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			return map[string]any{
+				"newState": s,
+			}, nil
+		}
+	}
+
+	return map[string]any{
+		"newState": currentState,
+	}, nil
 }
 
 // destroyMailbox deletes a mailbox.
-func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID string, onDestroyRemoveEmails bool) map[string]any {
+func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID string, onDestroyRemoveEmails bool, currentState int64) (map[string]any, map[string]any) {
 	// Get mailbox to check if it has emails
 	mbox, err := h.repo.GetMailbox(ctx, accountID, mailboxID)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrMailboxNotFound) {
-			return setError("notFound", "Mailbox not found")
+			return nil, setError("notFound", "Mailbox not found")
 		}
 		logger.ErrorContext(ctx, "Failed to get mailbox",
 			slog.String("account_id", accountID),
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return setError("serverFail", err.Error())
+		return nil, setError("serverFail", err.Error())
 	}
 
 	// Check if mailbox has emails
 	if mbox.TotalEmails > 0 && !onDestroyRemoveEmails {
-		return setError("mailboxHasEmail", "Mailbox is not empty")
+		return nil, setError("mailboxHasEmail", "Mailbox is not empty")
 	}
 
 	// TODO: If onDestroyRemoveEmails is true, we should remove emails from mailbox
 	// and destroy orphaned emails. For now, just delete the mailbox.
 
+	// If transactor is available, use transaction
+	if h.transactor != nil && h.stateRepo != nil {
+		// Build mailbox deletion item
+		mailboxItem := h.repo.BuildDeleteMailboxItem(accountID, mailboxID)
+
+		// Build state change items
+		newState, stateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeMailbox, currentState, mailboxID, state.ChangeTypeDestroyed)
+
+		// Combine all items
+		transactItems := []types.TransactWriteItem{mailboxItem}
+		transactItems = append(transactItems, stateItems...)
+
+		// Execute transaction
+		_, err = h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+			TransactItems: transactItems,
+		})
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to destroy mailbox transactionally",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+			return nil, setError("serverFail", err.Error())
+		}
+
+		return map[string]any{
+			"newState": newState,
+		}, nil
+	}
+
+	// Fallback to non-transactional path
 	err = h.repo.DeleteMailbox(ctx, accountID, mailboxID)
 	if err != nil {
 		logger.ErrorContext(ctx, "Failed to delete mailbox",
@@ -368,10 +501,27 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return setError("serverFail", err.Error())
+		return nil, setError("serverFail", err.Error())
 	}
 
-	return nil
+	// Track state change separately (old behavior)
+	if h.stateRepo != nil {
+		if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeDestroyed); err != nil {
+			logger.ErrorContext(ctx, "Failed to track mailbox state change",
+				slog.String("account_id", accountID),
+				slog.String("mailbox_id", mailboxID),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			return map[string]any{
+				"newState": s,
+			}, nil
+		}
+	}
+
+	return map[string]any{
+		"newState": currentState,
+	}, nil
 }
 
 // setError creates a JMAP SetError response.
@@ -418,6 +568,6 @@ func main() {
 	repo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	h := newHandler(repo, stateRepo)
+	h := newHandler(repo, stateRepo, dynamoClient)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

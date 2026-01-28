@@ -47,33 +47,7 @@ func NewRepository(client DynamoDBClient, tableName string) *Repository {
 // CreateEmail stores a new email and its mailbox memberships in a transaction.
 func (r *Repository) CreateEmail(ctx context.Context, email *EmailItem) error {
 	// Build the transaction items
-	transactItems := make([]types.TransactWriteItem, 0, 1+len(email.MailboxIDs))
-
-	// Email item
-	emailItem := r.marshalEmailItem(email)
-	transactItems = append(transactItems, types.TransactWriteItem{
-		Put: &types.Put{
-			TableName: aws.String(r.tableName),
-			Item:      emailItem,
-		},
-	})
-
-	// Mailbox membership items
-	for mailboxID := range email.MailboxIDs {
-		membership := &MailboxMembershipItem{
-			AccountID:  email.AccountID,
-			MailboxID:  mailboxID,
-			ReceivedAt: email.ReceivedAt,
-			EmailID:    email.EmailID,
-		}
-		membershipItem := r.marshalMembershipItem(membership)
-		transactItems = append(transactItems, types.TransactWriteItem{
-			Put: &types.Put{
-				TableName: aws.String(r.tableName),
-				Item:      membershipItem,
-			},
-		})
-	}
+	transactItems := r.BuildCreateEmailItems(email)
 
 	// Execute transaction
 	_, err := r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
@@ -591,6 +565,40 @@ func unmarshalStringList(list []types.AttributeValue) []string {
 	return strs
 }
 
+// BuildCreateEmailItems returns transaction items to create an email and all its
+// mailbox membership records. The caller includes these in their own transaction.
+func (r *Repository) BuildCreateEmailItems(email *EmailItem) []types.TransactWriteItem {
+	items := make([]types.TransactWriteItem, 0, 1+len(email.MailboxIDs))
+
+	// Email item
+	emailItem := r.marshalEmailItem(email)
+	items = append(items, types.TransactWriteItem{
+		Put: &types.Put{
+			TableName: aws.String(r.tableName),
+			Item:      emailItem,
+		},
+	})
+
+	// Mailbox membership items
+	for mailboxID := range email.MailboxIDs {
+		membership := &MailboxMembershipItem{
+			AccountID:  email.AccountID,
+			MailboxID:  mailboxID,
+			ReceivedAt: email.ReceivedAt,
+			EmailID:    email.EmailID,
+		}
+		membershipItem := r.marshalMembershipItem(membership)
+		items = append(items, types.TransactWriteItem{
+			Put: &types.Put{
+				TableName: aws.String(r.tableName),
+				Item:      membershipItem,
+			},
+		})
+	}
+
+	return items
+}
+
 // BuildDeleteEmailItems returns transaction items to delete an email and all its
 // mailbox membership records. The caller includes these in their own transaction.
 func (r *Repository) BuildDeleteEmailItems(emailItem *EmailItem) []types.TransactWriteItem {
@@ -631,6 +639,77 @@ func (r *Repository) BuildDeleteEmailItems(emailItem *EmailItem) []types.Transac
 	}
 
 	return items
+}
+
+// BuildUpdateEmailMailboxesItems returns transaction items to update an email's mailbox
+// memberships, plus the old mailbox IDs for counter calculations.
+// The caller fetches the email beforehand and passes it in.
+func (r *Repository) BuildUpdateEmailMailboxesItems(emailItem *EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem) {
+	oldMailboxIDs := emailItem.MailboxIDs
+
+	// Calculate added and removed
+	for mailboxID := range newMailboxIDs {
+		if !oldMailboxIDs[mailboxID] {
+			addedMailboxes = append(addedMailboxes, mailboxID)
+		}
+	}
+	for mailboxID := range oldMailboxIDs {
+		if !newMailboxIDs[mailboxID] {
+			removedMailboxes = append(removedMailboxes, mailboxID)
+		}
+	}
+
+	// Build items (same logic as UpdateEmailMailboxes lines 666-714)
+	items = make([]types.TransactWriteItem, 0, 1+len(addedMailboxes)+len(removedMailboxes))
+
+	// Update email's mailboxIds (PUT with condition)
+	updatedEmail := *emailItem // copy
+	updatedEmail.MailboxIDs = newMailboxIDs
+	emailAttr := r.marshalEmailItem(&updatedEmail)
+	items = append(items, types.TransactWriteItem{
+		Put: &types.Put{
+			TableName:           aws.String(r.tableName),
+			Item:                emailAttr,
+			ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
+		},
+	})
+
+	// Add new membership items
+	for _, mailboxID := range addedMailboxes {
+		membership := &MailboxMembershipItem{
+			AccountID:  emailItem.AccountID,
+			MailboxID:  mailboxID,
+			ReceivedAt: emailItem.ReceivedAt,
+			EmailID:    emailItem.EmailID,
+		}
+		items = append(items, types.TransactWriteItem{
+			Put: &types.Put{
+				TableName: aws.String(r.tableName),
+				Item:      r.marshalMembershipItem(membership),
+			},
+		})
+	}
+
+	// Delete removed membership items
+	for _, mailboxID := range removedMailboxes {
+		membership := &MailboxMembershipItem{
+			AccountID:  emailItem.AccountID,
+			MailboxID:  mailboxID,
+			ReceivedAt: emailItem.ReceivedAt,
+			EmailID:    emailItem.EmailID,
+		}
+		items = append(items, types.TransactWriteItem{
+			Delete: &types.Delete{
+				TableName: aws.String(r.tableName),
+				Key: map[string]types.AttributeValue{
+					dynamo.AttrPK: &types.AttributeValueMemberS{Value: membership.PK()},
+					dynamo.AttrSK: &types.AttributeValueMemberS{Value: membership.SK()},
+				},
+			},
+		})
+	}
+
+	return
 }
 
 // UpdateEmailMailboxes updates an email's mailbox memberships in a transaction.

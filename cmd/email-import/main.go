@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
@@ -48,22 +49,32 @@ type BlobUploader interface {
 type EmailRepository interface {
 	CreateEmail(ctx context.Context, email *emailItem) error
 	FindByMessageID(ctx context.Context, accountID, messageID string) (*emailItem, error)
+	BuildCreateEmailItems(email *emailItem) []types.TransactWriteItem
 }
 
 // MailboxRepository defines the interface for mailbox operations.
 type MailboxRepository interface {
 	MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error)
 	IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+	BuildIncrementCountsItems(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem
 }
 
 // StateRepository defines the interface for state tracking operations.
 type StateRepository interface {
 	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+	BuildStateChangeItemsMulti(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
 // BlobDeletePublisher publishes blob deletion requests to an async queue.
 type BlobDeletePublisher interface {
 	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error
+}
+
+// TransactWriter defines the interface for DynamoDB transactional writes.
+type TransactWriter interface {
+	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
 // handler implements the Email/import logic.
@@ -74,10 +85,11 @@ type handler struct {
 	mailboxRepo         MailboxRepository
 	stateRepo           StateRepository
 	blobDeletePublisher BlobDeletePublisher
+	transactor          TransactWriter
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository, stateRepo StateRepository, blobDeletePublisher ...BlobDeletePublisher) *handler {
+func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository, stateRepo StateRepository, opts ...any) *handler {
 	h := &handler{
 		repo:        repo,
 		streamer:    streamer,
@@ -85,8 +97,13 @@ func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUpload
 		mailboxRepo: mailboxRepo,
 		stateRepo:   stateRepo,
 	}
-	if len(blobDeletePublisher) > 0 {
-		h.blobDeletePublisher = blobDeletePublisher[0]
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case BlobDeletePublisher:
+			h.blobDeletePublisher = v
+		case TransactWriter:
+			h.transactor = v
+		}
 	}
 	return h
 }
@@ -300,69 +317,87 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		Version:       1,
 	}
 
-	// Store in repository
-	if err := h.repo.CreateEmail(ctx, emailItem); err != nil {
-		logger.ErrorContext(ctx, "Failed to store email",
-			slog.String("account_id", accountID),
-			slog.String("email_id", emailID),
-			slog.String("error", err.Error()),
-		)
-		// Clean up uploaded part blobs on failure
-		h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
-		return nil, map[string]any{
-			"type":        "serverFail",
-			"description": err.Error(),
-		}
-	}
-
-	// Track state changes for Email (created) and Thread (updated)
-	if h.stateRepo != nil {
-		if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeCreated); err != nil {
-			// Log but don't fail - email was already stored successfully
-			logger.ErrorContext(ctx, "Failed to track email state change",
+	// If transactor is available, use atomic transaction
+	if h.transactor != nil {
+		if err := h.importEmailTransactional(ctx, accountID, emailItem, threadID, keywords); err != nil {
+			logger.ErrorContext(ctx, "Failed to store email transactionally",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailID),
 				slog.String("error", err.Error()),
 			)
+			// Clean up uploaded part blobs on failure
+			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
+			return nil, map[string]any{
+				"type":        "serverFail",
+				"description": err.Error(),
+			}
 		}
-
-		// Determine if this is a new thread or existing thread
-		// New thread: threadID == emailID (no parent found or no In-Reply-To)
-		// Existing thread: threadID != emailID (inherited from parent)
-		threadChangeType := state.ChangeTypeUpdated
-		if threadID == emailID {
-			threadChangeType = state.ChangeTypeCreated
-		}
-		if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeThread, threadID, threadChangeType); err != nil {
-			logger.ErrorContext(ctx, "Failed to track thread state change",
+	} else {
+		// Fallback to non-transactional (legacy) path
+		// Store in repository
+		if err := h.repo.CreateEmail(ctx, emailItem); err != nil {
+			logger.ErrorContext(ctx, "Failed to store email",
 				slog.String("account_id", accountID),
-				slog.String("thread_id", threadID),
+				slog.String("email_id", emailID),
 				slog.String("error", err.Error()),
 			)
-		}
-	}
-
-	// Increment mailbox counts and track state changes
-	isSeen := keywords["$seen"]
-	incrementUnread := !isSeen
-	for mailboxID := range mailboxIDs {
-		if err := h.mailboxRepo.IncrementCounts(ctx, accountID, mailboxID, incrementUnread); err != nil {
-			// Log but don't fail - email was already stored successfully
-			logger.ErrorContext(ctx, "Failed to increment mailbox counts",
-				slog.String("account_id", accountID),
-				slog.String("mailbox_id", mailboxID),
-				slog.String("error", err.Error()),
-			)
+			// Clean up uploaded part blobs on failure
+			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
+			return nil, map[string]any{
+				"type":        "serverFail",
+				"description": err.Error(),
+			}
 		}
 
-		// Track state changes for Mailbox (updated)
+		// Track state changes for Email (created) and Thread (updated)
 		if h.stateRepo != nil {
-			if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeUpdated); err != nil {
-				logger.ErrorContext(ctx, "Failed to track mailbox state change",
+			if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeCreated); err != nil {
+				// Log but don't fail - email was already stored successfully
+				logger.ErrorContext(ctx, "Failed to track email state change",
+					slog.String("account_id", accountID),
+					slog.String("email_id", emailID),
+					slog.String("error", err.Error()),
+				)
+			}
+
+			// Determine if this is a new thread or existing thread
+			// New thread: threadID == emailID (no parent found or no In-Reply-To)
+			// Existing thread: threadID != emailID (inherited from parent)
+			threadChangeType := state.ChangeTypeUpdated
+			if threadID == emailID {
+				threadChangeType = state.ChangeTypeCreated
+			}
+			if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeThread, threadID, threadChangeType); err != nil {
+				logger.ErrorContext(ctx, "Failed to track thread state change",
+					slog.String("account_id", accountID),
+					slog.String("thread_id", threadID),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
+
+		// Increment mailbox counts and track state changes
+		isSeen := keywords["$seen"]
+		incrementUnread := !isSeen
+		for mailboxID := range mailboxIDs {
+			if err := h.mailboxRepo.IncrementCounts(ctx, accountID, mailboxID, incrementUnread); err != nil {
+				// Log but don't fail - email was already stored successfully
+				logger.ErrorContext(ctx, "Failed to increment mailbox counts",
 					slog.String("account_id", accountID),
 					slog.String("mailbox_id", mailboxID),
 					slog.String("error", err.Error()),
 				)
+			}
+
+			// Track state changes for Mailbox (updated)
+			if h.stateRepo != nil {
+				if _, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeMailbox, mailboxID, state.ChangeTypeUpdated); err != nil {
+					logger.ErrorContext(ctx, "Failed to track mailbox state change",
+						slog.String("account_id", accountID),
+						slog.String("mailbox_id", mailboxID),
+						slog.String("error", err.Error()),
+					)
+				}
 			}
 		}
 	}
@@ -379,6 +414,63 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		"threadId": threadID,
 		"size":     parsed.Size,
 	}, nil
+}
+
+// importEmailTransactional imports an email using a single atomic transaction.
+// All writes (email creation, state updates, mailbox counters) are bundled into one transaction.
+func (h *handler) importEmailTransactional(ctx context.Context, accountID string, emailItem *email.EmailItem, threadID string, keywords map[string]bool) error {
+	var transactItems []types.TransactWriteItem
+
+	// Email creation items (email + membership records)
+	transactItems = append(transactItems, h.repo.BuildCreateEmailItems(emailItem)...)
+
+	// Read current states for Email, Thread, Mailbox types
+	emailState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+	if err != nil {
+		return err
+	}
+	threadState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeThread)
+	if err != nil {
+		return err
+	}
+	mailboxState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
+	if err != nil {
+		return err
+	}
+
+	// Email state change (created)
+	_, emailStateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeEmail, emailState, emailItem.EmailID, state.ChangeTypeCreated)
+	transactItems = append(transactItems, emailStateItems...)
+
+	// Thread state change (created if new thread, updated if joining existing)
+	threadChangeType := state.ChangeTypeUpdated
+	if threadID == emailItem.EmailID {
+		threadChangeType = state.ChangeTypeCreated
+	}
+	_, threadStateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeThread, threadState, threadID, threadChangeType)
+	transactItems = append(transactItems, threadStateItems...)
+
+	// Mailbox counter increments + state changes
+	isSeen := keywords["$seen"]
+	incrementUnread := !isSeen
+	mailboxIDs := make([]string, 0, len(emailItem.MailboxIDs))
+	for mailboxID := range emailItem.MailboxIDs {
+		// Counter increment
+		transactItems = append(transactItems, h.mailboxRepo.BuildIncrementCountsItems(accountID, mailboxID, incrementUnread))
+		mailboxIDs = append(mailboxIDs, mailboxID)
+	}
+	_, mailboxStateItems := h.stateRepo.BuildStateChangeItemsMulti(accountID, state.ObjectTypeMailbox, mailboxState, mailboxIDs, state.ChangeTypeUpdated)
+	transactItems = append(transactItems, mailboxStateItems...)
+
+	// Execute transaction
+	_, err = h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // publishBlobCleanup publishes blob IDs from a body structure for async deletion.
@@ -480,6 +572,7 @@ func main() {
 	}
 
 	// HTTPBlobClient implements both BlobStreamer and BlobUploader
-	h := newHandler(repo, blobClient, blobClient, mailboxRepo, stateRepo, blobPub)
+	// Pass dynamoClient as TransactWriter for atomic operations
+	h := newHandler(repo, blobClient, blobClient, mailboxRepo, stateRepo, dynamoClient, blobPub)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

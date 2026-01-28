@@ -34,6 +34,7 @@ type EmailRepository interface {
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 	UpdateEmailKeywords(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
 	BuildDeleteEmailItems(emailItem *email.EmailItem) []types.TransactWriteItem
+	BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
 // MailboxRepository defines the interface for mailbox operations.
@@ -42,6 +43,7 @@ type MailboxRepository interface {
 	IncrementCounts(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
 	DecrementCounts(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error
 	BuildDecrementCountsItems(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem
+	BuildIncrementCountsItems(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem
 }
 
 // StateRepository defines the interface for state tracking operations.
@@ -49,6 +51,7 @@ type StateRepository interface {
 	GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
 	BuildStateChangeItems(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+	BuildStateChangeItemsMulti(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
 // TransactWriter executes DynamoDB transactions.
@@ -169,21 +172,28 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				continue
 			}
 
-			err := h.updateEmail(ctx, accountID, emailID, data, affectedMailboxes)
+			newEmailState, err := h.updateEmail(ctx, accountID, emailID, data, affectedMailboxes)
 			if err != nil {
 				notUpdated[emailID] = err
 			} else {
 				updated[emailID] = nil
-				// Track state change for email
-				if h.stateRepo != nil {
-					if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeUpdated); err != nil {
-						logger.ErrorContext(ctx, "Failed to track email state change",
-							slog.String("account_id", accountID),
-							slog.String("email_id", emailID),
-							slog.String("error", err.Error()),
-						)
-					} else {
-						newState = s
+				// If updateEmail did transactional state update (mailbox update), use the returned state
+				if newEmailState > 0 {
+					if newEmailState > newState {
+						newState = newEmailState
+					}
+				} else {
+					// Otherwise track state change separately (keywords-only update)
+					if h.stateRepo != nil {
+						if s, err := h.stateRepo.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeUpdated); err != nil {
+							logger.ErrorContext(ctx, "Failed to track email state change",
+								slog.String("account_id", accountID),
+								slog.String("email_id", emailID),
+								slog.String("error", err.Error()),
+							)
+						} else {
+							newState = s
+						}
 					}
 				}
 			}
@@ -254,7 +264,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 const maxKeywordRetries = 3
 
 // updateEmail processes an email update.
-func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, data map[string]any, affectedMailboxes map[string]bool) map[string]any {
+// Returns the new email state (if transactional update was performed), or 0 if state tracking should be done separately.
+func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, data map[string]any, affectedMailboxes map[string]bool) (int64, map[string]any) {
 	// Check for unsupported properties
 	hasMailboxUpdate := false
 	hasKeywordUpdate := false
@@ -264,35 +275,35 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 		} else if key == "keywords" || strings.HasPrefix(key, "keywords/") {
 			hasKeywordUpdate = true
 		} else {
-			return setError("invalidProperties", "unsupported property: "+key)
+			return 0, setError("invalidProperties", "unsupported property: "+key)
 		}
 	}
 
-	// Handle keywords update
+	// Handle keywords update (non-transactional for now)
 	if hasKeywordUpdate {
 		if err := h.updateKeywords(ctx, accountID, emailID, data, affectedMailboxes); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	// Handle mailboxIds update
 	if !hasMailboxUpdate {
-		// If we had keywords and succeeded, we're done
+		// If we had keywords and succeeded, we're done (state tracking happens in handle())
 		if hasKeywordUpdate {
-			return nil
+			return 0, nil
 		}
-		return setError("invalidProperties", "no mailboxIds or keywords update found")
+		return 0, setError("invalidProperties", "no mailboxIds or keywords update found")
 	}
 
 	// Parse mailboxIds update (full replacement vs patch)
-	newMailboxIDs, parseErr := h.parseMailboxIDsUpdate(ctx, accountID, emailID, data)
+	newMailboxIDs, fetchedEmail, parseErr := h.parseMailboxIDsUpdate(ctx, accountID, emailID, data)
 	if parseErr != nil {
-		return parseErr
+		return 0, parseErr
 	}
 
 	// Validate at least one mailbox
 	if len(newMailboxIDs) == 0 {
-		return setError("invalidProperties", "email must belong to at least one mailbox")
+		return 0, setError("invalidProperties", "email must belong to at least one mailbox")
 	}
 
 	// Validate all mailboxes exist
@@ -304,32 +315,110 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", checkErr.Error()),
 			)
-			return setError("serverFail", checkErr.Error())
+			return 0, setError("serverFail", checkErr.Error())
 		}
 		if !exists {
-			return setError("invalidProperties", "mailbox does not exist: "+mailboxID)
+			return 0, setError("invalidProperties", "mailbox does not exist: "+mailboxID)
 		}
 	}
 
-	// Update email mailboxIds
+	// Transactional path: bundle email update + counter updates + state changes
+	if h.transactor != nil {
+		return h.updateEmailMailboxesTransactional(ctx, accountID, emailID, newMailboxIDs, fetchedEmail, affectedMailboxes)
+	}
+
+	// Non-transactional fallback
+	return h.updateEmailMailboxesLegacy(ctx, accountID, emailID, newMailboxIDs, affectedMailboxes)
+}
+
+// updateEmailMailboxesTransactional bundles email mailbox update + counter updates + state changes into one transaction.
+// It does NOT populate affectedMailboxes since state changes are handled within the transaction.
+func (h *handler) updateEmailMailboxesTransactional(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool, fetchedEmail *email.EmailItem, _ map[string]bool) (int64, map[string]any) {
+	// Get the email if not already fetched (full replacement syntax)
+	emailItem := fetchedEmail
+	if emailItem == nil {
+		var err error
+		emailItem, err = h.emailRepo.GetEmail(ctx, accountID, emailID)
+		if err != nil {
+			if errors.Is(err, email.ErrEmailNotFound) {
+				return 0, setError("notFound", "email not found")
+			}
+			return 0, setError("serverFail", err.Error())
+		}
+	}
+
+	// Get current states
+	var emailState, mailboxState int64
+	if h.stateRepo != nil {
+		var err error
+		emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+		if err != nil {
+			return 0, setError("serverFail", err.Error())
+		}
+		mailboxState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
+		if err != nil {
+			return 0, setError("serverFail", err.Error())
+		}
+	}
+
+	// Build transaction items
+	var transactItems []types.TransactWriteItem
+
+	addedMailboxes, removedMailboxes, emailItems := h.emailRepo.BuildUpdateEmailMailboxesItems(emailItem, newMailboxIDs)
+	transactItems = append(transactItems, emailItems...)
+
+	isUnread := emailItem.Keywords == nil || !emailItem.Keywords["$seen"]
+	for _, mailboxID := range addedMailboxes {
+		transactItems = append(transactItems, h.mailboxRepo.BuildIncrementCountsItems(accountID, mailboxID, isUnread))
+	}
+	for _, mailboxID := range removedMailboxes {
+		transactItems = append(transactItems, h.mailboxRepo.BuildDecrementCountsItems(accountID, mailboxID, isUnread))
+	}
+
+	var newEmailState int64
+	if h.stateRepo != nil {
+		var emailStateItems []types.TransactWriteItem
+		newEmailState, emailStateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeEmail, emailState, emailID, state.ChangeTypeUpdated)
+		transactItems = append(transactItems, emailStateItems...)
+
+		allAffected := append(addedMailboxes, removedMailboxes...)
+		if len(allAffected) > 0 {
+			_, mailboxStateItems := h.stateRepo.BuildStateChangeItemsMulti(accountID, state.ObjectTypeMailbox, mailboxState, allAffected, state.ChangeTypeUpdated)
+			transactItems = append(transactItems, mailboxStateItems...)
+		}
+	}
+
+	_, txErr := h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
+	})
+	if txErr != nil {
+		logger.ErrorContext(ctx, "Failed to update email mailboxes transaction",
+			slog.String("account_id", accountID),
+			slog.String("email_id", emailID),
+			slog.String("error", txErr.Error()),
+		)
+		return 0, setError("serverFail", txErr.Error())
+	}
+
+	return newEmailState, nil
+}
+
+// updateEmailMailboxesLegacy performs the non-transactional mailbox update (fallback when no transactor).
+func (h *handler) updateEmailMailboxesLegacy(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool, affectedMailboxes map[string]bool) (int64, map[string]any) {
 	oldMailboxIDs, emailItem, updateErr := h.emailRepo.UpdateEmailMailboxes(ctx, accountID, emailID, newMailboxIDs)
 	if updateErr != nil {
 		if errors.Is(updateErr, email.ErrEmailNotFound) {
-			return setError("notFound", "email not found")
+			return 0, setError("notFound", "email not found")
 		}
 		logger.ErrorContext(ctx, "Failed to update email mailboxes",
 			slog.String("account_id", accountID),
 			slog.String("email_id", emailID),
 			slog.String("error", updateErr.Error()),
 		)
-		return setError("serverFail", updateErr.Error())
+		return 0, setError("serverFail", updateErr.Error())
 	}
 
-	// Determine if email is unread (doesn't have $seen keyword)
 	isUnread := emailItem.Keywords == nil || !emailItem.Keywords["$seen"]
-
-	// Update mailbox counters
-	// Added mailboxes: increment count
 	for mailboxID := range newMailboxIDs {
 		if !oldMailboxIDs[mailboxID] {
 			if err := h.mailboxRepo.IncrementCounts(ctx, accountID, mailboxID, isUnread); err != nil {
@@ -342,8 +431,6 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 			affectedMailboxes[mailboxID] = true
 		}
 	}
-
-	// Removed mailboxes: decrement count
 	for mailboxID := range oldMailboxIDs {
 		if !newMailboxIDs[mailboxID] {
 			if err := h.mailboxRepo.DecrementCounts(ctx, accountID, mailboxID, isUnread); err != nil {
@@ -357,12 +444,13 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 		}
 	}
 
-	return nil
+	return 0, nil
 }
 
 // parseMailboxIDsUpdate parses the mailboxIds update data.
 // Supports both full replacement and JMAP patch syntax.
-func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID string, data map[string]any) (map[string]bool, map[string]any) {
+// Returns the new mailboxIDs, the fetched email (if patch syntax was used), and any error.
+func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID string, data map[string]any) (map[string]bool, *email.EmailItem, map[string]any) {
 	// Check for full replacement
 	if mailboxIDs, ok := data["mailboxIds"].(map[string]any); ok {
 		result := make(map[string]bool)
@@ -371,7 +459,7 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 				result[k] = true
 			}
 		}
-		return result, nil
+		return result, nil, nil
 	}
 
 	// Check for patch syntax (mailboxIds/{id})
@@ -385,16 +473,16 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 
 	if !hasPatch {
 		// No mailboxIds update at all
-		return nil, setError("invalidProperties", "no mailboxIds update found")
+		return nil, nil, setError("invalidProperties", "no mailboxIds update found")
 	}
 
 	// Get current mailboxIds for the email
 	emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 	if err != nil {
 		if errors.Is(err, email.ErrEmailNotFound) {
-			return nil, setError("notFound", "email not found")
+			return nil, nil, setError("notFound", "email not found")
 		}
-		return nil, setError("serverFail", err.Error())
+		return nil, nil, setError("serverFail", err.Error())
 	}
 
 	// Start with current mailboxIds
@@ -411,7 +499,7 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 		mailboxID := strings.TrimPrefix(key, "mailboxIds/")
 		// Validate that the mailboxID doesn't contain nested paths (RFC 8620 Section 5.3)
 		if strings.Contains(mailboxID, "/") {
-			return nil, setError("invalidPatch", "invalid patch path: "+key)
+			return nil, nil, setError("invalidPatch", "invalid patch path: "+key)
 		}
 
 		if value == nil {
@@ -423,7 +511,7 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 		}
 	}
 
-	return result, nil
+	return result, emailItem, nil
 }
 
 // updateKeywords updates an email's keywords with retry logic for version conflicts.
@@ -563,8 +651,7 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 		}
 
 		// 2. Read current states
-		var emailState, threadState int64
-		mailboxStates := make(map[string]int64)
+		var emailState, threadState, mailboxState int64
 
 		if h.stateRepo != nil {
 			emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
@@ -575,12 +662,9 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 			if err != nil {
 				return 0, setError("serverFail", err.Error())
 			}
-			for mailboxID := range emailItem.MailboxIDs {
-				ms, msErr := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
-				if msErr != nil {
-					return 0, setError("serverFail", msErr.Error())
-				}
-				mailboxStates[mailboxID] = ms
+			mailboxState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
+			if err != nil {
+				return 0, setError("serverFail", err.Error())
 			}
 		}
 
@@ -606,11 +690,13 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 			newEmailState, stateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeEmail, emailState, emailID, state.ChangeTypeDestroyed)
 			transactItems = append(transactItems, stateItems...)
 
-			// Each affected mailbox updated
+			// Mailbox state: one state increment per mailbox, sequential states
+			mailboxIDs := make([]string, 0, len(emailItem.MailboxIDs))
 			for mailboxID := range emailItem.MailboxIDs {
-				_, stateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeMailbox, mailboxStates[mailboxID], mailboxID, state.ChangeTypeUpdated)
-				transactItems = append(transactItems, stateItems...)
+				mailboxIDs = append(mailboxIDs, mailboxID)
 			}
+			_, mailboxStateItems := h.stateRepo.BuildStateChangeItemsMulti(accountID, state.ObjectTypeMailbox, mailboxState, mailboxIDs, state.ChangeTypeUpdated)
+			transactItems = append(transactItems, mailboxStateItems...)
 
 			// Thread updated
 			_, stateItems = h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeThread, threadState, emailItem.ThreadID, state.ChangeTypeUpdated)

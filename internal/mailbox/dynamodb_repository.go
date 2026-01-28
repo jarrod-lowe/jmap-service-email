@@ -280,6 +280,106 @@ func (r *DynamoDBRepository) BuildDecrementCountsItems(accountID, mailboxID stri
 	}
 }
 
+// BuildIncrementCountsItems returns a transaction item that increments totalEmails
+// and optionally unreadEmails. The caller includes this in their own transaction.
+func (r *DynamoDBRepository) BuildIncrementCountsItems(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem {
+	mbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}
+
+	updateExpr := "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " + :one, " + AttrUpdatedAt + " = :updatedAt"
+	exprAttrValues := map[string]types.AttributeValue{
+		":one":       &types.AttributeValueMemberN{Value: "1"},
+		":updatedAt": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+	}
+
+	if incrementUnread {
+		updateExpr = "SET " + AttrTotalEmails + " = " + AttrTotalEmails + " + :one, " + AttrUnreadEmails + " = " + AttrUnreadEmails + " + :one, " + AttrUpdatedAt + " = :updatedAt"
+	}
+
+	return types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: mbox.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: mbox.SK()},
+			},
+			UpdateExpression:          aws.String(updateExpr),
+			ExpressionAttributeValues: exprAttrValues,
+		},
+	}
+}
+
+// BuildCreateMailboxItem returns a transaction item that creates a new mailbox.
+// The caller includes this in their own transaction.
+// Note: This does NOT include the role uniqueness check - the caller must perform
+// that check before building the transaction.
+func (r *DynamoDBRepository) BuildCreateMailboxItem(mbox *MailboxItem) types.TransactWriteItem {
+	item := marshalMailboxItem(mbox)
+	return types.TransactWriteItem{
+		Put: &types.Put{
+			TableName:           aws.String(r.tableName),
+			Item:                item,
+			ConditionExpression: aws.String("attribute_not_exists(" + dynamo.AttrPK + ")"),
+		},
+	}
+}
+
+// BuildUpdateMailboxItem returns a transaction item that updates an existing mailbox.
+// The caller includes this in their own transaction.
+// Note: This does NOT include the role uniqueness check - the caller must perform
+// that check before building the transaction.
+func (r *DynamoDBRepository) BuildUpdateMailboxItem(mbox *MailboxItem) types.TransactWriteItem {
+	updateExpr := "SET #name = :name, " + AttrSortOrder + " = :sortOrder, " + AttrIsSubscribed + " = :isSubscribed, " + AttrUpdatedAt + " = :updatedAt"
+	exprAttrNames := map[string]string{
+		"#name": AttrName,
+	}
+	exprAttrValues := map[string]types.AttributeValue{
+		":name":         &types.AttributeValueMemberS{Value: mbox.Name},
+		":sortOrder":    &types.AttributeValueMemberN{Value: strconv.Itoa(mbox.SortOrder)},
+		":isSubscribed": &types.AttributeValueMemberBOOL{Value: mbox.IsSubscribed},
+		":updatedAt":    &types.AttributeValueMemberS{Value: mbox.UpdatedAt.UTC().Format(time.RFC3339)},
+	}
+
+	if mbox.Role != "" {
+		updateExpr += ", #role = :role"
+		exprAttrNames["#role"] = AttrRole
+		exprAttrValues[":role"] = &types.AttributeValueMemberS{Value: mbox.Role}
+	} else {
+		updateExpr += " REMOVE #role"
+		exprAttrNames["#role"] = AttrRole
+	}
+
+	return types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: mbox.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: mbox.SK()},
+			},
+			UpdateExpression:          aws.String(updateExpr),
+			ExpressionAttributeNames:  exprAttrNames,
+			ExpressionAttributeValues: exprAttrValues,
+			ConditionExpression:       aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
+		},
+	}
+}
+
+// BuildDeleteMailboxItem returns a transaction item that deletes a mailbox.
+// The caller includes this in their own transaction.
+func (r *DynamoDBRepository) BuildDeleteMailboxItem(accountID, mailboxID string) types.TransactWriteItem {
+	mbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}
+
+	return types.TransactWriteItem{
+		Delete: &types.Delete{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: mbox.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: mbox.SK()},
+			},
+			ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ")"),
+		},
+	}
+}
+
 // MailboxExists checks if a mailbox exists.
 func (r *DynamoDBRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
 	mailbox := &MailboxItem{AccountID: accountID, MailboxID: mailboxID}

@@ -15,10 +15,11 @@ import (
 )
 
 type mockEmailRepository struct {
-	updateEmailMailboxesFunc  func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
-	getEmailFunc              func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
-	updateEmailKeywordsFunc   func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
-	buildDeleteEmailItemsFunc func(emailItem *email.EmailItem) []types.TransactWriteItem
+	updateEmailMailboxesFunc          func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
+	getEmailFunc                      func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	updateEmailKeywordsFunc           func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
+	buildDeleteEmailItemsFunc         func(emailItem *email.EmailItem) []types.TransactWriteItem
+	buildUpdateEmailMailboxesItemsFunc func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
 func (m *mockEmailRepository) UpdateEmailMailboxes(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error) {
@@ -49,11 +50,19 @@ func (m *mockEmailRepository) BuildDeleteEmailItems(emailItem *email.EmailItem) 
 	return []types.TransactWriteItem{}
 }
 
+func (m *mockEmailRepository) BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem) {
+	if m.buildUpdateEmailMailboxesItemsFunc != nil {
+		return m.buildUpdateEmailMailboxesItemsFunc(emailItem, newMailboxIDs)
+	}
+	return nil, nil, []types.TransactWriteItem{}
+}
+
 type mockMailboxRepository struct {
-	mailboxExistsFunc            func(ctx context.Context, accountID, mailboxID string) (bool, error)
-	incrementCountsFunc          func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
-	decrementCountsFunc          func(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error
+	mailboxExistsFunc             func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	incrementCountsFunc           func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+	decrementCountsFunc           func(ctx context.Context, accountID, mailboxID string, decrementUnread bool) error
 	buildDecrementCountsItemsFunc func(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem
+	buildIncrementCountsItemsFunc func(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem
 }
 
 func (m *mockMailboxRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
@@ -84,10 +93,18 @@ func (m *mockMailboxRepository) BuildDecrementCountsItems(accountID, mailboxID s
 	return types.TransactWriteItem{}
 }
 
+func (m *mockMailboxRepository) BuildIncrementCountsItems(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem {
+	if m.buildIncrementCountsItemsFunc != nil {
+		return m.buildIncrementCountsItemsFunc(accountID, mailboxID, incrementUnread)
+	}
+	return types.TransactWriteItem{}
+}
+
 type mockStateRepository struct {
 	getCurrentStateFunc            func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	incrementStateAndLogChangeFunc func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
 	buildStateChangeItemsFunc      func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+	buildStateChangeItemsMultiFunc func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
 func (m *mockStateRepository) GetCurrentState(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
@@ -109,6 +126,21 @@ func (m *mockStateRepository) BuildStateChangeItems(accountID string, objectType
 		return m.buildStateChangeItemsFunc(accountID, objectType, currentState, objectID, changeType)
 	}
 	return currentState + 1, []types.TransactWriteItem{{}, {}}
+}
+
+func (m *mockStateRepository) BuildStateChangeItemsMulti(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+	if m.buildStateChangeItemsMultiFunc != nil {
+		return m.buildStateChangeItemsMultiFunc(accountID, objectType, currentState, objectIDs, changeType)
+	}
+	n := int64(len(objectIDs))
+	items := make([]types.TransactWriteItem, 0, n+1)
+	if n > 0 {
+		items = append(items, types.TransactWriteItem{Update: &types.Update{}})
+		for range objectIDs {
+			items = append(items, types.TransactWriteItem{Put: &types.Put{}})
+		}
+	}
+	return currentState + n, items
 }
 
 type mockBlobDeletePublisher struct {
@@ -160,18 +192,31 @@ func TestHandler_UpdateMailboxIds_FullReplacement(t *testing.T) {
 	var capturedNewMailboxIDs map[string]bool
 
 	mockEmailRepo := &mockEmailRepository{
-		updateEmailMailboxesFunc: func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error) {
-			capturedNewMailboxIDs = newMailboxIDs
-			return map[string]bool{"inbox-id": true}, &email.EmailItem{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
 				EmailID:    emailID,
 				AccountID:  accountID,
 				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
 				Keywords:   map[string]bool{"$seen": true},
 			}, nil
 		},
+		buildUpdateEmailMailboxesItemsFunc: func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem) {
+			capturedNewMailboxIDs = newMailboxIDs
+			return []string{"archive-id"}, []string{}, []types.TransactWriteItem{
+				{Put: &types.Put{}},
+				{Put: &types.Put{}},
+			}
+		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, mockTransactor)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -205,7 +250,7 @@ func TestHandler_UpdateMailboxIds_FullReplacement(t *testing.T) {
 
 	// Verify the new mailboxIds were passed correctly
 	if capturedNewMailboxIDs == nil {
-		t.Fatal("UpdateEmailMailboxes was not called")
+		t.Fatal("BuildUpdateEmailMailboxesItems was not called")
 	}
 	if len(capturedNewMailboxIDs) != 2 {
 		t.Errorf("capturedNewMailboxIDs = %v, want 2 entries", capturedNewMailboxIDs)
@@ -230,19 +275,22 @@ func TestHandler_UpdateMailboxIds_PatchAdd(t *testing.T) {
 				MailboxIDs: map[string]bool{"inbox-id": true}, // Currently in inbox only
 			}, nil
 		},
-		updateEmailMailboxesFunc: func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error) {
+		buildUpdateEmailMailboxesItemsFunc: func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem) {
 			capturedNewMailboxIDs = newMailboxIDs
-			// Return old mailboxIds (email was in inbox only)
-			return map[string]bool{"inbox-id": true}, &email.EmailItem{
-				EmailID:    emailID,
-				AccountID:  accountID,
-				ReceivedAt: receivedAt,
-				MailboxIDs: newMailboxIDs,
-			}, nil
+			return []string{"archive-id"}, []string{}, []types.TransactWriteItem{
+				{Put: &types.Put{}},
+				{Put: &types.Put{}},
+			}
 		},
 	}
 
-	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, nil)
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, nil, nil, mockTransactor)
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
 		Method:    "Email/set",
@@ -1429,3 +1477,275 @@ func TestHandler_DestroyEmail_BlobDeleteError_StillSucceeds(t *testing.T) {
 		t.Errorf("destroyed = %v, want [email-456]", destroyed)
 	}
 }
+
+// Test: Destroy email that belongs to multiple mailboxes should succeed.
+// This verifies that BuildStateChangeItems is called only once for ObjectTypeMailbox
+// (not once per mailbox), avoiding duplicate Update operations on the same DynamoDB item.
+func TestHandler_DestroyEmail_MultipleMailboxes(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    "email-multi",
+				AccountID:  accountID,
+				BlobID:     "blob-root",
+				ThreadID:   "thread-1",
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{
+					"inbox-id":   true,
+					"archive-id": true,
+					"label-id":   true,
+				},
+				Keywords: map[string]bool{"$seen": true},
+				Version:  1,
+			}, nil
+		},
+		buildDeleteEmailItemsFunc: func(emailItem *email.EmailItem) []types.TransactWriteItem {
+			return []types.TransactWriteItem{{}, {}}
+		},
+	}
+
+	// Track how many times BuildStateChangeItemsMulti is called for Mailbox
+	multiCallCount := 0
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+		buildStateChangeItemsMultiFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			if objectType == state.ObjectTypeMailbox {
+				multiCallCount++
+			}
+			n := int64(len(objectIDs))
+			items := []types.TransactWriteItem{{Update: &types.Update{}}}
+			for range objectIDs {
+				items = append(items, types.TransactWriteItem{Put: &types.Put{}})
+			}
+			return currentState + n, items
+		},
+	}
+
+	mockBlobPub := &mockBlobDeletePublisher{}
+
+	// Simulate DynamoDB rejecting duplicate Update operations on the same item.
+	// With the bug, BuildStateChangeItems is called 3 times for ObjectTypeMailbox,
+	// producing 3 Update operations targeting PK=ACCT#user-123, SK=STATE#Mailbox.
+	// DynamoDB transactions reject this.
+	callCount := 0
+	mockTransactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			callCount++
+			// Count Update operations - if there are duplicates targeting the same
+			// object type state, the real DynamoDB would fail
+			updateCount := 0
+			for _, item := range input.TransactItems {
+				if item.Update != nil {
+					updateCount++
+				}
+			}
+			// Email state + Thread state + Mailbox state = 3 updates max.
+			// With the bug there would be 5 (1 email + 3 mailbox + 1 thread).
+			if updateCount > 3 {
+				return nil, &types.TransactionCanceledException{
+					Message: stringPtr("Transaction cancelled, multiple operations on same item"),
+				}
+			}
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, mockBlobPub, mockTransactor)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"email-multi"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	if resp.MethodResponse.Name != "Email/set" {
+		t.Errorf("Name = %q, want %q", resp.MethodResponse.Name, "Email/set")
+	}
+
+	destroyed, ok := resp.MethodResponse.Args["destroyed"].([]any)
+	if !ok {
+		t.Fatalf("destroyed not a slice: %T", resp.MethodResponse.Args["destroyed"])
+	}
+	if len(destroyed) != 1 || destroyed[0] != "email-multi" {
+		t.Errorf("destroyed = %v, want [email-multi]", destroyed)
+	}
+
+	// Verify BuildStateChangeItemsMulti was called exactly once for Mailbox
+	if multiCallCount != 1 {
+		t.Errorf("BuildStateChangeItemsMulti called %d times for Mailbox, want 1", multiCallCount)
+	}
+}
+
+func TestUpdateEmail_MailboxIDs_TransactionalStateUpdate(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Existing email in inbox and drafts
+	existingEmail := &email.EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		MailboxIDs: map[string]bool{
+			"inbox-id":  true,
+			"drafts-id": true,
+		},
+		Keywords: map[string]bool{
+			"$seen": true, // read
+		},
+		ReceivedAt: receivedAt,
+	}
+
+	// New mailboxIDs: inbox and archive (remove drafts, add archive)
+	newMailboxIDs := map[string]any{
+		"inbox-id":   true,
+		"archive-id": true,
+	}
+
+	var capturedTransactItems []types.TransactWriteItem
+	buildUpdateEmailMailboxesCalled := false
+	buildIncrementCountsCalled := 0
+	buildDecrementCountsCalled := 0
+
+	emailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return existingEmail, nil
+		},
+		buildUpdateEmailMailboxesItemsFunc: func(emailItem *email.EmailItem, newMbxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem) {
+			buildUpdateEmailMailboxesCalled = true
+			// Return added and removed mailboxes
+			return []string{"archive-id"}, []string{"drafts-id"}, []types.TransactWriteItem{
+				{Put: &types.Put{}}, // email update
+				{Put: &types.Put{}}, // membership add
+				{Delete: &types.Delete{}}, // membership delete
+			}
+		},
+	}
+
+	mailboxRepo := &mockMailboxRepository{
+		mailboxExistsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+		buildIncrementCountsItemsFunc: func(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem {
+			buildIncrementCountsCalled++
+			return types.TransactWriteItem{Update: &types.Update{}}
+		},
+		buildDecrementCountsItemsFunc: func(accountID, mailboxID string, decrementUnread bool) types.TransactWriteItem {
+			buildDecrementCountsCalled++
+			return types.TransactWriteItem{Update: &types.Update{}}
+		},
+	}
+
+	stateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return currentState + 1, []types.TransactWriteItem{
+				{Update: &types.Update{}}, // state counter
+				{Put: &types.Put{}},       // change log
+			}
+		},
+		buildStateChangeItemsMultiFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			n := int64(len(objectIDs))
+			items := []types.TransactWriteItem{{Update: &types.Update{}}}
+			for range objectIDs {
+				items = append(items, types.TransactWriteItem{Put: &types.Put{}})
+			}
+			return currentState + n, items
+		},
+	}
+
+	transactor := &mockTransactWriter{
+		transactWriteItemsFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			capturedTransactItems = input.TransactItems
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	h := newHandler(emailRepo, mailboxRepo, stateRepo, nil, transactor)
+
+	request := plugincontract.PluginInvocationRequest{
+		Method:    "Email/set",
+		AccountID: "user-123",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"update": map[string]any{
+				"email-456": map[string]any{
+					"mailboxIds": newMailboxIDs,
+				},
+			},
+		},
+	}
+
+	resp, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Check if there was an error in the response
+	if resp.MethodResponse.Name == "error" {
+		t.Fatalf("Got error response: %+v", resp.MethodResponse.Args)
+	}
+
+	// Check for notUpdated
+	notUpdated, _ := resp.MethodResponse.Args["notUpdated"].(map[string]any)
+	if len(notUpdated) > 0 {
+		t.Fatalf("Update failed with notUpdated: %+v", notUpdated)
+	}
+
+	// Verify BuildUpdateEmailMailboxesItems was called
+	if !buildUpdateEmailMailboxesCalled {
+		t.Error("BuildUpdateEmailMailboxesItems was not called")
+	}
+
+	// Verify counter update items were built
+	if buildIncrementCountsCalled != 1 {
+		t.Errorf("BuildIncrementCountsItems called %d times, want 1", buildIncrementCountsCalled)
+	}
+	if buildDecrementCountsCalled != 1 {
+		t.Errorf("BuildDecrementCountsItems called %d times, want 1", buildDecrementCountsCalled)
+	}
+
+	// Verify single transaction was executed with all items
+	if len(capturedTransactItems) == 0 {
+		t.Fatal("No transaction was executed")
+	}
+
+	// Expected items:
+	// 3 from BuildUpdateEmailMailboxesItems (email + membership add + membership delete)
+	// 1 from BuildIncrementCountsItems (archive counter)
+	// 1 from BuildDecrementCountsItems (drafts counter)
+	// 2 from BuildStateChangeItems for Email (state + change log)
+	// 3 from BuildStateChangeItemsMulti for 2 Mailboxes (state + 2 change logs)
+	// Total = 10
+	expectedItemCount := 10
+	if len(capturedTransactItems) != expectedItemCount {
+		t.Errorf("Transaction items count = %d, want %d", len(capturedTransactItems), expectedItemCount)
+	}
+
+	// Verify response shows update succeeded
+	updated, ok := resp.MethodResponse.Args["updated"].(map[string]any)
+	if !ok {
+		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
+	}
+	if _, exists := updated["email-456"]; !exists {
+		t.Error("email-456 not in updated")
+	}
+
+	// Verify newState was incremented
+	newState := resp.MethodResponse.Args["newState"].(string)
+	if newState != "11" {
+		t.Errorf("newState = %q, want %q", newState, "11")
+	}
+}
+
+func stringPtr(s string) *string { return &s }
+

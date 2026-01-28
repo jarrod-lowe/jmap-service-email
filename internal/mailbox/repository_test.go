@@ -525,6 +525,69 @@ func TestDynamoDBRepository_BuildDecrementCountsItems_WithUnread(t *testing.T) {
 	}
 }
 
+func TestDynamoDBRepository_BuildIncrementCountsItems_TotalOnly(t *testing.T) {
+	repo := NewDynamoDBRepository(&mockDynamoDBClient{}, "test-table")
+
+	item := repo.BuildIncrementCountsItems("user-123", "inbox-id", false)
+
+	if item.Update == nil {
+		t.Fatal("Expected Update item")
+	}
+	if *item.Update.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
+	}
+
+	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "MAILBOX#inbox-id" {
+		t.Errorf("sk = %q, want %q", sk, "MAILBOX#inbox-id")
+	}
+
+	// Should NOT contain unreadEmails in update expression
+	expr := *item.Update.UpdateExpression
+	if !contains(expr, "totalEmails") {
+		t.Errorf("expression %q should contain totalEmails", expr)
+	}
+	if contains(expr, "unreadEmails") {
+		t.Errorf("expression %q should NOT contain unreadEmails when incrementUnread=false", expr)
+	}
+	// Should contain + :one (not - :one)
+	if !contains(expr, "+ :one") {
+		t.Errorf("expression %q should contain '+ :one' for increment", expr)
+	}
+	if contains(expr, "- :one") {
+		t.Errorf("expression %q should NOT contain '- :one' for increment", expr)
+	}
+}
+
+func TestDynamoDBRepository_BuildIncrementCountsItems_WithUnread(t *testing.T) {
+	repo := NewDynamoDBRepository(&mockDynamoDBClient{}, "test-table")
+
+	item := repo.BuildIncrementCountsItems("user-123", "inbox-id", true)
+
+	if item.Update == nil {
+		t.Fatal("Expected Update item")
+	}
+
+	expr := *item.Update.UpdateExpression
+	if !contains(expr, "totalEmails") {
+		t.Errorf("expression %q should contain totalEmails", expr)
+	}
+	if !contains(expr, "unreadEmails") {
+		t.Errorf("expression %q should contain unreadEmails when incrementUnread=true", expr)
+	}
+	// Should contain + :one (not - :one)
+	if !contains(expr, "+ :one") {
+		t.Errorf("expression %q should contain '+ :one' for increment", expr)
+	}
+	if contains(expr, "- :one") {
+		t.Errorf("expression %q should NOT contain '- :one' for increment", expr)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
@@ -536,4 +599,185 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestDynamoDBRepository_BuildCreateMailboxItem(t *testing.T) {
+	repo := NewDynamoDBRepository(nil, "test-table")
+	now := time.Now().UTC()
+
+	mailbox := &MailboxItem{
+		AccountID:    "user-123",
+		MailboxID:    "inbox-id",
+		Name:         "Inbox",
+		Role:         "inbox",
+		SortOrder:    0,
+		TotalEmails:  0,
+		UnreadEmails: 0,
+		IsSubscribed: true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	item := repo.BuildCreateMailboxItem(mailbox)
+
+	// Verify it's a Put operation
+	if item.Put == nil {
+		t.Fatal("Expected Put item")
+	}
+
+	// Verify table name
+	if *item.Put.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *item.Put.TableName, "test-table")
+	}
+
+	// Verify keys are in the item
+	pk := item.Put.Item["pk"].(*types.AttributeValueMemberS).Value
+	sk := item.Put.Item["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "MAILBOX#inbox-id" {
+		t.Errorf("sk = %q, want %q", sk, "MAILBOX#inbox-id")
+	}
+
+	// Verify condition expression (attribute_not_exists)
+	if item.Put.ConditionExpression == nil {
+		t.Fatal("Expected ConditionExpression")
+	}
+	if *item.Put.ConditionExpression != "attribute_not_exists(pk)" {
+		t.Errorf("ConditionExpression = %q, want %q", *item.Put.ConditionExpression, "attribute_not_exists(pk)")
+	}
+
+	// Verify mailbox data is marshaled
+	if name, ok := item.Put.Item["name"].(*types.AttributeValueMemberS); !ok || name.Value != "Inbox" {
+		t.Errorf("name attribute incorrect")
+	}
+	if role, ok := item.Put.Item["role"].(*types.AttributeValueMemberS); !ok || role.Value != "inbox" {
+		t.Errorf("role attribute incorrect")
+	}
+}
+
+func TestDynamoDBRepository_BuildUpdateMailboxItem(t *testing.T) {
+	repo := NewDynamoDBRepository(nil, "test-table")
+	now := time.Now().UTC()
+
+	mailbox := &MailboxItem{
+		AccountID:    "user-123",
+		MailboxID:    "inbox-id",
+		Name:         "Updated Inbox",
+		Role:         "inbox",
+		SortOrder:    5,
+		IsSubscribed: false,
+		UpdatedAt:    now,
+	}
+
+	item := repo.BuildUpdateMailboxItem(mailbox)
+
+	// Verify it's an Update operation
+	if item.Update == nil {
+		t.Fatal("Expected Update item")
+	}
+
+	// Verify table name
+	if *item.Update.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
+	}
+
+	// Verify keys
+	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "MAILBOX#inbox-id" {
+		t.Errorf("sk = %q, want %q", sk, "MAILBOX#inbox-id")
+	}
+
+	// Verify update expression exists
+	if item.Update.UpdateExpression == nil {
+		t.Fatal("Expected UpdateExpression")
+	}
+
+	// Verify condition expression (attribute_exists)
+	if item.Update.ConditionExpression == nil {
+		t.Fatal("Expected ConditionExpression")
+	}
+	if *item.Update.ConditionExpression != "attribute_exists(pk)" {
+		t.Errorf("ConditionExpression = %q, want %q", *item.Update.ConditionExpression, "attribute_exists(pk)")
+	}
+
+	// Verify expression attribute names and values exist
+	if item.Update.ExpressionAttributeNames == nil {
+		t.Fatal("Expected ExpressionAttributeNames")
+	}
+	if item.Update.ExpressionAttributeValues == nil {
+		t.Fatal("Expected ExpressionAttributeValues")
+	}
+
+	// Verify name is in the values
+	if nameVal, ok := item.Update.ExpressionAttributeValues[":name"].(*types.AttributeValueMemberS); !ok || nameVal.Value != "Updated Inbox" {
+		t.Errorf("name value incorrect")
+	}
+}
+
+func TestDynamoDBRepository_BuildUpdateMailboxItem_NoRole(t *testing.T) {
+	repo := NewDynamoDBRepository(nil, "test-table")
+	now := time.Now().UTC()
+
+	mailbox := &MailboxItem{
+		AccountID:    "user-123",
+		MailboxID:    "custom-id",
+		Name:         "Custom Folder",
+		Role:         "", // No role
+		SortOrder:    10,
+		IsSubscribed: true,
+		UpdatedAt:    now,
+	}
+
+	item := repo.BuildUpdateMailboxItem(mailbox)
+
+	// Verify it's an Update operation
+	if item.Update == nil {
+		t.Fatal("Expected Update item")
+	}
+
+	// Verify update expression contains REMOVE for role
+	expr := *item.Update.UpdateExpression
+	if !contains(expr, "REMOVE") {
+		t.Errorf("UpdateExpression should contain REMOVE when role is empty: %s", expr)
+	}
+}
+
+func TestDynamoDBRepository_BuildDeleteMailboxItem(t *testing.T) {
+	repo := NewDynamoDBRepository(nil, "test-table")
+
+	item := repo.BuildDeleteMailboxItem("user-123", "inbox-id")
+
+	// Verify it's a Delete operation
+	if item.Delete == nil {
+		t.Fatal("Expected Delete item")
+	}
+
+	// Verify table name
+	if *item.Delete.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *item.Delete.TableName, "test-table")
+	}
+
+	// Verify keys
+	pk := item.Delete.Key["pk"].(*types.AttributeValueMemberS).Value
+	sk := item.Delete.Key["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "MAILBOX#inbox-id" {
+		t.Errorf("sk = %q, want %q", sk, "MAILBOX#inbox-id")
+	}
+
+	// Verify condition expression (attribute_exists)
+	if item.Delete.ConditionExpression == nil {
+		t.Fatal("Expected ConditionExpression")
+	}
+	if *item.Delete.ConditionExpression != "attribute_exists(pk)" {
+		t.Errorf("ConditionExpression = %q, want %q", *item.Delete.ConditionExpression, "attribute_exists(pk)")
+	}
 }

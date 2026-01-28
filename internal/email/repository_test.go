@@ -1534,3 +1534,292 @@ func TestRepository_BuildDeleteEmailItems_MultipleMailboxes(t *testing.T) {
 		t.Fatalf("items count = %d, want 4", len(items))
 	}
 }
+
+func TestRepository_BuildCreateEmailItems_SingleMailbox(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		BlobID:     "blob-789",
+		ThreadID:   "thread-123",
+		ReceivedAt: receivedAt,
+		MailboxIDs: map[string]bool{"inbox-id": true},
+		Size:       1024,
+		Subject:    "Test Subject",
+	}
+
+	items := repo.BuildCreateEmailItems(email)
+
+	// 1 email put + 1 membership put = 2
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+
+	// First item: email put
+	emailPut := items[0].Put
+	if emailPut == nil {
+		t.Fatal("First item should be a Put")
+	}
+	if *emailPut.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *emailPut.TableName, "test-table")
+	}
+	pk := emailPut.Item["pk"].(*types.AttributeValueMemberS).Value
+	sk := emailPut.Item["sk"].(*types.AttributeValueMemberS).Value
+	if pk != "ACCOUNT#user-123" {
+		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
+	}
+	if sk != "EMAIL#email-456" {
+		t.Errorf("sk = %q, want %q", sk, "EMAIL#email-456")
+	}
+
+	// Second item: membership put
+	memberPut := items[1].Put
+	if memberPut == nil {
+		t.Fatal("Second item should be a Put")
+	}
+	memberPK := memberPut.Item["pk"].(*types.AttributeValueMemberS).Value
+	memberSK := memberPut.Item["sk"].(*types.AttributeValueMemberS).Value
+	if memberPK != "ACCOUNT#user-123" {
+		t.Errorf("membership pk = %q, want %q", memberPK, "ACCOUNT#user-123")
+	}
+	// SK format: MBOX#{mailboxId}#EMAIL#{receivedAt}#{emailId}
+	expectedSKPrefix := "MBOX#inbox-id#EMAIL#"
+	if len(memberSK) < len(expectedSKPrefix) || memberSK[:len(expectedSKPrefix)] != expectedSKPrefix {
+		t.Errorf("membership sk = %q, want prefix %q", memberSK, expectedSKPrefix)
+	}
+}
+
+func TestRepository_BuildCreateEmailItems_MultipleMailboxes(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		BlobID:     "blob-789",
+		ThreadID:   "thread-123",
+		ReceivedAt: receivedAt,
+		MailboxIDs: map[string]bool{"inbox-id": true, "archive-id": true, "label-id": true},
+		Size:       1024,
+	}
+
+	items := repo.BuildCreateEmailItems(email)
+
+	// 1 email put + 3 membership puts = 4
+	if len(items) != 4 {
+		t.Fatalf("items count = %d, want 4", len(items))
+	}
+
+	// First item should be email put
+	if items[0].Put == nil {
+		t.Fatal("First item should be a Put for email")
+	}
+
+	// Remaining 3 items should be membership puts
+	membershipCount := 0
+	for i := 1; i < len(items); i++ {
+		if items[i].Put != nil {
+			membershipCount++
+		}
+	}
+	if membershipCount != 3 {
+		t.Errorf("membership puts count = %d, want 3", membershipCount)
+	}
+}
+
+func TestRepository_BuildCreateEmailItems_NoMailboxes(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		ReceivedAt: receivedAt,
+		MailboxIDs: map[string]bool{}, // No mailboxes
+	}
+
+	items := repo.BuildCreateEmailItems(email)
+
+	// 1 email put + 0 membership puts = 1
+	if len(items) != 1 {
+		t.Fatalf("items count = %d, want 1", len(items))
+	}
+
+	// Only item should be email put
+	if items[0].Put == nil {
+		t.Fatal("Item should be a Put for email")
+	}
+}
+
+func TestRepository_BuildUpdateEmailMailboxesItems_AddAndRemoveMailboxes(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email currently in inbox and drafts
+	emailItem := &EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		BlobID:    "blob-789",
+		ThreadID:  "thread-123",
+		MailboxIDs: map[string]bool{
+			"inbox-id":  true,
+			"drafts-id": true,
+		},
+		ReceivedAt: receivedAt,
+		Size:       2048,
+	}
+
+	// Moving to inbox and archive (removing drafts, adding archive)
+	newMailboxIDs := map[string]bool{
+		"inbox-id":   true,
+		"archive-id": true,
+	}
+
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	addedMailboxes, removedMailboxes, items := repo.BuildUpdateEmailMailboxesItems(emailItem, newMailboxIDs)
+
+	// Verify added mailboxes
+	if len(addedMailboxes) != 1 {
+		t.Fatalf("addedMailboxes count = %d, want 1", len(addedMailboxes))
+	}
+	if addedMailboxes[0] != "archive-id" {
+		t.Errorf("addedMailboxes[0] = %q, want %q", addedMailboxes[0], "archive-id")
+	}
+
+	// Verify removed mailboxes
+	if len(removedMailboxes) != 1 {
+		t.Fatalf("removedMailboxes count = %d, want 1", len(removedMailboxes))
+	}
+	if removedMailboxes[0] != "drafts-id" {
+		t.Errorf("removedMailboxes[0] = %q, want %q", removedMailboxes[0], "drafts-id")
+	}
+
+	// Verify transaction items: 1 email Put + 1 membership Put + 1 membership Delete = 3
+	if len(items) != 3 {
+		t.Fatalf("items count = %d, want 3", len(items))
+	}
+
+	// First item should be email Put with condition
+	if items[0].Put == nil {
+		t.Fatal("First item should be a Put for email")
+	}
+	if items[0].Put.ConditionExpression == nil {
+		t.Fatal("Email Put should have ConditionExpression")
+	}
+	if *items[0].Put.ConditionExpression != "attribute_exists(pk)" {
+		t.Errorf("ConditionExpression = %q, want %q", *items[0].Put.ConditionExpression, "attribute_exists(pk)")
+	}
+
+	// Second item should be membership Put for archive-id
+	if items[1].Put == nil {
+		t.Fatal("Second item should be a Put for membership")
+	}
+
+	// Third item should be membership Delete for drafts-id
+	if items[2].Delete == nil {
+		t.Fatal("Third item should be a Delete for membership")
+	}
+}
+
+func TestRepository_BuildUpdateEmailMailboxesItems_OnlyAddMailboxes(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email currently in inbox only
+	emailItem := &EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		MailboxIDs: map[string]bool{
+			"inbox-id": true,
+		},
+		ReceivedAt: receivedAt,
+	}
+
+	// Adding archive, keeping inbox
+	newMailboxIDs := map[string]bool{
+		"inbox-id":   true,
+		"archive-id": true,
+	}
+
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	addedMailboxes, removedMailboxes, items := repo.BuildUpdateEmailMailboxesItems(emailItem, newMailboxIDs)
+
+	// Verify added mailboxes
+	if len(addedMailboxes) != 1 {
+		t.Fatalf("addedMailboxes count = %d, want 1", len(addedMailboxes))
+	}
+	if addedMailboxes[0] != "archive-id" {
+		t.Errorf("addedMailboxes[0] = %q, want %q", addedMailboxes[0], "archive-id")
+	}
+
+	// Verify no removed mailboxes
+	if len(removedMailboxes) != 0 {
+		t.Fatalf("removedMailboxes count = %d, want 0", len(removedMailboxes))
+	}
+
+	// Verify transaction items: 1 email Put + 1 membership Put = 2
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+
+	// First item should be email Put
+	if items[0].Put == nil {
+		t.Fatal("First item should be a Put for email")
+	}
+
+	// Second item should be membership Put
+	if items[1].Put == nil {
+		t.Fatal("Second item should be a Put for membership")
+	}
+}
+
+func TestRepository_BuildUpdateEmailMailboxesItems_OnlyRemoveMailboxes(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	// Email currently in inbox and archive
+	emailItem := &EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		MailboxIDs: map[string]bool{
+			"inbox-id":   true,
+			"archive-id": true,
+		},
+		ReceivedAt: receivedAt,
+	}
+
+	// Keeping only inbox
+	newMailboxIDs := map[string]bool{
+		"inbox-id": true,
+	}
+
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	addedMailboxes, removedMailboxes, items := repo.BuildUpdateEmailMailboxesItems(emailItem, newMailboxIDs)
+
+	// Verify no added mailboxes
+	if len(addedMailboxes) != 0 {
+		t.Fatalf("addedMailboxes count = %d, want 0", len(addedMailboxes))
+	}
+
+	// Verify removed mailboxes
+	if len(removedMailboxes) != 1 {
+		t.Fatalf("removedMailboxes count = %d, want 1", len(removedMailboxes))
+	}
+	if removedMailboxes[0] != "archive-id" {
+		t.Errorf("removedMailboxes[0] = %q, want %q", removedMailboxes[0], "archive-id")
+	}
+
+	// Verify transaction items: 1 email Put + 1 membership Delete = 2
+	if len(items) != 2 {
+		t.Fatalf("items count = %d, want 2", len(items))
+	}
+
+	// First item should be email Put
+	if items[0].Put == nil {
+		t.Fatal("First item should be a Put for email")
+	}
+
+	// Second item should be membership Delete
+	if items[1].Delete == nil {
+		t.Fatal("Second item should be a Delete for membership")
+	}
+}
