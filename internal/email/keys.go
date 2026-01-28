@@ -40,4 +40,5 @@ const (
 	AttrName          = "name"
 	AttrEmail         = "email"
 	AttrVersion       = "version"
+	AttrDeletedAt     = "deletedAt"
 )

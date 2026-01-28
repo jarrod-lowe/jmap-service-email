@@ -164,6 +164,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
 		}
 
+		// Treat soft-deleted emails as not found
+		if emailItem.DeletedAt != nil {
+			notFound = append(notFound, emailID)
+			continue
+		}
+
 		// Fetch raw headers if header:* properties requested
 		var rawHeaders textproto.MIMEHeader
 		if len(headerProps) > 0 && h.blobStreamer != nil && emailItem.HeaderSize > 0 {

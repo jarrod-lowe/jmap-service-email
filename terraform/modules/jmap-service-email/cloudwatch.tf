@@ -95,3 +95,26 @@ resource "aws_cloudwatch_metric_alarm" "blob_delete_dlq" {
     QueueName = aws_sqs_queue.blob_delete_dlq.name
   }
 }
+
+resource "aws_cloudwatch_log_group" "email_cleanup" {
+  name              = "/aws/lambda/${local.name_prefix}-email-cleanup"
+  retention_in_days = var.log_retention_days
+}
+
+# CloudWatch alarm for email-cleanup DLQ depth
+resource "aws_cloudwatch_metric_alarm" "email_cleanup_dlq" {
+  alarm_name          = "${local.name_prefix}-email-cleanup-dlq-depth"
+  alarm_description   = "Email cleanup DLQ has messages - investigate failed email cleanup from DynamoDB Streams"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.email_cleanup_dlq.name
+  }
+}

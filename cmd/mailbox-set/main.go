@@ -13,11 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
-	"github.com/jarrod-lowe/jmap-service-email/internal/mailboxcleanup"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
@@ -52,12 +51,20 @@ type TransactWriter interface {
 	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
+// EmailRepository defines the interface for email operations needed by mailbox destroy.
+type EmailRepository interface {
+	QueryEmailsByMailbox(ctx context.Context, accountID, mailboxID string) ([]string, error)
+	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
+	BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
+}
+
 // handler implements the Mailbox/set logic.
 type handler struct {
-	repo              MailboxRepository
-	stateRepo         StateRepository
-	transactor        TransactWriter
-	cleanupPublisher  mailboxcleanup.MailboxCleanupPublisher
+	repo      MailboxRepository
+	stateRepo StateRepository
+	transactor TransactWriter
+	emailRepo  EmailRepository
 }
 
 // newHandler creates a new handler.
@@ -69,6 +76,12 @@ func newHandler(repo MailboxRepository, stateRepo StateRepository, transactor ..
 	if len(transactor) > 0 {
 		h.transactor = transactor[0]
 	}
+	return h
+}
+
+// withEmailRepo sets the email repository for mailbox destroy cleanup.
+func (h *handler) withEmailRepo(emailRepo EmailRepository) *handler {
+	h.emailRepo = emailRepo
 	return h
 }
 
@@ -493,14 +506,16 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 			return nil, setError("serverFail", err.Error())
 		}
 
-		// If onDestroyRemoveEmails and mailbox had emails, publish async cleanup
-		if onDestroyRemoveEmails && mbox.TotalEmails > 0 && h.cleanupPublisher != nil {
-			if pubErr := h.cleanupPublisher.PublishMailboxCleanup(ctx, accountID, mailboxID); pubErr != nil {
-				logger.ErrorContext(ctx, "Failed to publish mailbox cleanup",
+		// If onDestroyRemoveEmails and mailbox had emails, synchronously clean up
+		if onDestroyRemoveEmails && mbox.TotalEmails > 0 && h.emailRepo != nil {
+			if cleanupErr := h.cleanupMailboxEmails(ctx, accountID, mailboxID); cleanupErr != nil {
+				logger.ErrorContext(ctx, "Failed to clean up mailbox emails",
 					slog.String("account_id", accountID),
 					slog.String("mailbox_id", mailboxID),
-					slog.String("error", pubErr.Error()),
+					slog.String("error", cleanupErr.Error()),
 				)
+				// Mailbox is already deleted; email cleanup failure is non-fatal
+				// Emails will be cleaned up by eventual consistency
 			}
 		}
 
@@ -538,6 +553,94 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 	return map[string]any{
 		"newState": currentState,
 	}, nil
+}
+
+// cleanupMailboxEmails handles email cleanup when a mailbox is destroyed with onDestroyRemoveEmails=true.
+// For orphaned emails (only in destroyed mailbox), sets deletedAt.
+// For multi-mailbox emails, removes the destroyed mailbox from mailboxIds.
+func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID string) error {
+	emailIDs, err := h.emailRepo.QueryEmailsByMailbox(ctx, accountID, mailboxID)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	for _, emailID := range emailIDs {
+		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
+		if err != nil {
+			if errors.Is(err, email.ErrEmailNotFound) {
+				continue
+			}
+			return err
+		}
+
+		// Skip if already soft-deleted or mailbox already removed
+		if emailItem.DeletedAt != nil || !emailItem.MailboxIDs[mailboxID] {
+			continue
+		}
+
+		if len(emailItem.MailboxIDs) == 1 {
+			// Orphaned email — soft-delete
+			var transactItems []types.TransactWriteItem
+			transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, now))
+
+			if h.stateRepo != nil {
+				emailState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+				if err != nil {
+					return err
+				}
+				_, stateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeEmail, emailState, emailItem.EmailID, state.ChangeTypeDestroyed)
+				transactItems = append(transactItems, stateItems...)
+			}
+
+			_, err = h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+				TransactItems: transactItems,
+			})
+			if err != nil {
+				logger.ErrorContext(ctx, "Failed to soft-delete orphaned email",
+					slog.String("account_id", accountID),
+					slog.String("email_id", emailID),
+					slog.String("error", err.Error()),
+				)
+				return err
+			}
+		} else {
+			// Multi-mailbox email — remove destroyed mailbox
+			newMailboxIDs := make(map[string]bool)
+			for k, v := range emailItem.MailboxIDs {
+				if k != mailboxID {
+					newMailboxIDs[k] = v
+				}
+			}
+
+			var transactItems []types.TransactWriteItem
+			_, _, emailItems := h.emailRepo.BuildUpdateEmailMailboxesItems(emailItem, newMailboxIDs)
+			transactItems = append(transactItems, emailItems...)
+
+			if h.stateRepo != nil {
+				emailState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+				if err != nil {
+					return err
+				}
+				_, stateItems := h.stateRepo.BuildStateChangeItems(accountID, state.ObjectTypeEmail, emailState, emailItem.EmailID, state.ChangeTypeUpdated)
+				transactItems = append(transactItems, stateItems...)
+			}
+
+			_, err = h.transactor.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+				TransactItems: transactItems,
+			})
+			if err != nil {
+				logger.ErrorContext(ctx, "Failed to update multi-mailbox email",
+					slog.String("account_id", accountID),
+					slog.String("email_id", emailID),
+					slog.String("error", err.Error()),
+				)
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // setError creates a JMAP SetError response.
@@ -580,18 +683,13 @@ func main() {
 		panic(err)
 	}
 
-	mailboxCleanupQueueURL := os.Getenv("MAILBOX_CLEANUP_QUEUE_URL")
-
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
+	emailRepo := email.NewRepository(dynamoClient, tableName)
 
 	h := newHandler(repo, stateRepo, dynamoClient)
-
-	if mailboxCleanupQueueURL != "" {
-		sqsClient := sqs.NewFromConfig(cfg)
-		h.cleanupPublisher = mailboxcleanup.NewSQSPublisher(sqsClient, mailboxCleanupQueueURL)
-	}
+	h.emailRepo = emailRepo
 
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

@@ -4,27 +4,51 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
-// mockMailboxCleanupPublisher implements MailboxCleanupPublisher for testing.
-type mockMailboxCleanupPublisher struct {
-	publishFunc func(ctx context.Context, accountID, mailboxID string) error
-	calls       []struct{ accountID, mailboxID string }
+// mockEmailRepository implements EmailRepository for testing.
+type mockEmailRepository struct {
+	queryEmailsByMailboxFunc           func(ctx context.Context, accountID, mailboxID string) ([]string, error)
+	getEmailFunc                       func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	buildSoftDeleteEmailItemFunc       func(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
+	buildUpdateEmailMailboxesItemsFunc func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem)
 }
 
-func (m *mockMailboxCleanupPublisher) PublishMailboxCleanup(ctx context.Context, accountID, mailboxID string) error {
-	m.calls = append(m.calls, struct{ accountID, mailboxID string }{accountID, mailboxID})
-	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, mailboxID)
+func (m *mockEmailRepository) QueryEmailsByMailbox(ctx context.Context, accountID, mailboxID string) ([]string, error) {
+	if m.queryEmailsByMailboxFunc != nil {
+		return m.queryEmailsByMailboxFunc(ctx, accountID, mailboxID)
 	}
-	return nil
+	return nil, nil
+}
+
+func (m *mockEmailRepository) GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+	if m.getEmailFunc != nil {
+		return m.getEmailFunc(ctx, accountID, emailID)
+	}
+	return nil, email.ErrEmailNotFound
+}
+
+func (m *mockEmailRepository) BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem {
+	if m.buildSoftDeleteEmailItemFunc != nil {
+		return m.buildSoftDeleteEmailItemFunc(emailItem, deletedAt)
+	}
+	return types.TransactWriteItem{Update: &types.Update{}}
+}
+
+func (m *mockEmailRepository) BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem) {
+	if m.buildUpdateEmailMailboxesItemsFunc != nil {
+		return m.buildUpdateEmailMailboxesItemsFunc(emailItem, newMailboxIDs)
+	}
+	return nil, nil, []types.TransactWriteItem{}
 }
 
 type mockMailboxRepository struct {
@@ -1123,10 +1147,28 @@ func TestHandler_DestroyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 	}
 
 	mockTransactor := &mockTransactWriter{}
-	mockCleanupPub := &mockMailboxCleanupPublisher{}
+
+	var softDeletedEmails []string
+	mockEmailRepo := &mockEmailRepository{
+		queryEmailsByMailboxFunc: func(ctx context.Context, accountID, mailboxID string) ([]string, error) {
+			return []string{"email-1"}, nil
+		},
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				AccountID:  accountID,
+				EmailID:    emailID,
+				MailboxIDs: map[string]bool{"test-mailbox": true},
+				Version:    1,
+			}, nil
+		},
+		buildSoftDeleteEmailItemFunc: func(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem {
+			softDeletedEmails = append(softDeletedEmails, emailItem.EmailID)
+			return types.TransactWriteItem{Update: &types.Update{}}
+		},
+	}
 
 	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
-	h.cleanupPublisher = mockCleanupPub
+	h.emailRepo = mockEmailRepo
 
 	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
@@ -1151,15 +1193,9 @@ func TestHandler_DestroyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 		t.Errorf("destroyed = %v, want [test-mailbox]", destroyed)
 	}
 
-	// Verify cleanup was published
-	if len(mockCleanupPub.calls) != 1 {
-		t.Fatalf("expected 1 cleanup publish call, got %d", len(mockCleanupPub.calls))
-	}
-	if mockCleanupPub.calls[0].accountID != "user-123" {
-		t.Errorf("accountID = %q, want %q", mockCleanupPub.calls[0].accountID, "user-123")
-	}
-	if mockCleanupPub.calls[0].mailboxID != "test-mailbox" {
-		t.Errorf("mailboxID = %q, want %q", mockCleanupPub.calls[0].mailboxID, "test-mailbox")
+	// Verify email was soft-deleted
+	if len(softDeletedEmails) != 1 || softDeletedEmails[0] != "email-1" {
+		t.Errorf("soft-deleted emails = %v, want [email-1]", softDeletedEmails)
 	}
 }
 
@@ -1197,10 +1233,17 @@ func TestHandler_DestroyEmptyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 	}
 
 	mockTransactor := &mockTransactWriter{}
-	mockCleanupPub := &mockMailboxCleanupPublisher{}
+
+	queryCalled := false
+	mockEmailRepo := &mockEmailRepository{
+		queryEmailsByMailboxFunc: func(ctx context.Context, accountID, mailboxID string) ([]string, error) {
+			queryCalled = true
+			return nil, nil
+		},
+	}
 
 	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
-	h.cleanupPublisher = mockCleanupPub
+	h.emailRepo = mockEmailRepo
 
 	_, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
 		AccountID: "user-123",
@@ -1216,8 +1259,8 @@ func TestHandler_DestroyEmptyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 		t.Fatalf("handle() error = %v", err)
 	}
 
-	// Verify NO cleanup was published (empty mailbox)
-	if len(mockCleanupPub.calls) != 0 {
-		t.Errorf("expected 0 cleanup publish calls, got %d", len(mockCleanupPub.calls))
+	// Verify NO email cleanup was attempted (empty mailbox)
+	if queryCalled {
+		t.Error("expected no email query for empty mailbox")
 	}
 }

@@ -1704,3 +1704,56 @@ func TestHandler_HeaderAllModifierReturnEmptyArrayForMissingHeader(t *testing.T)
 		t.Errorf("header:X-Also-Missing:all = %v, want empty array []", headerAlsoMissingSlice)
 	}
 }
+
+func TestHandler_SoftDeletedEmailIsNotFound(t *testing.T) {
+	now := time.Now()
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.DeletedAt = &now
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			if emailID == "email-1" {
+				return testEmail, nil
+			}
+			return nil, email.ErrEmailNotFound
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Soft-deleted email should appear in notFound, not in list
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be a slice")
+	}
+	if len(list) != 0 {
+		t.Errorf("list length = %d, want 0 (soft-deleted email should not appear)", len(list))
+	}
+
+	notFound, ok := response.MethodResponse.Args["notFound"].([]any)
+	if !ok {
+		t.Fatal("notFound should be a slice")
+	}
+	if len(notFound) != 1 {
+		t.Fatalf("notFound length = %d, want 1", len(notFound))
+	}
+	if notFound[0] != "email-1" {
+		t.Errorf("notFound[0] = %v, want email-1", notFound[0])
+	}
+}

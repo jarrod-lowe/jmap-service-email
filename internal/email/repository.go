@@ -84,6 +84,7 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 			TableName:              aws.String(r.tableName),
 			IndexName:              aws.String(dynamo.IndexLSI1),
 			KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrLSI1SK + ", :lsiPrefix)"),
+			FilterExpression:       aws.String("attribute_not_exists(" + AttrDeletedAt + ")"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":pk":        &types.AttributeValueMemberS{Value: pk},
 				":lsiPrefix": &types.AttributeValueMemberS{Value: PrefixRcvd},
@@ -358,6 +359,11 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 	// Version
 	item[AttrVersion] = &types.AttributeValueMemberN{Value: strconv.Itoa(email.Version)}
 
+	// DeletedAt
+	if email.DeletedAt != nil {
+		item[AttrDeletedAt] = &types.AttributeValueMemberS{Value: email.DeletedAt.UTC().Format(time.RFC3339)}
+	}
+
 	return item
 }
 
@@ -510,6 +516,13 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 		}
 	}
 
+	// DeletedAt
+	if v, ok := item[AttrDeletedAt].(*types.AttributeValueMemberS); ok {
+		if t, err := time.Parse(time.RFC3339, v.Value); err == nil {
+			email.DeletedAt = &t
+		}
+	}
+
 	return email, nil
 }
 
@@ -639,6 +652,28 @@ func (r *Repository) BuildDeleteEmailItems(emailItem *EmailItem) []types.Transac
 	}
 
 	return items
+}
+
+// BuildSoftDeleteEmailItem returns a transaction item that sets deletedAt on an email,
+// incrementing the version with an optimistic lock. This is used instead of hard-deleting
+// the email record; a DynamoDB Streams handler performs actual cleanup.
+func (r *Repository) BuildSoftDeleteEmailItem(emailItem *EmailItem, deletedAt time.Time) types.TransactWriteItem {
+	return types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.tableName),
+			Key: map[string]types.AttributeValue{
+				dynamo.AttrPK: &types.AttributeValueMemberS{Value: emailItem.PK()},
+				dynamo.AttrSK: &types.AttributeValueMemberS{Value: emailItem.SK()},
+			},
+			UpdateExpression:    aws.String("SET " + AttrDeletedAt + " = :deletedAt, " + AttrVersion + " = :newVersion"),
+			ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ") AND " + AttrVersion + " = :expectedVersion AND attribute_not_exists(" + AttrDeletedAt + ")"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":deletedAt":       &types.AttributeValueMemberS{Value: deletedAt.UTC().Format(time.RFC3339)},
+				":expectedVersion": &types.AttributeValueMemberN{Value: strconv.Itoa(emailItem.Version)},
+				":newVersion":      &types.AttributeValueMemberN{Value: strconv.Itoa(emailItem.Version + 1)},
+			},
+		},
+	}
 }
 
 // BuildUpdateEmailMailboxesItems returns transaction items to update an email's mailbox

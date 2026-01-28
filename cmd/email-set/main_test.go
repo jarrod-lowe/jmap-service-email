@@ -15,10 +15,11 @@ import (
 )
 
 type mockEmailRepository struct {
-	updateEmailMailboxesFunc          func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
-	getEmailFunc                      func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
-	updateEmailKeywordsFunc           func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
-	buildDeleteEmailItemsFunc         func(emailItem *email.EmailItem) []types.TransactWriteItem
+	updateEmailMailboxesFunc           func(ctx context.Context, accountID, emailID string, newMailboxIDs map[string]bool) (map[string]bool, *email.EmailItem, error)
+	getEmailFunc                       func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	updateEmailKeywordsFunc            func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
+	buildDeleteEmailItemsFunc          func(emailItem *email.EmailItem) []types.TransactWriteItem
+	buildSoftDeleteEmailItemFunc       func(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
 	buildUpdateEmailMailboxesItemsFunc func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
@@ -48,6 +49,13 @@ func (m *mockEmailRepository) BuildDeleteEmailItems(emailItem *email.EmailItem) 
 		return m.buildDeleteEmailItemsFunc(emailItem)
 	}
 	return []types.TransactWriteItem{}
+}
+
+func (m *mockEmailRepository) BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem {
+	if m.buildSoftDeleteEmailItemFunc != nil {
+		return m.buildSoftDeleteEmailItemFunc(emailItem, deletedAt)
+	}
+	return types.TransactWriteItem{Update: &types.Update{}}
 }
 
 func (m *mockEmailRepository) BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem) {
@@ -1310,9 +1318,9 @@ func TestHandler_DestroyEmail_Success(t *testing.T) {
 		t.Errorf("destroyed = %v, want [email-456]", destroyed)
 	}
 
-	// Verify blobs were published for deletion (root + body part)
-	if len(publishedBlobIDs) != 2 {
-		t.Errorf("published blob count = %d, want 2", len(publishedBlobIDs))
+	// Soft-delete: blob cleanup is handled by DynamoDB Streams, not inline
+	if len(publishedBlobIDs) != 0 {
+		t.Errorf("published blob count = %d, want 0 (stream handles cleanup)", len(publishedBlobIDs))
 	}
 }
 

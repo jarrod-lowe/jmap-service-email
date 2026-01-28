@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -34,6 +35,7 @@ type EmailRepository interface {
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 	UpdateEmailKeywords(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
 	BuildDeleteEmailItems(emailItem *email.EmailItem) []types.TransactWriteItem
+	BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
 	BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
@@ -346,6 +348,9 @@ func (h *handler) updateEmailMailboxesTransactional(ctx context.Context, account
 			return 0, setError("serverFail", err.Error())
 		}
 	}
+	if emailItem.DeletedAt != nil {
+		return 0, setError("notFound", "email not found")
+	}
 
 	// Get current states
 	var emailState, mailboxState int64
@@ -484,6 +489,9 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 		}
 		return nil, nil, setError("serverFail", err.Error())
 	}
+	if emailItem.DeletedAt != nil {
+		return nil, nil, setError("notFound", "email not found")
+	}
 
 	// Start with current mailboxIds
 	result := make(map[string]bool)
@@ -524,6 +532,9 @@ func (h *handler) updateKeywords(ctx context.Context, accountID, emailID string,
 				return setError("notFound", "email not found")
 			}
 			return setError("serverFail", err.Error())
+		}
+		if emailItem.DeletedAt != nil {
+			return setError("notFound", "email not found")
 		}
 
 		// Parse keyword updates
@@ -637,7 +648,8 @@ func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[s
 // maxDestroyRetries is the number of times to retry destroy on transaction conflict.
 const maxDestroyRetries = 3
 
-// destroyEmail permanently deletes an email, its mailbox memberships, and blobs.
+// destroyEmail soft-deletes an email by setting deletedAt, updating state, and decrementing mailbox counters.
+// A DynamoDB Streams handler performs actual record deletion and blob cleanup.
 // Returns the new email state, or a JMAP error map.
 func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, affectedMailboxes map[string]bool) (int64, map[string]any) {
 	for attempt := 0; attempt < maxDestroyRetries; attempt++ {
@@ -648,6 +660,11 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 				return 0, setError("notFound", "email not found")
 			}
 			return 0, setError("serverFail", err.Error())
+		}
+
+		// Treat already soft-deleted emails as not found
+		if emailItem.DeletedAt != nil {
+			return 0, setError("notFound", "email not found")
 		}
 
 		// 2. Read current states
@@ -671,8 +688,8 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 		// 3. Build transaction items
 		var transactItems []types.TransactWriteItem
 
-		// Email + membership deletes
-		transactItems = append(transactItems, h.emailRepo.BuildDeleteEmailItems(emailItem)...)
+		// Soft-delete email (set deletedAt, increment version with condition)
+		transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, time.Now()))
 
 		// Mailbox counter decrements
 		isUnread := emailItem.Keywords == nil || !emailItem.Keywords["$seen"]
@@ -724,18 +741,6 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 				slog.String("error", err.Error()),
 			)
 			return 0, setError("serverFail", err.Error())
-		}
-
-		// 5. Publish blob deletions to SQS (best-effort)
-		blobIDs := collectBlobIDs(emailItem)
-		if h.blobDeletePublisher != nil && len(blobIDs) > 0 {
-			if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs); err != nil {
-				logger.ErrorContext(ctx, "Failed to publish blob deletions",
-					slog.String("account_id", accountID),
-					slog.String("email_id", emailID),
-					slog.String("error", err.Error()),
-				)
-			}
 		}
 
 		return newEmailState, nil

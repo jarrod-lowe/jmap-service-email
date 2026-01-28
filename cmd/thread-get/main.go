@@ -135,9 +135,18 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 
 		// Build thread object with emailIds in order (already sorted by receivedAt from repo)
-		emailIds := make([]string, len(emails))
-		for i, e := range emails {
-			emailIds[i] = e.EmailID
+		// Exclude soft-deleted emails
+		emailIds := make([]string, 0, len(emails))
+		for _, e := range emails {
+			if e.DeletedAt == nil {
+				emailIds = append(emailIds, e.EmailID)
+			}
+		}
+
+		// If all emails in thread are soft-deleted, treat thread as not found
+		if len(emailIds) == 0 {
+			notFound = append(notFound, threadID)
+			continue
 		}
 
 		thread := map[string]any{

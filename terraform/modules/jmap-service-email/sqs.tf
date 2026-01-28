@@ -33,3 +33,10 @@ resource "aws_sqs_queue" "mailbox_cleanup" {
     maxReceiveCount     = 3
   })
 }
+
+# SQS DLQ for DynamoDB Streams email cleanup failures
+
+resource "aws_sqs_queue" "email_cleanup_dlq" {
+  name                      = "${local.name_prefix}-email-cleanup-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}

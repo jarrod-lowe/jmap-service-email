@@ -58,6 +58,9 @@ resource "aws_dynamodb_table" "email_data" {
     non_key_attributes = ["emailId", "threadId", "receivedAt"]
   }
 
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
+
   point_in_time_recovery {
     enabled = true
   }

@@ -375,6 +375,72 @@ func TestHandler_ReturnsActualState(t *testing.T) {
 	}
 }
 
+func TestHandler_SoftDeletedEmailsExcludedFromThread(t *testing.T) {
+	now := time.Now()
+	mockRepo := &mockEmailRepository{
+		findByThreadIDFunc: func(ctx context.Context, accountID, threadID string) ([]*email.EmailItem, error) {
+			return []*email.EmailItem{
+				{EmailID: "email-1", ThreadID: "thread-1", ReceivedAt: now},
+				{EmailID: "email-2", ThreadID: "thread-1", ReceivedAt: now, DeletedAt: &now},
+			}, nil
+		},
+	}
+
+	h := newHandler(mockRepo)
+	response, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-1",
+		Method:    "Thread/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-1",
+			"ids":       []any{"thread-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("expected 1 thread in list, got %v", list)
+	}
+	thread := list[0].(map[string]any)
+	emailIds := thread["emailIds"].([]string)
+	if len(emailIds) != 1 || emailIds[0] != "email-1" {
+		t.Errorf("emailIds = %v, want [email-1]", emailIds)
+	}
+}
+
+func TestHandler_AllSoftDeletedThreadIsNotFound(t *testing.T) {
+	now := time.Now()
+	mockRepo := &mockEmailRepository{
+		findByThreadIDFunc: func(ctx context.Context, accountID, threadID string) ([]*email.EmailItem, error) {
+			return []*email.EmailItem{
+				{EmailID: "email-1", ThreadID: "thread-1", ReceivedAt: now, DeletedAt: &now},
+			}, nil
+		},
+	}
+
+	h := newHandler(mockRepo)
+	response, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-1",
+		Method:    "Thread/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-1",
+			"ids":       []any{"thread-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	notFound, ok := response.MethodResponse.Args["notFound"].([]any)
+	if !ok || len(notFound) != 1 {
+		t.Fatalf("expected 1 in notFound, got %v", notFound)
+	}
+}
+
 func TestHandler_StateError_ReturnsServerFail(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 

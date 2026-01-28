@@ -1823,3 +1823,87 @@ func TestRepository_BuildUpdateEmailMailboxesItems_OnlyRemoveMailboxes(t *testin
 		t.Fatal("Second item should be a Delete for membership")
 	}
 }
+
+func TestRepository_BuildSoftDeleteEmailItem(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	now := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	emailItem := &EmailItem{
+		AccountID:  "user-1",
+		EmailID:    "email-1",
+		MailboxIDs: map[string]bool{"mbox-1": true},
+		Version:    3,
+		ReceivedAt: now,
+	}
+
+	item := repo.BuildSoftDeleteEmailItem(emailItem, now)
+
+	if item.Update == nil {
+		t.Fatal("Expected an Update operation")
+	}
+	if *item.Update.TableName != "test-table" {
+		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
+	}
+	// Should set deletedAt and increment version with condition on current version
+	if item.Update.ConditionExpression == nil {
+		t.Fatal("Expected a ConditionExpression")
+	}
+	vals := item.Update.ExpressionAttributeValues
+	if v, ok := vals[":expectedVersion"].(*types.AttributeValueMemberN); !ok || v.Value != "3" {
+		t.Errorf("Expected version condition of 3")
+	}
+	if v, ok := vals[":newVersion"].(*types.AttributeValueMemberN); !ok || v.Value != "4" {
+		t.Errorf("Expected new version of 4")
+	}
+	if v, ok := vals[":deletedAt"].(*types.AttributeValueMemberS); !ok || v.Value != "2024-01-15T12:00:00Z" {
+		t.Errorf("Expected deletedAt = 2024-01-15T12:00:00Z")
+	}
+}
+
+func TestMarshalUnmarshal_DeletedAt_RoundTrip(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	now := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	emailItem := &EmailItem{
+		AccountID:  "user-1",
+		EmailID:    "email-1",
+		BlobID:     "blob-1",
+		ThreadID:   "thread-1",
+		MailboxIDs: map[string]bool{"mbox-1": true},
+		ReceivedAt: now,
+		DeletedAt:  &now,
+		Version:    1,
+	}
+
+	marshaled := repo.marshalEmailItem(emailItem)
+	unmarshaled, err := repo.unmarshalEmailItem(marshaled)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if unmarshaled.DeletedAt == nil {
+		t.Fatal("DeletedAt should not be nil after round-trip")
+	}
+	if !unmarshaled.DeletedAt.Equal(now) {
+		t.Errorf("DeletedAt = %v, want %v", *unmarshaled.DeletedAt, now)
+	}
+}
+
+func TestMarshalEmailItem_OmitsDeletedAtWhenNil(t *testing.T) {
+	repo := NewRepository(&mockDynamoDBClient{}, "test-table")
+	now := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	emailItem := &EmailItem{
+		AccountID:  "user-1",
+		EmailID:    "email-1",
+		BlobID:     "blob-1",
+		ThreadID:   "thread-1",
+		MailboxIDs: map[string]bool{"mbox-1": true},
+		ReceivedAt: now,
+		Version:    1,
+	}
+
+	marshaled := repo.marshalEmailItem(emailItem)
+	if _, ok := marshaled[AttrDeletedAt]; ok {
+		t.Error("DeletedAt should not be present when nil")
+	}
+}

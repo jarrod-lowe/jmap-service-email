@@ -493,3 +493,70 @@ resource "aws_lambda_event_source_mapping" "mailbox_cleanup_sqs" {
   function_response_types            = ["ReportBatchItemFailures"]
   maximum_batching_window_in_seconds = 0
 }
+
+# Email Cleanup Lambda — DynamoDB Streams consumer for soft-deleted email cleanup
+resource "aws_lambda_function" "email_cleanup" {
+  function_name = "${local.name_prefix}-email-cleanup"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = 60
+
+  filename         = "${path.module}/../../../build/email-cleanup/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/email-cleanup/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.email_cleanup,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.sqs_blob_delete,
+    aws_iam_role_policy_attachment.dynamodb_stream_email_data
+  ]
+}
+
+resource "aws_lambda_event_source_mapping" "email_cleanup_stream" {
+  event_source_arn  = aws_dynamodb_table.email_data.stream_arn
+  function_name     = aws_lambda_function.email_cleanup.arn
+  starting_position = "LATEST"
+  batch_size        = 10
+
+  maximum_batching_window_in_seconds = 5
+  maximum_retry_attempts             = 3
+  bisect_batch_on_function_error     = true
+
+  destination_config {
+    on_failure {
+      destination_arn = aws_sqs_queue.email_cleanup_dlq.arn
+    }
+  }
+
+  filter_criteria {
+    filter {
+      pattern = jsonencode({
+        eventName = ["MODIFY"]
+        dynamodb = {
+          NewImage = {
+            deletedAt = { S = [{ exists = true }] }
+          }
+          OldImage = {
+            deletedAt = [{ exists = false }]
+          }
+        }
+      })
+    }
+  }
+}

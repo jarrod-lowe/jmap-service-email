@@ -180,3 +180,37 @@ resource "aws_iam_role_policy_attachment" "sqs_mailbox_cleanup" {
   role       = aws_iam_role.lambda_execution.name
   policy_arn = aws_iam_policy.sqs_mailbox_cleanup.arn
 }
+
+# DynamoDB Streams permissions for email-cleanup Lambda
+data "aws_iam_policy_document" "dynamodb_stream_email_data" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:DescribeStream",
+      "dynamodb:ListStreams"
+    ]
+    resources = ["${aws_dynamodb_table.email_data.arn}/stream/*"]
+  }
+
+  # Allow sending to DLQ on stream processing failure
+  statement {
+    effect = "Allow"
+    actions = [
+      "sqs:SendMessage"
+    ]
+    resources = [aws_sqs_queue.email_cleanup_dlq.arn]
+  }
+}
+
+resource "aws_iam_policy" "dynamodb_stream_email_data" {
+  name        = "${local.name_prefix}-dynamodb-stream-email-data"
+  description = "Allow DynamoDB Streams operations on email data table"
+  policy      = data.aws_iam_policy_document.dynamodb_stream_email_data.json
+}
+
+resource "aws_iam_role_policy_attachment" "dynamodb_stream_email_data" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.dynamodb_stream_email_data.arn
+}
