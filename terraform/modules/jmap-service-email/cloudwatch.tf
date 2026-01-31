@@ -118,3 +118,26 @@ resource "aws_cloudwatch_metric_alarm" "email_cleanup_dlq" {
     QueueName = aws_sqs_queue.email_cleanup_dlq.name
   }
 }
+
+resource "aws_cloudwatch_log_group" "account_init" {
+  name              = "/aws/lambda/${local.name_prefix}-account-init"
+  retention_in_days = var.log_retention_days
+}
+
+# CloudWatch alarm for account-events DLQ depth
+resource "aws_cloudwatch_metric_alarm" "account_events_dlq" {
+  alarm_name          = "${local.name_prefix}-account-events-dlq-depth"
+  alarm_description   = "Account events DLQ has messages - investigate failed account initialization"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.account_events_dlq.name
+  }
+}

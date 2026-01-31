@@ -90,6 +90,16 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
         }
       }
     }
+    events = {
+      M = {
+        "account.created" = {
+          M = {
+            targetType = { S = "sqs" }
+            targetArn  = { S = aws_sqs_queue.account_events.arn }
+          }
+        }
+      }
+    }
     registeredAt = { S = time_static.plugin_registered.rfc3339 }
     version      = { S = var.plugin_version }
   })

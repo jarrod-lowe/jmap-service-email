@@ -560,3 +560,44 @@ resource "aws_lambda_event_source_mapping" "email_cleanup_stream" {
     }
   }
 }
+
+# Lambda function for account-init (SQS consumer for account.created events)
+resource "aws_lambda_function" "account_init" {
+  function_name = "${local.name_prefix}-account-init"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = 60
+
+  filename         = "${path.module}/../../../build/account-init/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/account-init/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.account_init,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.sqs_account_events
+  ]
+}
+
+# SQS event source mapping for account-init Lambda
+resource "aws_lambda_event_source_mapping" "account_init_sqs" {
+  event_source_arn                   = aws_sqs_queue.account_events.arn
+  function_name                      = aws_lambda_function.account_init.arn
+  batch_size                         = 10
+  function_response_types            = ["ReportBatchItemFailures"]
+  maximum_batching_window_in_seconds = 5
+}

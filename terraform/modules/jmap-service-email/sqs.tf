@@ -40,3 +40,41 @@ resource "aws_sqs_queue" "email_cleanup_dlq" {
   name                      = "${local.name_prefix}-email-cleanup-dlq"
   message_retention_seconds = 1209600 # 14 days
 }
+
+# SQS queue for account events from jmap-service-core
+
+resource "aws_sqs_queue" "account_events_dlq" {
+  name                      = "${local.name_prefix}-account-events-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}
+
+resource "aws_sqs_queue" "account_events" {
+  name                       = "${local.name_prefix}-account-events"
+  visibility_timeout_seconds = 60
+  message_retention_seconds  = 86400 # 1 day
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.account_events_dlq.arn
+    maxReceiveCount     = 3
+  })
+}
+
+# Queue policy allowing jmap-service-core's account-init role to send messages
+resource "aws_sqs_queue_policy" "account_events" {
+  queue_url = aws_sqs_queue.account_events.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowCoreAccountInitSend"
+        Effect = "Allow"
+        Principal = {
+          AWS = data.aws_ssm_parameter.account_init_role_arn.value
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.account_events.arn
+      }
+    ]
+  })
+}

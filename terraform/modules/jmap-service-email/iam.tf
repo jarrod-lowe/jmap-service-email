@@ -214,3 +214,27 @@ resource "aws_iam_role_policy_attachment" "dynamodb_stream_email_data" {
   role       = aws_iam_role.lambda_execution.name
   policy_arn = aws_iam_policy.dynamodb_stream_email_data.arn
 }
+
+# Policy document for SQS account-events queue operations
+data "aws_iam_policy_document" "sqs_account_events" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes"
+    ]
+    resources = [aws_sqs_queue.account_events.arn]
+  }
+}
+
+resource "aws_iam_policy" "sqs_account_events" {
+  name        = "${local.name_prefix}-sqs-account-events"
+  description = "Allow SQS operations on account-events queue"
+  policy      = data.aws_iam_policy_document.sqs_account_events.json
+}
+
+resource "aws_iam_role_policy_attachment" "sqs_account_events" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.sqs_account_events.arn
+}
