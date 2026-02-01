@@ -196,11 +196,9 @@ The following enhancements are planned for future versions:
 
 ### Email/query
 
-- **calculateTotal**: Not implemented, always returns `null`
 - **canCalculateChanges**: Always returns `false`; `Email/queryChanges` not implemented
 - **Additional filters**: Only `inMailbox` is supported; other filters return `unsupportedFilter`
 - **Additional sorts**: Only `receivedAt` is supported; other sorts return `unsupportedSort`
-- **collapseThreads**: Always `false` (collapsing not implemented, but basic threading is available)
 - **Anchor pagination**: Anchor validation is implemented but anchor-based querying is not yet functional
 
 ### Threading

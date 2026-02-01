@@ -96,12 +96,13 @@ func (e *EmailItem) LSI3SK() string {
 
 // QueryRequest represents an Email/query request parameters.
 type QueryRequest struct {
-	Filter       *QueryFilter
-	Sort         []Comparator
-	Position     int
-	Anchor       string
-	AnchorOffset int
-	Limit        int
+	Filter          *QueryFilter
+	Sort            []Comparator
+	Position        int
+	Anchor          string
+	AnchorOffset    int
+	Limit           int
+	CollapseThreads bool
 }
 
 // QueryFilter represents filter conditions for Email/query.
@@ -120,6 +121,7 @@ type QueryResult struct {
 	IDs        []string
 	Position   int
 	QueryState string
+	Total      *int
 }
 
 // MailboxMembershipItem represents a mailbox membership record in DynamoDB.
@@ -128,6 +130,7 @@ type MailboxMembershipItem struct {
 	MailboxID  string    `json:"mailboxId"`
 	ReceivedAt time.Time `json:"receivedAt"`
 	EmailID    string    `json:"emailId"`
+	ThreadID   string    `json:"threadId"`
 }
 
 // PK returns the DynamoDB partition key for this membership.

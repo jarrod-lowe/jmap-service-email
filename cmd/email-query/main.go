@@ -27,9 +27,10 @@ type EmailRepository interface {
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 }
 
-// MailboxChecker defines the interface for checking mailbox existence.
+// MailboxChecker defines the interface for checking mailbox existence and retrieval.
 type MailboxChecker interface {
 	MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error)
+	GetMailbox(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
 }
 
 // handler implements the Email/query logic.
@@ -160,14 +161,21 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		limit = 0
 	}
 
+	// Parse collapseThreads
+	collapseThreads := false
+	if ct, ok := request.Args["collapseThreads"].(bool); ok {
+		collapseThreads = ct
+	}
+
 	// Build query request
 	queryReq := &email.QueryRequest{
-		Filter:       queryFilter,
-		Sort:         comparators,
-		Position:     position,
-		Anchor:       anchor,
-		AnchorOffset: anchorOffset,
-		Limit:        limit,
+		Filter:          queryFilter,
+		Sort:            comparators,
+		Position:        position,
+		Anchor:          anchor,
+		AnchorOffset:    anchorOffset,
+		Limit:           limit,
+		CollapseThreads: collapseThreads,
 	}
 
 	// Execute query
@@ -186,17 +194,29 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		slog.Int("position", result.Position),
 	)
 
+	// Build response
+	response := map[string]any{
+		"accountId":           accountID,
+		"queryState":          result.QueryState,
+		"canCalculateChanges": false,
+		"position":            result.Position,
+		"ids":                 result.IDs,
+		"collapseThreads":     collapseThreads,
+	}
+
+	// Add total when inMailbox filter is used (use mailbox counters)
+	if queryFilter != nil && queryFilter.InMailbox != "" {
+		mbox, err := h.mailboxRepo.GetMailbox(ctx, accountID, queryFilter.InMailbox)
+		if err == nil {
+			response["total"] = mbox.TotalEmails
+		}
+		// If GetMailbox fails, we just don't include total (it's optional)
+	}
+
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "Email/query",
-			Args: map[string]any{
-				"accountId":           accountID,
-				"queryState":          result.QueryState,
-				"canCalculateChanges": false,
-				"position":            result.Position,
-				"ids":                 result.IDs,
-				"collapseThreads":     false,
-			},
+			Name:     "Email/query",
+			Args:     response,
 			ClientID: request.ClientID,
 		},
 	}, nil

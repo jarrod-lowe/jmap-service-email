@@ -112,12 +112,28 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 		return nil, fmt.Errorf("failed to query emails: %w", err)
 	}
 
-	// Extract email IDs from results
+	// Extract email IDs from results, optionally collapsing by thread
 	allIDs := make([]string, 0, len(output.Items))
+	seenThreads := make(map[string]bool)
+
 	for _, item := range output.Items {
-		if emailID, ok := item[AttrEmailID].(*types.AttributeValueMemberS); ok {
-			allIDs = append(allIDs, emailID.Value)
+		emailID, ok := item[AttrEmailID].(*types.AttributeValueMemberS)
+		if !ok {
+			continue
 		}
+
+		// If collapsing threads, skip emails from already-seen threads
+		if req.CollapseThreads {
+			if threadID, ok := item[AttrThreadID].(*types.AttributeValueMemberS); ok && threadID.Value != "" {
+				if seenThreads[threadID.Value] {
+					continue // Skip - already have an email from this thread
+				}
+				seenThreads[threadID.Value] = true
+			}
+			// Emails without ThreadID are not collapsed (legacy data)
+		}
+
+		allIDs = append(allIDs, emailID.Value)
 	}
 
 	// Apply position-based pagination
@@ -369,11 +385,15 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 
 // marshalMembershipItem converts a MailboxMembershipItem to DynamoDB attribute values.
 func (r *Repository) marshalMembershipItem(membership *MailboxMembershipItem) map[string]types.AttributeValue {
-	return map[string]types.AttributeValue{
+	item := map[string]types.AttributeValue{
 		dynamo.AttrPK: &types.AttributeValueMemberS{Value: membership.PK()},
 		dynamo.AttrSK: &types.AttributeValueMemberS{Value: membership.SK()},
 		AttrEmailID:   &types.AttributeValueMemberS{Value: membership.EmailID},
 	}
+	if membership.ThreadID != "" {
+		item[AttrThreadID] = &types.AttributeValueMemberS{Value: membership.ThreadID}
+	}
+	return item
 }
 
 // unmarshalEmailItem converts DynamoDB attribute values to an EmailItem.
@@ -599,6 +619,7 @@ func (r *Repository) BuildCreateEmailItems(email *EmailItem) []types.TransactWri
 			MailboxID:  mailboxID,
 			ReceivedAt: email.ReceivedAt,
 			EmailID:    email.EmailID,
+			ThreadID:   email.ThreadID,
 		}
 		membershipItem := r.marshalMembershipItem(membership)
 		items = append(items, types.TransactWriteItem{
@@ -716,6 +737,7 @@ func (r *Repository) BuildUpdateEmailMailboxesItems(emailItem *EmailItem, newMai
 			MailboxID:  mailboxID,
 			ReceivedAt: emailItem.ReceivedAt,
 			EmailID:    emailItem.EmailID,
+			ThreadID:   emailItem.ThreadID,
 		}
 		items = append(items, types.TransactWriteItem{
 			Put: &types.Put{
@@ -839,6 +861,7 @@ func (r *Repository) UpdateEmailMailboxes(ctx context.Context, accountID, emailI
 			MailboxID:  mailboxID,
 			ReceivedAt: email.ReceivedAt,
 			EmailID:    emailID,
+			ThreadID:   email.ThreadID,
 		}
 		membershipItem := r.marshalMembershipItem(membership)
 		transactItems = append(transactItems, types.TransactWriteItem{

@@ -6,6 +6,7 @@ import (
 
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 )
 
 // mockEmailRepository implements the EmailRepository interface for testing.
@@ -30,7 +31,8 @@ func (m *mockEmailRepository) GetEmail(ctx context.Context, accountID, emailID s
 
 // mockMailboxRepository implements MailboxChecker for testing.
 type mockMailboxRepository struct {
-	existsFunc func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	existsFunc     func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	getMailboxFunc func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
 }
 
 func (m *mockMailboxRepository) MailboxExists(ctx context.Context, accountID, mailboxID string) (bool, error) {
@@ -38,6 +40,13 @@ func (m *mockMailboxRepository) MailboxExists(ctx context.Context, accountID, ma
 		return m.existsFunc(ctx, accountID, mailboxID)
 	}
 	return false, nil
+}
+
+func (m *mockMailboxRepository) GetMailbox(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+	if m.getMailboxFunc != nil {
+		return m.getMailboxFunc(ctx, accountID, mailboxID)
+	}
+	return nil, mailbox.ErrMailboxNotFound
 }
 
 func TestHandler_BasicQuery(t *testing.T) {
@@ -314,9 +323,11 @@ func TestHandler_MaxLimit(t *testing.T) {
 	}
 }
 
-func TestHandler_CollapseThreadsAlwaysFalse(t *testing.T) {
+func TestHandler_CollapseThreadsTrue_PassedToRepository(t *testing.T) {
+	var capturedReq *email.QueryRequest
 	mockEmail := &mockEmailRepository{
 		queryFunc: func(ctx context.Context, accountID string, req *email.QueryRequest) (*email.QueryResult, error) {
+			capturedReq = req
 			return &email.QueryResult{IDs: []string{}, Position: 0}, nil
 		},
 	}
@@ -331,7 +342,7 @@ func TestHandler_CollapseThreadsAlwaysFalse(t *testing.T) {
 		ClientID:  "c0",
 		Args: map[string]any{
 			"accountId":       "user-123",
-			"collapseThreads": true, // Request true, but we always return false
+			"collapseThreads": true,
 		},
 	}
 
@@ -340,9 +351,92 @@ func TestHandler_CollapseThreadsAlwaysFalse(t *testing.T) {
 		t.Fatalf("handle failed: %v", err)
 	}
 
+	// Should pass collapseThreads=true to repository
+	if !capturedReq.CollapseThreads {
+		t.Error("CollapseThreads should be true in query request")
+	}
+
+	// Response should echo back the requested value
 	collapseThreads, ok := response.MethodResponse.Args["collapseThreads"].(bool)
-	if !ok || collapseThreads != false {
-		t.Errorf("collapseThreads = %v, want false", response.MethodResponse.Args["collapseThreads"])
+	if !ok || !collapseThreads {
+		t.Errorf("collapseThreads = %v, want true", response.MethodResponse.Args["collapseThreads"])
+	}
+}
+
+func TestHandler_Total_IncludedWhenInMailboxFilter(t *testing.T) {
+	mockEmail := &mockEmailRepository{
+		queryFunc: func(ctx context.Context, accountID string, req *email.QueryRequest) (*email.QueryResult, error) {
+			return &email.QueryResult{IDs: []string{"email-1", "email-2"}, Position: 0}, nil
+		},
+	}
+	mockMailbox := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				MailboxID:   "inbox-id",
+				TotalEmails: 42,
+			}, nil
+		},
+	}
+
+	h := newHandler(mockEmail, mockMailbox)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"filter":    map[string]any{"inMailbox": "inbox-id"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	total, ok := response.MethodResponse.Args["total"].(int)
+	if !ok {
+		t.Fatalf("total should be int, got %T", response.MethodResponse.Args["total"])
+	}
+	if total != 42 {
+		t.Errorf("total = %d, want 42", total)
+	}
+}
+
+func TestHandler_Total_NotIncludedWithoutInMailboxFilter(t *testing.T) {
+	mockEmail := &mockEmailRepository{
+		queryFunc: func(ctx context.Context, accountID string, req *email.QueryRequest) (*email.QueryResult, error) {
+			return &email.QueryResult{IDs: []string{"email-1"}, Position: 0}, nil
+		},
+	}
+	mockMailbox := &mockMailboxRepository{}
+
+	h := newHandler(mockEmail, mockMailbox)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			// No filter - query all emails
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Total should not be present when no inMailbox filter
+	if _, ok := response.MethodResponse.Args["total"]; ok {
+		t.Error("total should not be present when no inMailbox filter")
 	}
 }
 

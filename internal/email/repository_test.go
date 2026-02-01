@@ -1907,3 +1907,164 @@ func TestMarshalEmailItem_OmitsDeletedAtWhenNil(t *testing.T) {
 		t.Error("DeletedAt should not be present when nil")
 	}
 }
+
+func TestQueryRequest_HasCollapseThreadsField(t *testing.T) {
+	req := &QueryRequest{
+		Filter:          &QueryFilter{InMailbox: "inbox-id"},
+		Limit:           25,
+		CollapseThreads: true,
+	}
+
+	if !req.CollapseThreads {
+		t.Error("CollapseThreads should be true")
+	}
+}
+
+func TestQueryResult_HasTotalField(t *testing.T) {
+	total := 42
+	result := &QueryResult{
+		IDs:        []string{"email-1", "email-2"},
+		Position:   0,
+		QueryState: "state-123",
+		Total:      &total,
+	}
+
+	if result.Total == nil {
+		t.Fatal("Total should not be nil")
+	}
+	if *result.Total != 42 {
+		t.Errorf("Total = %d, want 42", *result.Total)
+	}
+}
+
+func TestRepository_QueryEmails_CollapseThreads_CollapsesResults(t *testing.T) {
+	// Emails from the same thread should be collapsed to show only one
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					// Thread A - email-1 (most recent from thread A)
+					{
+						"emailId":  &types.AttributeValueMemberS{Value: "email-1"},
+						"threadId": &types.AttributeValueMemberS{Value: "thread-A"},
+					},
+					// Thread A - email-2 (older from thread A, should be collapsed)
+					{
+						"emailId":  &types.AttributeValueMemberS{Value: "email-2"},
+						"threadId": &types.AttributeValueMemberS{Value: "thread-A"},
+					},
+					// Thread B - email-3
+					{
+						"emailId":  &types.AttributeValueMemberS{Value: "email-3"},
+						"threadId": &types.AttributeValueMemberS{Value: "thread-B"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter:          &QueryFilter{InMailbox: "inbox-id"},
+		Limit:           25,
+		CollapseThreads: true,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	// Should return only 2 emails (one per thread)
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2 (collapsed)", len(result.IDs))
+	}
+	// First should be email-1 (thread-A representative)
+	if result.IDs[0] != "email-1" {
+		t.Errorf("IDs[0] = %q, want %q", result.IDs[0], "email-1")
+	}
+	// Second should be email-3 (thread-B representative)
+	if result.IDs[1] != "email-3" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-3")
+	}
+}
+
+func TestRepository_QueryEmails_CollapseThreads_NoThreadID_NotCollapsed(t *testing.T) {
+	// Legacy emails without ThreadID should not be collapsed
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					// Email with ThreadID
+					{
+						"emailId":  &types.AttributeValueMemberS{Value: "email-1"},
+						"threadId": &types.AttributeValueMemberS{Value: "thread-A"},
+					},
+					// Legacy email without ThreadID
+					{
+						"emailId": &types.AttributeValueMemberS{Value: "email-2"},
+						// No threadId
+					},
+					// Another legacy email without ThreadID
+					{
+						"emailId": &types.AttributeValueMemberS{Value: "email-3"},
+						// No threadId
+					},
+				},
+			}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter:          &QueryFilter{InMailbox: "inbox-id"},
+		Limit:           25,
+		CollapseThreads: true,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	// Should return all 3 emails (legacy emails without ThreadID are not collapsed)
+	if len(result.IDs) != 3 {
+		t.Fatalf("IDs length = %d, want 3 (legacy emails not collapsed)", len(result.IDs))
+	}
+}
+
+func TestMarshalMembershipItem_IncludesThreadID(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	email := &EmailItem{
+		AccountID:  "user-123",
+		EmailID:    "email-456",
+		BlobID:     "blob-789",
+		ThreadID:   "thread-abc",
+		ReceivedAt: receivedAt,
+		MailboxIDs: map[string]bool{"inbox-id": true},
+	}
+
+	var capturedMembershipItem map[string]types.AttributeValue
+	mockClient := &mockDynamoDBClient{
+		transactWriteFunc: func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+			// The second item is the membership item
+			if len(input.TransactItems) > 1 && input.TransactItems[1].Put != nil {
+				capturedMembershipItem = input.TransactItems[1].Put.Item
+			}
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	_ = repo.CreateEmail(context.Background(), email)
+
+	if capturedMembershipItem == nil {
+		t.Fatal("Membership item was not captured")
+	}
+
+	threadIDAttr, ok := capturedMembershipItem[AttrThreadID]
+	if !ok {
+		t.Fatal("marshalMembershipItem missing threadId field")
+	}
+	threadIDVal := threadIDAttr.(*types.AttributeValueMemberS).Value
+	if threadIDVal != "thread-abc" {
+		t.Errorf("threadId = %q, want %q", threadIDVal, "thread-abc")
+	}
+}
