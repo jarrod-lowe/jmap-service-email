@@ -33,11 +33,12 @@ resource "aws_dynamodb_table" "email_data" {
 
   # LSI1 for querying all emails sorted by receivedAt
   # Format: RCVD#{receivedAt}#{emailId}
+  # Includes threadId for collapseThreads support, deletedAt for soft-delete filtering
   local_secondary_index {
     name               = "lsi1"
     range_key          = "lsi1sk"
     projection_type    = "INCLUDE"
-    non_key_attributes = ["emailId"]
+    non_key_attributes = ["emailId", "threadId", "deletedAt"]
   }
 
   # LSI2 for finding emails by Message-ID header (threading parent lookup)
