@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
+	"github.com/jarrod-lowe/jmap-service-email/internal/charset"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/headers"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
@@ -27,6 +28,9 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
 )
+
+// defaultMaxBodyValueBytes is the fallback if MAX_BODY_VALUE_BYTES env var is not set.
+const defaultMaxBodyValueBytes = 256 * 1024
 
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 	Level: slog.LevelInfo,
@@ -49,17 +53,19 @@ type BlobStreamer interface {
 
 // handler implements the Email/get logic.
 type handler struct {
-	repo         EmailRepository
-	stateRepo    StateRepository
-	blobStreamer BlobStreamer
+	repo                  EmailRepository
+	stateRepo             StateRepository
+	blobStreamer          BlobStreamer
+	serverMaxBodyValueBytes int
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, stateRepo StateRepository, blobStreamer BlobStreamer) *handler {
+func newHandler(repo EmailRepository, stateRepo StateRepository, blobStreamer BlobStreamer, serverMaxBodyValueBytes int) *handler {
 	return &handler{
-		repo:         repo,
-		stateRepo:    stateRepo,
-		blobStreamer: blobStreamer,
+		repo:                    repo,
+		stateRepo:               stateRepo,
+		blobStreamer:            blobStreamer,
+		serverMaxBodyValueBytes: serverMaxBodyValueBytes,
 	}
 }
 
@@ -134,6 +140,15 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	fetchHTMLBodyValues, _ := request.Args["fetchHTMLBodyValues"].(bool)
 	fetchAllBodyValues, _ := request.Args["fetchAllBodyValues"].(bool)
 
+	// Parse maxBodyValueBytes (default to server max if not specified or invalid)
+	maxBodyValueBytes := h.serverMaxBodyValueBytes
+	if v, ok := request.Args["maxBodyValueBytes"].(float64); ok && v > 0 {
+		maxBodyValueBytes = int(v)
+		if maxBodyValueBytes > h.serverMaxBodyValueBytes {
+			maxBodyValueBytes = h.serverMaxBodyValueBytes
+		}
+	}
+
 	// Convert IDs to strings
 	var ids []string
 	for _, id := range idsSlice {
@@ -188,7 +203,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 
 		// Transform email to response format
-		emailMap := transformEmail(emailItem, properties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues)
+		emailMap := h.transformEmail(ctx, accountID, emailItem, properties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues, maxBodyValueBytes)
 		list = append(list, emailMap)
 	}
 
@@ -243,17 +258,16 @@ func ensureMap(m map[string]bool) map[string]bool {
 	return m
 }
 
-// buildBodyValues creates bodyValues entries based on fetch flags.
-// Returns entries with isTruncated: true and empty value for experiment.
-func buildBodyValues(e *email.EmailItem, fetchText, fetchHTML, fetchAll bool) map[string]any {
-	result := map[string]any{}
+// collectBodyPartIDs collects part IDs based on fetch flags.
+func collectBodyPartIDs(e *email.EmailItem, fetchText, fetchHTML, fetchAll bool) []string {
+	seen := make(map[string]bool)
+	var partIDs []string
 
 	if fetchText {
 		for _, partID := range e.TextBody {
-			result[partID] = map[string]any{
-				"value":             "",
-				"isTruncated":       true,
-				"isEncodingProblem": false,
+			if !seen[partID] {
+				seen[partID] = true
+				partIDs = append(partIDs, partID)
 			}
 		}
 	}
@@ -265,43 +279,102 @@ func buildBodyValues(e *email.EmailItem, fetchText, fetchHTML, fetchAll bool) ma
 			htmlParts = e.TextBody
 		}
 		for _, partID := range htmlParts {
-			if _, exists := result[partID]; !exists {
-				result[partID] = map[string]any{
-					"value":             "",
-					"isTruncated":       true,
-					"isEncodingProblem": false,
-				}
+			if !seen[partID] {
+				seen[partID] = true
+				partIDs = append(partIDs, partID)
 			}
 		}
 	}
 
 	if fetchAll {
 		// Add all text/* parts from bodyStructure
-		addAllTextParts(e.BodyStructure, result)
+		collectAllTextPartIDs(e.BodyStructure, seen, &partIDs)
+	}
+
+	return partIDs
+}
+
+// collectAllTextPartIDs recursively collects part IDs for all text/* parts.
+func collectAllTextPartIDs(bp email.BodyPart, seen map[string]bool, partIDs *[]string) {
+	if strings.HasPrefix(bp.Type, "text/") {
+		if !seen[bp.PartID] {
+			seen[bp.PartID] = true
+			*partIDs = append(*partIDs, bp.PartID)
+		}
+	}
+	for _, sub := range bp.SubParts {
+		collectAllTextPartIDs(sub, seen, partIDs)
+	}
+}
+
+// fetchBodyValue fetches and decodes the content of a body part.
+func (h *handler) fetchBodyValue(ctx context.Context, accountID string, part *email.BodyPart, maxBytes int) (value string, isTruncated bool, isEncodingProblem bool) {
+	if h.blobStreamer == nil || part == nil || part.BlobID == "" {
+		return "", false, true
+	}
+
+	reader, err := h.blobStreamer.Stream(ctx, accountID, part.BlobID)
+	if err != nil {
+		logger.WarnContext(ctx, "Failed to stream body part",
+			slog.String("blob_id", part.BlobID),
+			slog.String("error", err.Error()),
+		)
+		return "", false, true
+	}
+	defer reader.Close()
+
+	// Decode charset
+	decodedReader, encodingProblem, err := charset.DecodeReader(reader, part.Charset)
+	if err != nil {
+		logger.WarnContext(ctx, "Failed to decode charset",
+			slog.String("blob_id", part.BlobID),
+			slog.String("charset", part.Charset),
+			slog.String("error", err.Error()),
+		)
+		return "", false, true
+	}
+
+	// Read up to maxBytes + 1 to detect truncation
+	buf := make([]byte, maxBytes+1)
+	n, err := io.ReadFull(decodedReader, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		logger.WarnContext(ctx, "Failed to read body part",
+			slog.String("blob_id", part.BlobID),
+			slog.String("error", err.Error()),
+		)
+		return "", false, true
+	}
+
+	// Check if truncated
+	if n > maxBytes {
+		return string(buf[:maxBytes]), true, encodingProblem
+	}
+
+	return string(buf[:n]), false, encodingProblem
+}
+
+// buildBodyValues creates bodyValues entries by fetching actual content.
+func (h *handler) buildBodyValues(ctx context.Context, accountID string, e *email.EmailItem, fetchText, fetchHTML, fetchAll bool, maxBytes int) map[string]any {
+	result := map[string]any{}
+
+	partIDs := collectBodyPartIDs(e, fetchText, fetchHTML, fetchAll)
+
+	for _, partID := range partIDs {
+		part := findBodyPart(e.BodyStructure, partID)
+		value, isTruncated, isEncodingProblem := h.fetchBodyValue(ctx, accountID, part, maxBytes)
+		result[partID] = map[string]any{
+			"value":             value,
+			"isTruncated":       isTruncated,
+			"isEncodingProblem": isEncodingProblem,
+		}
 	}
 
 	return result
 }
 
-// addAllTextParts recursively adds bodyValue entries for all text/* parts.
-func addAllTextParts(bp email.BodyPart, result map[string]any) {
-	if strings.HasPrefix(bp.Type, "text/") {
-		if _, exists := result[bp.PartID]; !exists {
-			result[bp.PartID] = map[string]any{
-				"value":             "",
-				"isTruncated":       true,
-				"isEncodingProblem": false,
-			}
-		}
-	}
-	for _, sub := range bp.SubParts {
-		addAllTextParts(sub, result)
-	}
-}
-
 // transformEmail converts an EmailItem to the JMAP response format.
 // If properties is non-empty, only those properties are included.
-func transformEmail(e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool) map[string]any {
+func (h *handler) transformEmail(ctx context.Context, accountID string, e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool, maxBodyValueBytes int) map[string]any {
 	// Build full email map
 	full := map[string]any{
 		"id":            e.EmailID,
@@ -328,7 +401,7 @@ func transformEmail(e *email.EmailItem, properties []string, headerProps []*head
 		"textBody":      transformBodyPartRefs(e.TextBody),
 		"htmlBody":      transformBodyPartRefs(e.HTMLBody),
 		"attachments":   transformBodyPartRefs(e.Attachments),
-		"bodyValues":    buildBodyValues(e, fetchText, fetchHTML, fetchAll),
+		"bodyValues":    h.buildBodyValues(ctx, accountID, e, fetchText, fetchHTML, fetchAll, maxBodyValueBytes),
 	}
 
 	// Add header:* properties if requested
@@ -501,6 +574,20 @@ func errorResponse(clientID, errorType, description string) plugincontract.Plugi
 	}
 }
 
+// findBodyPart recursively searches a BodyPart tree to find a part by ID.
+// Returns nil if not found.
+func findBodyPart(root email.BodyPart, partID string) *email.BodyPart {
+	if root.PartID == partID {
+		return &root
+	}
+	for _, sub := range root.SubParts {
+		if found := findBodyPart(sub, partID); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -514,6 +601,14 @@ func main() {
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
 	coreAPIURL := os.Getenv("CORE_API_URL")
+
+	// Parse max body value bytes from environment (default if not set or invalid)
+	serverMaxBodyValueBytes := defaultMaxBodyValueBytes
+	if maxBytesStr := os.Getenv("MAX_BODY_VALUE_BYTES"); maxBytesStr != "" {
+		if parsed, err := strconv.Atoi(maxBytesStr); err == nil && parsed > 0 {
+			serverMaxBodyValueBytes = parsed
+		}
+	}
 
 	// Initialize AWS config
 	cfg, err := config.LoadDefaultConfig(ctx)
@@ -532,6 +627,6 @@ func main() {
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
-	h := newHandler(repo, stateRepo, blobClient)
+	h := newHandler(repo, stateRepo, blobClient, serverMaxBodyValueBytes)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

@@ -63,6 +63,7 @@ resource "aws_lambda_function" "email_get" {
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
+      MAX_BODY_VALUE_BYTES                = tostring(var.max_body_value_bytes)
     }
   }
 

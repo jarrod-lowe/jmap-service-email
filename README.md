@@ -123,6 +123,41 @@ Methods:
 - `Thread/get` - Retrieve threads by ID (returns emailIds in receivedAt order)
 - `Thread/changes` - Get thread changes since a given state (for delta sync)
 
+## Email/get bodyValues
+
+The `bodyValues` property returns decoded text content from email body parts when requested via `fetchTextBodyValues`, `fetchHTMLBodyValues`, or `fetchAllBodyValues`.
+
+### Configuration
+
+| Variable | Environment | Default | Description |
+|----------|-------------|---------|-------------|
+| `max_body_value_bytes` | Terraform | 262144 (256KB) | Server-side maximum for `maxBodyValueBytes` |
+| `MAX_BODY_VALUE_BYTES` | Lambda env | 262144 | Actual limit used at runtime |
+
+### Memory Model
+
+The implementation streams blob content through a charset decoder. Memory usage per body part is bounded by:
+
+- **Decoded output buffer**: `maxBodyValueBytes + 1` (to detect truncation)
+- **Transform reader buffer**: ~4KB internal buffer
+
+Worst case for a single Email/get: ~15MB when fetching maximum-sized body values for multiple parts (bounded by Lambda memory).
+
+### Charset Decoding
+
+Body parts are decoded from their declared charset to UTF-8:
+
+- Uses `golang.org/x/text/encoding/ianaindex` for charset lookup
+- Empty charset defaults to US-ASCII
+- Unknown charsets fall back to Latin-1 with `isEncodingProblem: true`
+- Invalid byte sequences trigger Latin-1 fallback with `isEncodingProblem: true`
+
+### Truncation
+
+When decoded content exceeds `maxBodyValueBytes`:
+- `value` contains the first `maxBodyValueBytes` bytes
+- `isTruncated` is set to `true`
+
 ## Async Blob Deletion
 
 When emails are destroyed via `Email/set` or when `Email/import` fails after uploading parts, blob IDs are published to an SQS queue for async deletion. A dedicated `blob-delete` Lambda consumes from this queue and calls `DELETE /delete-iam/{accountId}/{blobId}` for each blob.
@@ -157,7 +192,6 @@ The following enhancements are planned for future versions:
 ### Email/get
 
 - **BatchGetItem**: Use `BatchGetItem` instead of sequential `GetItem` calls for multi-ID efficiency
-- **bodyValues**: Implement content fetching from blob storage (currently returns `{}`)
 - **header:\* caching**: Header data is fetched on-demand from blob storage; consider caching for repeated requests
 
 ### Email/query

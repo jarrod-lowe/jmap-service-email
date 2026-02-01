@@ -92,7 +92,7 @@ func TestHandler_SingleIDFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -168,7 +168,7 @@ func TestHandler_SingleIDNotFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -230,7 +230,7 @@ func TestHandler_MultipleIDsMixedResults(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -278,7 +278,7 @@ func TestHandler_PropertyFiltering(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -363,7 +363,7 @@ func TestHandler_HeaderPropertySupported(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer)
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -411,7 +411,7 @@ func TestHandler_HeaderPropertyInvalidForm(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 	mockBlobStreamer := &mockBlobStreamer{}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer)
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	// Try to use asDate form on Subject (not allowed)
 	request := plugincontract.PluginInvocationRequest{
@@ -462,7 +462,7 @@ func TestHandler_HeaderPropertyWithForm(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer)
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -508,7 +508,7 @@ func TestHandler_HeaderPropertyWithForm(t *testing.T) {
 func TestHandler_MissingIDs(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -540,7 +540,7 @@ func TestHandler_MissingIDs(t *testing.T) {
 func TestHandler_EmptyIDsArray(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -595,7 +595,7 @@ func TestHandler_RepositoryError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -627,7 +627,7 @@ func TestHandler_RepositoryError(t *testing.T) {
 func TestHandler_InvalidMethod(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -661,7 +661,7 @@ func TestHandler_BodyValuesAlwaysEmpty(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -707,7 +707,7 @@ func TestHandler_FromFieldValue(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -766,7 +766,7 @@ func TestHandler_FromFieldValue(t *testing.T) {
 func TestHandler_InvalidIDType(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -811,7 +811,7 @@ func TestHandler_ReturnsActualState(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStateRepo, nil)
+	h := newHandler(mockRepo, mockStateRepo, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -850,7 +850,7 @@ func TestHandler_StateRepositoryError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStateRepo, nil)
+	h := newHandler(mockRepo, mockStateRepo, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -888,7 +888,7 @@ func TestHandler_SenderFieldPresent(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -945,7 +945,7 @@ func TestHandler_BccFieldPresent(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -999,7 +999,7 @@ func TestHandler_SenderNullWhenEmpty(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1044,7 +1044,7 @@ func TestHandler_BccNullWhenEmpty(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1089,7 +1089,7 @@ func TestHandler_PropertyFiltering_IDAlwaysReturned(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	// Request specific properties WITHOUT "id"
 	request := plugincontract.PluginInvocationRequest{
@@ -1162,7 +1162,7 @@ func TestHandler_KeywordsEmptyObjectWhenNil(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1213,6 +1213,15 @@ func TestHandler_KeywordsEmptyObjectWhenNil(t *testing.T) {
 func TestHandler_FetchTextBodyValues(t *testing.T) {
 	testEmail := testEmailItem("user-123", "email-1")
 	testEmail.TextBody = []string{"1", "3"} // Two text body parts
+	testEmail.BodyStructure = email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/mixed",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "blob-1", Charset: "utf-8"},
+			{PartID: "2", Type: "image/png", BlobID: "blob-2"},
+			{PartID: "3", Type: "text/plain", BlobID: "blob-3", Charset: "utf-8"},
+		},
+	}
 
 	mockRepo := &mockEmailRepository{
 		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
@@ -1220,7 +1229,20 @@ func TestHandler_FetchTextBodyValues(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			switch blobID {
+			case "blob-1":
+				return io.NopCloser(strings.NewReader("Content 1")), nil
+			case "blob-3":
+				return io.NopCloser(strings.NewReader("Content 3")), nil
+			default:
+				return nil, errors.New("blob not found")
+			}
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1255,20 +1277,21 @@ func TestHandler_FetchTextBodyValues(t *testing.T) {
 	}
 
 	// Should have entries for partId "1" and "3"
-	for _, partID := range []string{"1", "3"} {
+	expectedContent := map[string]string{"1": "Content 1", "3": "Content 3"}
+	for partID, expectedValue := range expectedContent {
 		entry, ok := bodyValues[partID].(map[string]any)
 		if !ok {
 			t.Fatalf("bodyValues[%q] should be a map, got %T", partID, bodyValues[partID])
 		}
 
-		// value should be empty string
-		if entry["value"] != "" {
-			t.Errorf("bodyValues[%q].value = %v, want empty string", partID, entry["value"])
+		// value should be actual content
+		if entry["value"] != expectedValue {
+			t.Errorf("bodyValues[%q].value = %v, want %q", partID, entry["value"], expectedValue)
 		}
 
-		// isTruncated should be true
-		if entry["isTruncated"] != true {
-			t.Errorf("bodyValues[%q].isTruncated = %v, want true", partID, entry["isTruncated"])
+		// isTruncated should be false (content fits)
+		if entry["isTruncated"] != false {
+			t.Errorf("bodyValues[%q].isTruncated = %v, want false", partID, entry["isTruncated"])
 		}
 
 		// isEncodingProblem should be false
@@ -1281,6 +1304,16 @@ func TestHandler_FetchTextBodyValues(t *testing.T) {
 func TestHandler_FetchHTMLBodyValues(t *testing.T) {
 	testEmail := testEmailItem("user-123", "email-1")
 	testEmail.HTMLBody = []string{"2", "4"} // Two HTML body parts
+	testEmail.BodyStructure = email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/mixed",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "blob-1", Charset: "utf-8"},
+			{PartID: "2", Type: "text/html", BlobID: "blob-2", Charset: "utf-8"},
+			{PartID: "3", Type: "image/png", BlobID: "blob-3"},
+			{PartID: "4", Type: "text/html", BlobID: "blob-4", Charset: "utf-8"},
+		},
+	}
 
 	mockRepo := &mockEmailRepository{
 		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
@@ -1288,7 +1321,20 @@ func TestHandler_FetchHTMLBodyValues(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			switch blobID {
+			case "blob-2":
+				return io.NopCloser(strings.NewReader("<p>HTML 2</p>")), nil
+			case "blob-4":
+				return io.NopCloser(strings.NewReader("<p>HTML 4</p>")), nil
+			default:
+				return nil, errors.New("blob not found")
+			}
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1323,20 +1369,21 @@ func TestHandler_FetchHTMLBodyValues(t *testing.T) {
 	}
 
 	// Should have entries for partId "2" and "4"
-	for _, partID := range []string{"2", "4"} {
+	expectedContent := map[string]string{"2": "<p>HTML 2</p>", "4": "<p>HTML 4</p>"}
+	for partID, expectedValue := range expectedContent {
 		entry, ok := bodyValues[partID].(map[string]any)
 		if !ok {
 			t.Fatalf("bodyValues[%q] should be a map, got %T", partID, bodyValues[partID])
 		}
 
-		// value should be empty string
-		if entry["value"] != "" {
-			t.Errorf("bodyValues[%q].value = %v, want empty string", partID, entry["value"])
+		// value should be actual content
+		if entry["value"] != expectedValue {
+			t.Errorf("bodyValues[%q].value = %v, want %q", partID, entry["value"], expectedValue)
 		}
 
-		// isTruncated should be true
-		if entry["isTruncated"] != true {
-			t.Errorf("bodyValues[%q].isTruncated = %v, want true", partID, entry["isTruncated"])
+		// isTruncated should be false
+		if entry["isTruncated"] != false {
+			t.Errorf("bodyValues[%q].isTruncated = %v, want false", partID, entry["isTruncated"])
 		}
 
 		// isEncodingProblem should be false
@@ -1353,9 +1400,9 @@ func TestHandler_FetchAllBodyValues(t *testing.T) {
 		PartID: "0",
 		Type:   "multipart/alternative",
 		SubParts: []email.BodyPart{
-			{PartID: "1", Type: "text/plain", Size: 100},
-			{PartID: "2", Type: "text/html", Size: 200},
-			{PartID: "3", Type: "image/png", Size: 1000}, // Not text/*, should be excluded
+			{PartID: "1", Type: "text/plain", Size: 100, BlobID: "blob-1", Charset: "utf-8"},
+			{PartID: "2", Type: "text/html", Size: 200, BlobID: "blob-2", Charset: "utf-8"},
+			{PartID: "3", Type: "image/png", Size: 1000, BlobID: "blob-3"}, // Not text/*, should be excluded
 		},
 	}
 
@@ -1365,7 +1412,20 @@ func TestHandler_FetchAllBodyValues(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			switch blobID {
+			case "blob-1":
+				return io.NopCloser(strings.NewReader("Plain text")), nil
+			case "blob-2":
+				return io.NopCloser(strings.NewReader("<p>HTML</p>")), nil
+			default:
+				return nil, errors.New("blob not found")
+			}
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1400,20 +1460,21 @@ func TestHandler_FetchAllBodyValues(t *testing.T) {
 	}
 
 	// Should have entries for text/* parts (1 and 2), but not image/png (3)
-	for _, partID := range []string{"1", "2"} {
+	expectedContent := map[string]string{"1": "Plain text", "2": "<p>HTML</p>"}
+	for partID, expectedValue := range expectedContent {
 		entry, ok := bodyValues[partID].(map[string]any)
 		if !ok {
 			t.Fatalf("bodyValues[%q] should be a map, got %T", partID, bodyValues[partID])
 		}
 
-		// value should be empty string
-		if entry["value"] != "" {
-			t.Errorf("bodyValues[%q].value = %v, want empty string", partID, entry["value"])
+		// value should be actual content
+		if entry["value"] != expectedValue {
+			t.Errorf("bodyValues[%q].value = %v, want %q", partID, entry["value"], expectedValue)
 		}
 
-		// isTruncated should be true
-		if entry["isTruncated"] != true {
-			t.Errorf("bodyValues[%q].isTruncated = %v, want true", partID, entry["isTruncated"])
+		// isTruncated should be false
+		if entry["isTruncated"] != false {
+			t.Errorf("bodyValues[%q].isTruncated = %v, want false", partID, entry["isTruncated"])
 		}
 	}
 
@@ -1435,7 +1496,7 @@ func TestHandler_FetchBodyValuesNoFlags(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1483,6 +1544,13 @@ func TestHandler_FetchHTMLBodyValuesFallsBackToTextBody(t *testing.T) {
 	testEmail := testEmailItem("user-123", "email-1")
 	testEmail.TextBody = []string{"1"} // Plain-text only email
 	testEmail.HTMLBody = nil           // No HTML body parts
+	testEmail.BodyStructure = email.BodyPart{
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "blob-1",
+		Charset: "utf-8",
+		Size:    20,
+	}
 
 	mockRepo := &mockEmailRepository{
 		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
@@ -1490,7 +1558,16 @@ func TestHandler_FetchHTMLBodyValuesFallsBackToTextBody(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			if blobID == "blob-1" {
+				return io.NopCloser(strings.NewReader("Fallback text content")), nil
+			}
+			return nil, errors.New("blob not found")
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1536,12 +1613,12 @@ func TestHandler_FetchHTMLBodyValuesFallsBackToTextBody(t *testing.T) {
 		t.Fatalf("bodyValues[\"1\"] should be a map, got %T", bodyValues["1"])
 	}
 
-	// Verify structure
-	if entry["value"] != "" {
-		t.Errorf("bodyValues[\"1\"].value = %v, want empty string", entry["value"])
+	// Verify structure - should have actual content
+	if entry["value"] != "Fallback text content" {
+		t.Errorf("bodyValues[\"1\"].value = %v, want %q", entry["value"], "Fallback text content")
 	}
-	if entry["isTruncated"] != true {
-		t.Errorf("bodyValues[\"1\"].isTruncated = %v, want true", entry["isTruncated"])
+	if entry["isTruncated"] != false {
+		t.Errorf("bodyValues[\"1\"].isTruncated = %v, want false", entry["isTruncated"])
 	}
 	if entry["isEncodingProblem"] != false {
 		t.Errorf("bodyValues[\"1\"].isEncodingProblem = %v, want false", entry["isEncodingProblem"])
@@ -1553,8 +1630,16 @@ func TestHandler_FetchHTMLBodyValuesDoesNotFallbackWhenHTMLExists(t *testing.T) 
 	// we should NOT include text body parts in bodyValues
 
 	testEmail := testEmailItem("user-123", "email-1")
-	testEmail.TextBody = []string{"1"}  // Text part
-	testEmail.HTMLBody = []string{"2"}  // HTML part exists
+	testEmail.TextBody = []string{"1"} // Text part
+	testEmail.HTMLBody = []string{"2"} // HTML part exists
+	testEmail.BodyStructure = email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/alternative",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "blob-1", Charset: "utf-8"},
+			{PartID: "2", Type: "text/html", BlobID: "blob-2", Charset: "utf-8"},
+		},
+	}
 
 	mockRepo := &mockEmailRepository{
 		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
@@ -1562,7 +1647,18 @@ func TestHandler_FetchHTMLBodyValuesDoesNotFallbackWhenHTMLExists(t *testing.T) 
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			switch blobID {
+			case "blob-2":
+				return io.NopCloser(strings.NewReader("<p>HTML content</p>")), nil
+			default:
+				return nil, errors.New("blob not found")
+			}
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1634,7 +1730,7 @@ func TestHandler_HeaderAllModifierReturnEmptyArrayForMissingHeader(t *testing.T)
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer)
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1719,7 +1815,7 @@ func TestHandler_SoftDeletedEmailIsNotFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, nil)
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -1755,5 +1851,466 @@ func TestHandler_SoftDeletedEmailIsNotFound(t *testing.T) {
 	}
 	if notFound[0] != "email-1" {
 		t.Errorf("notFound[0] = %v, want email-1", notFound[0])
+	}
+}
+
+func TestFindBodyPart_TopLevel(t *testing.T) {
+	root := email.BodyPart{
+		PartID: "1",
+		Type:   "text/plain",
+		BlobID: "blob-1",
+	}
+
+	part := findBodyPart(root, "1")
+	if part == nil {
+		t.Fatal("expected to find part 1")
+	}
+	if part.BlobID != "blob-1" {
+		t.Errorf("BlobID = %q, want %q", part.BlobID, "blob-1")
+	}
+}
+
+func TestFindBodyPart_Nested(t *testing.T) {
+	root := email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/alternative",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "blob-1", Charset: "utf-8"},
+			{PartID: "2", Type: "text/html", BlobID: "blob-2", Charset: "utf-8"},
+		},
+	}
+
+	// Find nested part
+	part := findBodyPart(root, "2")
+	if part == nil {
+		t.Fatal("expected to find part 2")
+	}
+	if part.BlobID != "blob-2" {
+		t.Errorf("BlobID = %q, want %q", part.BlobID, "blob-2")
+	}
+	if part.Type != "text/html" {
+		t.Errorf("Type = %q, want %q", part.Type, "text/html")
+	}
+}
+
+func TestFindBodyPart_DeeplyNested(t *testing.T) {
+	root := email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/mixed",
+		SubParts: []email.BodyPart{
+			{
+				PartID: "1",
+				Type:   "multipart/alternative",
+				SubParts: []email.BodyPart{
+					{PartID: "1.1", Type: "text/plain", BlobID: "blob-1.1"},
+					{PartID: "1.2", Type: "text/html", BlobID: "blob-1.2"},
+				},
+			},
+			{PartID: "2", Type: "image/png", BlobID: "blob-2"},
+		},
+	}
+
+	// Find deeply nested part
+	part := findBodyPart(root, "1.2")
+	if part == nil {
+		t.Fatal("expected to find part 1.2")
+	}
+	if part.BlobID != "blob-1.2" {
+		t.Errorf("BlobID = %q, want %q", part.BlobID, "blob-1.2")
+	}
+}
+
+func TestFindBodyPart_NotFound(t *testing.T) {
+	root := email.BodyPart{
+		PartID: "1",
+		Type:   "text/plain",
+	}
+
+	part := findBodyPart(root, "nonexistent")
+	if part != nil {
+		t.Errorf("expected nil for nonexistent part, got %+v", part)
+	}
+}
+
+func TestHandler_FetchTextBodyValues_ReturnsActualContent(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "part-blob-1",
+		Charset: "utf-8",
+		Size:    13,
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	// Mock blob streamer returns actual content
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			if blobID == "part-blob-1" {
+				return io.NopCloser(strings.NewReader("Hello, World!")), nil
+			}
+			return nil, errors.New("blob not found")
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchTextBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	entry, ok := bodyValues["1"].(map[string]any)
+	if !ok {
+		t.Fatalf("bodyValues[\"1\"] should be a map, got %T", bodyValues["1"])
+	}
+
+	// Value should be actual content, not empty string
+	if entry["value"] != "Hello, World!" {
+		t.Errorf("bodyValues[\"1\"].value = %q, want %q", entry["value"], "Hello, World!")
+	}
+
+	// isTruncated should be false (content fits)
+	if entry["isTruncated"] != false {
+		t.Errorf("bodyValues[\"1\"].isTruncated = %v, want false", entry["isTruncated"])
+	}
+
+	// isEncodingProblem should be false
+	if entry["isEncodingProblem"] != false {
+		t.Errorf("bodyValues[\"1\"].isEncodingProblem = %v, want false", entry["isEncodingProblem"])
+	}
+}
+
+func TestHandler_FetchBodyValues_Truncation(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "part-blob-1",
+		Charset: "utf-8",
+		Size:    100,
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	// Return content longer than maxBodyValueBytes
+	longContent := strings.Repeat("A", 100)
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(longContent)), nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchTextBodyValues": true,
+			"maxBodyValueBytes":   float64(10), // Limit to 10 bytes
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	entry, ok := bodyValues["1"].(map[string]any)
+	if !ok {
+		t.Fatalf("bodyValues[\"1\"] should be a map, got %T", bodyValues["1"])
+	}
+
+	// Value should be truncated to maxBodyValueBytes
+	value, ok := entry["value"].(string)
+	if !ok {
+		t.Fatalf("value should be string, got %T", entry["value"])
+	}
+	if len(value) != 10 {
+		t.Errorf("value length = %d, want 10", len(value))
+	}
+
+	// isTruncated should be true
+	if entry["isTruncated"] != true {
+		t.Errorf("bodyValues[\"1\"].isTruncated = %v, want true", entry["isTruncated"])
+	}
+}
+
+func TestHandler_FetchBodyValues_CharsetDecoding(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "part-blob-1",
+		Charset: "iso-8859-1",
+		Size:    10,
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	// ISO-8859-1 content: "café" where é = 0xE9
+	iso8859Content := []byte{'c', 'a', 'f', 0xE9}
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(string(iso8859Content))), nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchTextBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	entry, ok := bodyValues["1"].(map[string]any)
+	if !ok {
+		t.Fatalf("bodyValues[\"1\"] should be a map, got %T", bodyValues["1"])
+	}
+
+	// Value should be decoded to UTF-8: "café"
+	if entry["value"] != "café" {
+		t.Errorf("bodyValues[\"1\"].value = %q, want %q", entry["value"], "café")
+	}
+
+	// isEncodingProblem should be false (successful decode)
+	if entry["isEncodingProblem"] != false {
+		t.Errorf("bodyValues[\"1\"].isEncodingProblem = %v, want false", entry["isEncodingProblem"])
+	}
+}
+
+func TestHandler_FetchBodyValues_MissingBlob(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "missing-blob",
+		Charset: "utf-8",
+		Size:    100,
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	// Blob not found
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return nil, errors.New("blob not found")
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchTextBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	entry, ok := bodyValues["1"].(map[string]any)
+	if !ok {
+		t.Fatalf("bodyValues[\"1\"] should be a map, got %T", bodyValues["1"])
+	}
+
+	// Value should be empty for missing blob
+	if entry["value"] != "" {
+		t.Errorf("bodyValues[\"1\"].value = %q, want empty string", entry["value"])
+	}
+
+	// isEncodingProblem should be true for missing blob
+	if entry["isEncodingProblem"] != true {
+		t.Errorf("bodyValues[\"1\"].isEncodingProblem = %v, want true", entry["isEncodingProblem"])
+	}
+}
+
+func TestHandler_FetchHTMLBodyValues_ReturnsActualContent(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.HTMLBody = []string{"2"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/alternative",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "part-blob-1", Charset: "utf-8"},
+			{PartID: "2", Type: "text/html", BlobID: "part-blob-2", Charset: "utf-8"},
+		},
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	mockBlobStreamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			if blobID == "part-blob-2" {
+				return io.NopCloser(strings.NewReader("<html><body>Hello</body></html>")), nil
+			}
+			return nil, errors.New("blob not found")
+		},
+	}
+
+	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":           "user-123",
+			"ids":                 []any{"email-1"},
+			"fetchHTMLBodyValues": true,
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	bodyValues, ok := emailMap["bodyValues"].(map[string]any)
+	if !ok {
+		t.Fatal("bodyValues should be a map")
+	}
+
+	entry, ok := bodyValues["2"].(map[string]any)
+	if !ok {
+		t.Fatalf("bodyValues[\"2\"] should be a map, got %T", bodyValues["2"])
+	}
+
+	// Value should be actual HTML content
+	if entry["value"] != "<html><body>Hello</body></html>" {
+		t.Errorf("bodyValues[\"2\"].value = %q, want %q", entry["value"], "<html><body>Hello</body></html>")
 	}
 }

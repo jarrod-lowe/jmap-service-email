@@ -37,3 +37,9 @@ variable "plugin_version" {
   type        = string
   default     = "1.0.0"
 }
+
+variable "max_body_value_bytes" {
+  description = "Maximum size in bytes for Email/get bodyValues content (server-side cap)"
+  type        = number
+  default     = 262144 # 256KB
+}
