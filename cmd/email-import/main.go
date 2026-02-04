@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
@@ -25,7 +26,10 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -541,6 +545,13 @@ func main() {
 	}
 	otel.SetTracerProvider(tp)
 
+	// Set X-Ray propagator as global propagator for HTTP client trace context injection
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		xray.Propagator{},
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
 	coreAPIURL := os.Getenv("CORE_API_URL")
@@ -552,14 +563,18 @@ func main() {
 		panic(err)
 	}
 
+	// Instrument AWS SDK clients with OTel tracing
+	otelaws.AppendMiddlewares(&cfg.APIOptions)
+
 	// Create DynamoDB client
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	repo := email.NewRepository(dynamoClient, tableName)
 	mailboxRepo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	// Create blob client with SigV4 signing
-	transport := blob.NewSigV4Transport(http.DefaultTransport, cfg.Credentials, cfg.Region)
+	// Create blob client with OTel instrumentation and SigV4 signing
+	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
+	transport := blob.NewSigV4Transport(baseTransport, cfg.Credentials, cfg.Region)
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 

@@ -13,6 +13,10 @@ resource "aws_lambda_function" "email_import" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
@@ -20,6 +24,14 @@ resource "aws_lambda_function" "email_import" {
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-import"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -57,6 +69,10 @@ resource "aws_lambda_function" "email_get" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
@@ -64,6 +80,14 @@ resource "aws_lambda_function" "email_get" {
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
       MAX_BODY_VALUE_BYTES                = tostring(var.max_body_value_bytes)
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-get"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -100,11 +124,23 @@ resource "aws_lambda_function" "email_query" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-query"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -140,6 +176,10 @@ resource "aws_lambda_function" "email_set" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
@@ -147,6 +187,14 @@ resource "aws_lambda_function" "email_set" {
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-set"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -184,11 +232,23 @@ resource "aws_lambda_function" "mailbox_get" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-mailbox-get"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -224,12 +284,24 @@ resource "aws_lambda_function" "mailbox_set" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       MAILBOX_CLEANUP_QUEUE_URL           = aws_sqs_queue.mailbox_cleanup.url
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-mailbox-set"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -266,11 +338,23 @@ resource "aws_lambda_function" "thread_get" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-thread-get"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -306,11 +390,23 @@ resource "aws_lambda_function" "email_changes" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-changes"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -346,11 +442,23 @@ resource "aws_lambda_function" "mailbox_changes" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-mailbox-changes"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -386,11 +494,23 @@ resource "aws_lambda_function" "thread_changes" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-thread-changes"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -426,11 +546,23 @@ resource "aws_lambda_function" "blob_delete" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-blob-delete"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -467,12 +599,24 @@ resource "aws_lambda_function" "mailbox_cleanup" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-mailbox-cleanup"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -510,12 +654,24 @@ resource "aws_lambda_function" "email_cleanup" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-cleanup"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 
@@ -577,11 +733,23 @@ resource "aws_lambda_function" "account_init" {
 
   layers = [local.adot_layer_arn]
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-account-init"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
     }
   }
 

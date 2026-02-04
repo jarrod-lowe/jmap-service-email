@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailboxcleanup"
@@ -273,6 +274,9 @@ func main() {
 		logger.Error("FATAL: Failed to load AWS config", slog.String("error", err.Error()))
 		panic(err)
 	}
+
+	// Instrument AWS SDK clients with OTel tracing
+	otelaws.AppendMiddlewares(&cfg.APIOptions)
 
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 	emailRepo := email.NewRepository(dynamoClient, tableName)

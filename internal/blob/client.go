@@ -8,6 +8,11 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Error types for blob operations.
@@ -61,6 +66,14 @@ func (c *HTTPBlobClient) blobURL(accountID, blobID string) string {
 
 // FetchBlob fetches a blob by account ID and blob ID.
 func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string) ([]byte, error) {
+	tracer := otel.Tracer("jmap-blob-client")
+	ctx, span := tracer.Start(ctx, "blob.Fetch",
+		trace.WithAttributes(
+			attribute.String("account_id", accountID),
+			attribute.String("blob_id", blobID),
+		))
+	defer span.End()
+
 	url := c.blobURL(accountID, blobID)
 
 	maxAttempts := c.maxRetries + 1
@@ -72,6 +85,8 @@ func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// Check context before each attempt
 		if err := ctx.Err(); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
 
@@ -83,6 +98,8 @@ func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
 		resp, err := c.httpClient.Do(req)
@@ -93,10 +110,14 @@ func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string
 
 		if resp.StatusCode == http.StatusNotFound {
 			resp.Body.Close()
+			span.RecordError(ErrBlobNotFound)
+			span.SetStatus(codes.Error, ErrBlobNotFound.Error())
 			return nil, ErrBlobNotFound
 		}
 		if resp.StatusCode == http.StatusForbidden {
 			resp.Body.Close()
+			span.RecordError(ErrForbidden)
+			span.SetStatus(codes.Error, ErrForbidden.Error())
 			return nil, ErrForbidden
 		}
 		if resp.StatusCode >= 500 {
@@ -108,38 +129,62 @@ func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
 		return body, nil
 	}
 
+	if lastErr != nil {
+		span.RecordError(lastErr)
+		span.SetStatus(codes.Error, lastErr.Error())
+	}
 	return nil, lastErr
 }
 
 // Stream returns a streaming reader for a blob. The caller is responsible for closing the reader.
 func (c *HTTPBlobClient) Stream(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+	tracer := otel.Tracer("jmap-blob-client")
+	ctx, span := tracer.Start(ctx, "blob.Stream",
+		trace.WithAttributes(
+			attribute.String("account_id", accountID),
+			attribute.String("blob_id", blobID),
+		))
+	defer span.End()
+
 	url := c.blobURL(accountID, blobID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
+		span.RecordError(ErrBlobNotFound)
+		span.SetStatus(codes.Error, ErrBlobNotFound.Error())
 		return nil, ErrBlobNotFound
 	}
 	if resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()
+		span.RecordError(ErrForbidden)
+		span.SetStatus(codes.Error, ErrForbidden.Error())
 		return nil, ErrForbidden
 	}
 	if resp.StatusCode >= 500 {
 		resp.Body.Close()
+		span.RecordError(ErrServerFail)
+		span.SetStatus(codes.Error, ErrServerFail.Error())
 		return nil, ErrServerFail
 	}
 
@@ -159,15 +204,27 @@ func (c *HTTPBlobClient) deleteURL(accountID, blobID string) string {
 // Delete deletes a blob by account ID and blob ID.
 // Returns nil on success (204) or if the blob is already deleted (404).
 func (c *HTTPBlobClient) Delete(ctx context.Context, accountID, blobID string) error {
+	tracer := otel.Tracer("jmap-blob-client")
+	ctx, span := tracer.Start(ctx, "blob.Delete",
+		trace.WithAttributes(
+			attribute.String("account_id", accountID),
+			attribute.String("blob_id", blobID),
+		))
+	defer span.End()
+
 	url := c.deleteURL(accountID, blobID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	resp.Body.Close()
@@ -176,10 +233,15 @@ func (c *HTTPBlobClient) Delete(ctx context.Context, accountID, blobID string) e
 		return nil
 	}
 	if resp.StatusCode >= 500 {
+		span.RecordError(ErrServerFail)
+		span.SetStatus(codes.Error, ErrServerFail.Error())
 		return ErrServerFail
 	}
 
-	return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	err = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+	return err
 }
 
 // uploadURL constructs the upload URL for a blob.
@@ -195,10 +257,21 @@ type uploadResponse struct {
 
 // Upload uploads content as a new blob and returns the blob ID and size.
 func (c *HTTPBlobClient) Upload(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
+	tracer := otel.Tracer("jmap-blob-client")
+	ctx, span := tracer.Start(ctx, "blob.Upload",
+		trace.WithAttributes(
+			attribute.String("account_id", accountID),
+			attribute.String("parent_blob_id", parentBlobID),
+			attribute.String("content_type", contentType),
+		))
+	defer span.End()
+
 	url := c.uploadURL(accountID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", 0, err
 	}
 
@@ -207,20 +280,30 @@ func (c *HTTPBlobClient) Upload(ctx context.Context, accountID, parentBlobID, co
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 500 {
+		span.RecordError(ErrServerFail)
+		span.SetStatus(codes.Error, ErrServerFail.Error())
 		return "", 0, ErrServerFail
 	}
 	if resp.StatusCode >= 400 {
-		return "", 0, fmt.Errorf("%w: status %d", ErrInvalidArguments, resp.StatusCode)
+		err := fmt.Errorf("%w: status %d", ErrInvalidArguments, resp.StatusCode)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", 0, err
 	}
 
 	var uploadResp uploadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&uploadResp); err != nil {
-		return "", 0, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		err := fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", 0, err
 	}
 
 	return uploadResp.BlobID, uploadResp.Size, nil

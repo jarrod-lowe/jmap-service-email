@@ -11,11 +11,16 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
+
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -97,6 +102,13 @@ func main() {
 	}
 	otel.SetTracerProvider(tp)
 
+	// Set X-Ray propagator as global propagator for HTTP client trace context injection
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		xray.Propagator{},
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
 	coreAPIURL := os.Getenv("CORE_API_URL")
 
 	cfg, err := config.LoadDefaultConfig(ctx)
@@ -105,7 +117,12 @@ func main() {
 		panic(err)
 	}
 
-	transport := blob.NewSigV4Transport(http.DefaultTransport, cfg.Credentials, cfg.Region)
+	// Instrument AWS SDK clients with OTel tracing
+	otelaws.AppendMiddlewares(&cfg.APIOptions)
+
+	// Create blob client with OTel instrumentation and SigV4 signing
+	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
+	transport := blob.NewSigV4Transport(baseTransport, cfg.Credentials, cfg.Region)
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 

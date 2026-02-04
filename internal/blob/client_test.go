@@ -8,6 +8,11 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // fakeHTTPDoer implements HTTPDoer for testing.
@@ -810,3 +815,305 @@ func TestUpload_ReturnsNetworkError(t *testing.T) {
 		t.Fatal("Upload should return error for network failure")
 	}
 }
+
+// setupTestTracer creates a test tracer provider and returns the span recorder.
+func setupTestTracer(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(nil)
+	})
+	return recorder
+}
+
+// findSpan finds a span by name in the recorded spans.
+func findSpan(recorder *tracetest.SpanRecorder, name string) sdktrace.ReadOnlySpan {
+	for _, span := range recorder.Ended() {
+		if span.Name() == name {
+			return span
+		}
+	}
+	return nil
+}
+
+// hasAttribute checks if a span has an attribute with the given key and value.
+func hasAttribute(span sdktrace.ReadOnlySpan, key, value string) bool {
+	for _, attr := range span.Attributes() {
+		if string(attr.Key) == key && attr.Value.AsString() == value {
+			return true
+		}
+	}
+	return false
+}
+
+// Tests for OTel tracing in blob client methods
+
+func TestStream_CreatesSpanWithAttributes(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte("content"))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	rc, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Fatalf("Stream error = %v, want nil", err)
+	}
+	rc.Close()
+
+	span := findSpan(recorder, "blob.Stream")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Stream' not found")
+	}
+
+	if !hasAttribute(span, "account_id", "user-123") {
+		t.Error("Span missing attribute account_id=user-123")
+	}
+	if !hasAttribute(span, "blob_id", "blob-456") {
+		t.Error("Span missing attribute blob_id=blob-456")
+	}
+}
+
+func TestStream_RecordsErrorOnSpan(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("Stream should return error for 404")
+	}
+
+	span := findSpan(recorder, "blob.Stream")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Stream' not found")
+	}
+
+	// Check span recorded the error
+	if span.Status().Code == 0 {
+		t.Error("Span should have error status set")
+	}
+}
+
+func TestUpload_CreatesSpanWithAttributes(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"blobId":"new-blob-123","size":100}`))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob-456", "application/pdf", bytes.NewReader([]byte("content")))
+	if err != nil {
+		t.Fatalf("Upload error = %v, want nil", err)
+	}
+
+	span := findSpan(recorder, "blob.Upload")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Upload' not found")
+	}
+
+	if !hasAttribute(span, "account_id", "user-123") {
+		t.Error("Span missing attribute account_id=user-123")
+	}
+	if !hasAttribute(span, "parent_blob_id", "parent-blob-456") {
+		t.Error("Span missing attribute parent_blob_id=parent-blob-456")
+	}
+	if !hasAttribute(span, "content_type", "application/pdf") {
+		t.Error("Span missing attribute content_type=application/pdf")
+	}
+}
+
+func TestUpload_RecordsErrorOnSpan(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if err == nil {
+		t.Fatal("Upload should return error for 500")
+	}
+
+	span := findSpan(recorder, "blob.Upload")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Upload' not found")
+	}
+
+	if span.Status().Code == 0 {
+		t.Error("Span should have error status set")
+	}
+}
+
+func TestDelete_CreatesSpanWithAttributes(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Fatalf("Delete error = %v, want nil", err)
+	}
+
+	span := findSpan(recorder, "blob.Delete")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Delete' not found")
+	}
+
+	if !hasAttribute(span, "account_id", "user-123") {
+		t.Error("Span missing attribute account_id=user-123")
+	}
+	if !hasAttribute(span, "blob_id", "blob-456") {
+		t.Error("Span missing attribute blob_id=blob-456")
+	}
+}
+
+func TestDelete_RecordsErrorOnSpan(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("Delete should return error for 500")
+	}
+
+	span := findSpan(recorder, "blob.Delete")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Delete' not found")
+	}
+
+	if span.Status().Code == 0 {
+		t.Error("Span should have error status set")
+	}
+}
+
+func TestFetchBlob_CreatesSpanWithAttributes(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte("content"))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.FetchBlob(context.Background(), "user-123", "blob-456")
+	if err != nil {
+		t.Fatalf("FetchBlob error = %v, want nil", err)
+	}
+
+	span := findSpan(recorder, "blob.Fetch")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Fetch' not found")
+	}
+
+	if !hasAttribute(span, "account_id", "user-123") {
+		t.Error("Span missing attribute account_id=user-123")
+	}
+	if !hasAttribute(span, "blob_id", "blob-456") {
+		t.Error("Span missing attribute blob_id=blob-456")
+	}
+}
+
+func TestFetchBlob_RecordsErrorOnSpan(t *testing.T) {
+	recorder := setupTestTracer(t)
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.FetchBlob(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("FetchBlob should return error for 404")
+	}
+
+	span := findSpan(recorder, "blob.Fetch")
+	if span == nil {
+		t.Fatal("Expected span 'blob.Fetch' not found")
+	}
+
+	if span.Status().Code == 0 {
+		t.Error("Span should have error status set")
+	}
+}
+
+// Ensure attribute import is used
+var _ = attribute.String("test", "test")
