@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -689,6 +690,19 @@ func main() {
 	otelaws.AppendMiddlewares(&cfg.APIOptions)
 
 	dynamoClient := dynamodb.NewFromConfig(cfg)
+
+	// Warm the DynamoDB connection during init
+	// This establishes TCP+TLS connection before first real request
+	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},
+			"sk": &types.AttributeValueMemberS{Value: "WARMUP"},
+		},
+	})
+	cancel()
+
 	repo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 	emailRepo := email.NewRepository(dynamoClient, tableName)

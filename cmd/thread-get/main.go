@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
@@ -225,6 +228,19 @@ func main() {
 
 	// Create DynamoDB client
 	dynamoClient := dynamodb.NewFromConfig(cfg)
+
+	// Warm the DynamoDB connection during init
+	// This establishes TCP+TLS connection before first real request
+	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},
+			"sk": &types.AttributeValueMemberS{Value: "WARMUP"},
+		},
+	})
+	cancel()
+
 	repo := email.NewRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
