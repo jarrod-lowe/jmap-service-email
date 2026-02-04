@@ -82,12 +82,6 @@ func newHandler(repo MailboxRepository, stateRepo StateRepository, transactor ..
 	return h
 }
 
-// withEmailRepo sets the email repository for mailbox destroy cleanup.
-func (h *handler) withEmailRepo(emailRepo EmailRepository) *handler {
-	h.emailRepo = emailRepo
-	return h
-}
-
 // handle processes a Mailbox/set request.
 func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvocationRequest) (plugincontract.PluginInvocationResponse, error) {
 	tracer := tracing.Tracer("jmap-mailbox-set")

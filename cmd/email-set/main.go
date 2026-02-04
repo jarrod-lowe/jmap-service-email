@@ -753,24 +753,6 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 	return 0, setError("serverFail", "concurrent update conflict, please retry")
 }
 
-// collectBlobIDs returns the root blob ID and any non-composite part blob IDs.
-func collectBlobIDs(emailItem *email.EmailItem) []string {
-	var ids []string
-	ids = append(ids, emailItem.BlobID)
-	collectPartBlobIDs(&emailItem.BodyStructure, &ids)
-	return ids
-}
-
-// collectPartBlobIDs recursively walks the body structure collecting non-composite blob IDs.
-func collectPartBlobIDs(part *email.BodyPart, ids *[]string) {
-	if part.BlobID != "" && !strings.Contains(part.BlobID, ",") {
-		*ids = append(*ids, part.BlobID)
-	}
-	for i := range part.SubParts {
-		collectPartBlobIDs(&part.SubParts[i], ids)
-	}
-}
-
 // setError creates a JMAP SetError response.
 func setError(errorType, description string) map[string]any {
 	return map[string]any{
