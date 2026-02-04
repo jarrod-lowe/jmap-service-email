@@ -9,21 +9,15 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jarrod-lowe/jmap-service-libs/logging"
-
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
-	"go.opentelemetry.io/otel"
 )
 
 var logger = logging.New()
@@ -170,34 +164,24 @@ func collectPartBlobIDs(part *email.BodyPart, ids *[]string) {
 func main() {
 	ctx := context.Background()
 
-	tp, err := tracing.Init(ctx)
+	result, err := awsinit.Init(ctx)
 	if err != nil {
-		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
+		logger.Error("FATAL: Failed to initialize", slog.String("error", err.Error()))
 		panic(err)
 	}
-	otel.SetTracerProvider(tp)
 
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
 	blobDeleteQueueURL := os.Getenv("BLOB_DELETE_QUEUE_URL")
 
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		logger.Error("FATAL: Failed to load AWS config", slog.String("error", err.Error()))
-		panic(err)
-	}
-
-	// Instrument AWS SDK clients with OTel tracing
-	otelaws.AppendMiddlewares(&cfg.APIOptions)
-
-	dynamoClient := dynamodb.NewFromConfig(cfg)
+	dynamoClient := dynamodb.NewFromConfig(result.Config)
 	emailRepo := email.NewRepository(dynamoClient, tableName)
 
 	var blobPub blobdelete.BlobDeletePublisher
 	if blobDeleteQueueURL != "" {
-		sqsClient := sqs.NewFromConfig(cfg)
+		sqsClient := sqs.NewFromConfig(result.Config)
 		blobPub = blobdelete.NewSQSPublisher(sqsClient, blobDeleteQueueURL)
 	}
 
 	h := newHandler(emailRepo, blobPub, dynamoClient)
-	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
+	result.Start(h.handle)
 }

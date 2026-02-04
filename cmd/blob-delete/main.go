@@ -8,20 +8,13 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/jarrod-lowe/jmap-service-libs/logging"
-
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
-
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
+	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel"
 )
 
 var logger = logging.New()
@@ -94,30 +87,20 @@ func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQS
 func main() {
 	ctx := context.Background()
 
-	tp, err := tracing.Init(ctx)
+	result, err := awsinit.Init(ctx)
 	if err != nil {
-		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
+		logger.Error("FATAL: Failed to initialize", slog.String("error", err.Error()))
 		panic(err)
 	}
-	otel.SetTracerProvider(tp)
 
 	coreAPIURL := os.Getenv("CORE_API_URL")
 
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		logger.Error("FATAL: Failed to load AWS config", slog.String("error", err.Error()))
-		panic(err)
-	}
-
-	// Instrument AWS SDK clients with OTel tracing
-	otelaws.AppendMiddlewares(&cfg.APIOptions)
-
 	// Create blob client with OTel instrumentation and SigV4 signing
 	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
-	transport := blob.NewSigV4Transport(baseTransport, cfg.Credentials, cfg.Region)
+	transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
 	h := newHandler(blobClient)
-	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
+	result.Start(h.handle)
 }

@@ -11,29 +11,23 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
-
-	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/charset"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/headers"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel"
 )
 
 // defaultMaxBodyValueBytes is the fallback if MAX_BODY_VALUE_BYTES env var is not set.
@@ -596,12 +590,11 @@ func findBodyPart(root email.BodyPart, partID string) *email.BodyPart {
 func main() {
 	ctx := context.Background()
 
-	tp, err := tracing.Init(ctx)
+	result, err := awsinit.Init(ctx)
 	if err != nil {
-		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
+		logger.Error("FATAL: Failed to initialize", slog.String("error", err.Error()))
 		panic(err)
 	}
-	otel.SetTracerProvider(tp)
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
@@ -615,18 +608,8 @@ func main() {
 		}
 	}
 
-	// Initialize AWS config
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		logger.Error("FATAL: Failed to load AWS config", slog.String("error", err.Error()))
-		panic(err)
-	}
-
-	// Instrument AWS SDK clients with OTel tracing
-	otelaws.AppendMiddlewares(&cfg.APIOptions)
-
 	// Create DynamoDB client
-	dynamoClient := dynamodb.NewFromConfig(cfg)
+	dynamoClient := dynamodb.NewFromConfig(result.Config)
 
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request
@@ -645,10 +628,10 @@ func main() {
 
 	// Create blob client with OTel instrumentation and SigV4 signing for header:* properties
 	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
-	transport := blob.NewSigV4Transport(baseTransport, cfg.Credentials, cfg.Region)
+	transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
 	httpClient := &http.Client{Transport: transport}
 	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
 	h := newHandler(repo, stateRepo, blobClient, serverMaxBodyValueBytes)
-	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
+	result.Start(h.handle)
 }

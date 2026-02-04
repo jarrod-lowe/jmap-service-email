@@ -8,21 +8,15 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jarrod-lowe/jmap-service-libs/logging"
-
-	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
-	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -234,12 +228,11 @@ func errorResponse(clientID, errorType, description string) plugincontract.Plugi
 func main() {
 	ctx := context.Background()
 
-	tp, err := tracing.Init(ctx)
+	result, err := awsinit.Init(ctx)
 	if err != nil {
-		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
+		logger.Error("FATAL: Failed to initialize", slog.String("error", err.Error()))
 		panic(err)
 	}
-	otel.SetTracerProvider(tp)
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
@@ -252,18 +245,8 @@ func main() {
 		}
 	}
 
-	// Initialize AWS config
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		logger.Error("FATAL: Failed to load AWS config", slog.String("error", err.Error()))
-		panic(err)
-	}
-
-	// Instrument AWS SDK clients with OTel tracing
-	otelaws.AppendMiddlewares(&cfg.APIOptions)
-
 	// Create DynamoDB client
-	dynamoClient := dynamodb.NewFromConfig(cfg)
+	dynamoClient := dynamodb.NewFromConfig(result.Config)
 
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request
@@ -281,5 +264,5 @@ func main() {
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
 	h := newHandlerWithState(repo, stateRepo, maxConcurrentQueries)
-	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
+	result.Start(h.handle)
 }
