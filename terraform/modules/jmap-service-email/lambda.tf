@@ -347,6 +347,7 @@ resource "aws_lambda_function" "thread_get" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      THREAD_QUERY_CONCURRENCY            = var.thread_query_concurrency
 
       # OpenTelemetry SDK Configuration
       OTEL_SERVICE_NAME           = "${local.name_prefix}-thread-get"

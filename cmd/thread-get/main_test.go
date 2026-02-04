@@ -343,7 +343,7 @@ func TestHandler_ReturnsActualState(t *testing.T) {
 		},
 	}
 
-	h := newHandlerWithState(mockRepo, mockStateRepo)
+	h := newHandlerWithState(mockRepo, mockStateRepo, 5)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -450,7 +450,7 @@ func TestHandler_StateError_ReturnsServerFail(t *testing.T) {
 		},
 	}
 
-	h := newHandlerWithState(mockRepo, mockStateRepo)
+	h := newHandlerWithState(mockRepo, mockStateRepo, 5)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
@@ -476,5 +476,54 @@ func TestHandler_StateError_ReturnsServerFail(t *testing.T) {
 	errorType, ok := response.MethodResponse.Args["type"].(string)
 	if !ok || errorType != "serverFail" {
 		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "serverFail")
+	}
+}
+
+func TestHandler_ConcurrentThreadLookups(t *testing.T) {
+	// Test that multiple threads are fetched and results preserve order
+	mockRepo := &mockEmailRepository{
+		findByThreadIDFunc: func(ctx context.Context, accountID, threadID string) ([]*email.EmailItem, error) {
+			// Return different emails for different threads
+			return []*email.EmailItem{
+				{EmailID: "email-" + threadID, ThreadID: threadID},
+			}, nil
+		},
+	}
+
+	h := newHandler(mockRepo)
+
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		Method:    "Thread/get",
+		AccountID: "user-123",
+		Args: map[string]any{
+			"ids": []any{"thread-1", "thread-2", "thread-3"},
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+	if resp.MethodResponse.Name != "Thread/get" {
+		t.Errorf("Name = %q, want %q", resp.MethodResponse.Name, "Thread/get")
+	}
+
+	list, ok := resp.MethodResponse.Args["list"].([]any)
+	if !ok {
+		t.Fatal("list should be an array")
+	}
+	if len(list) != 3 {
+		t.Fatalf("list length = %d, want 3", len(list))
+	}
+
+	// Verify order is preserved
+	for i, expected := range []string{"thread-1", "thread-2", "thread-3"} {
+		thread, ok := list[i].(map[string]any)
+		if !ok {
+			t.Fatalf("list[%d] should be a map", i)
+		}
+		if thread["id"] != expected {
+			t.Errorf("list[%d] id = %v, want %q", i, thread["id"], expected)
+		}
 	}
 }

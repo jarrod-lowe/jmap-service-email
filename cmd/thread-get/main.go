@@ -13,19 +13,23 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"go.opentelemetry.io/otel"
+	"golang.org/x/sync/errgroup"
 )
 
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 	Level: slog.LevelInfo,
 }))
+
+// defaultMaxConcurrentThreadQueries is the fallback if THREAD_QUERY_CONCURRENCY env var is not set.
+const defaultMaxConcurrentThreadQueries = 5
 
 // EmailRepository defines the interface for retrieving emails.
 type EmailRepository interface {
@@ -39,22 +43,25 @@ type StateRepository interface {
 
 // handler implements the Thread/get logic.
 type handler struct {
-	repo      EmailRepository
-	stateRepo StateRepository
+	repo                 EmailRepository
+	stateRepo            StateRepository
+	maxConcurrentQueries int
 }
 
 // newHandler creates a new handler (for backward compatibility in tests).
 func newHandler(repo EmailRepository) *handler {
 	return &handler{
-		repo: repo,
+		repo:                 repo,
+		maxConcurrentQueries: defaultMaxConcurrentThreadQueries,
 	}
 }
 
-// newHandlerWithState creates a new handler with state repository.
-func newHandlerWithState(repo EmailRepository, stateRepo StateRepository) *handler {
+// newHandlerWithState creates a new handler with state repository and configurable concurrency.
+func newHandlerWithState(repo EmailRepository, stateRepo StateRepository, maxConcurrentQueries int) *handler {
 	return &handler{
-		repo:      repo,
-		stateRepo: stateRepo,
+		repo:                 repo,
+		stateRepo:            stateRepo,
+		maxConcurrentQueries: maxConcurrentQueries,
 	}
 }
 
@@ -119,30 +126,51 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		ids = append(ids, idStr)
 	}
 
-	// Fetch threads
+	// Fetch threads concurrently
+	type threadResult struct {
+		threadID string
+		emails   []*email.EmailItem
+		err      error
+	}
+
+	results := make([]threadResult, len(ids))
+	eg := new(errgroup.Group)
+	eg.SetLimit(h.maxConcurrentQueries)
+
+	for i, threadID := range ids {
+		i, threadID := i, threadID // capture for closure
+		eg.Go(func() error {
+			emails, err := h.repo.FindByThreadID(ctx, accountID, threadID)
+			results[i] = threadResult{threadID: threadID, emails: emails, err: err}
+			return nil // Don't fail fast - collect all results
+		})
+	}
+
+	_ = eg.Wait() // Always succeeds since goroutines return nil
+
+	// Process results in order
 	var list []any
 	var notFound []any
 
-	for _, threadID := range ids {
-		emails, err := h.repo.FindByThreadID(ctx, accountID, threadID)
-		if err != nil {
+	for _, r := range results {
+		if r.err != nil {
 			logger.ErrorContext(ctx, "Failed to query thread",
 				slog.String("account_id", accountID),
-				slog.String("thread_id", threadID),
-				slog.String("error", err.Error()),
+				slog.String("thread_id", r.threadID),
+				slog.String("error", r.err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, "serverFail", r.err.Error()), nil
 		}
 
-		if len(emails) == 0 {
-			notFound = append(notFound, threadID)
+		if len(r.emails) == 0 {
+			notFound = append(notFound, r.threadID)
 			continue
 		}
 
 		// Build thread object with emailIds in order (already sorted by receivedAt from repo)
 		// Exclude soft-deleted emails
-		emailIds := make([]string, 0, len(emails))
-		for _, e := range emails {
+		emailIds := make([]string, 0, len(r.emails))
+		for _, e := range r.emails {
 			if e.DeletedAt == nil {
 				emailIds = append(emailIds, e.EmailID)
 			}
@@ -150,12 +178,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 		// If all emails in thread are soft-deleted, treat thread as not found
 		if len(emailIds) == 0 {
-			notFound = append(notFound, threadID)
+			notFound = append(notFound, r.threadID)
 			continue
 		}
 
 		thread := map[string]any{
-			"id":       threadID,
+			"id":       r.threadID,
 			"emailIds": emailIds,
 		}
 		list = append(list, thread)
@@ -216,6 +244,14 @@ func main() {
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
 
+	// Parse max concurrent thread queries (default 5)
+	maxConcurrentQueries := defaultMaxConcurrentThreadQueries
+	if v := os.Getenv("THREAD_QUERY_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxConcurrentQueries = n
+		}
+	}
+
 	// Initialize AWS config
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -244,6 +280,6 @@ func main() {
 	repo := email.NewRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	h := newHandlerWithState(repo, stateRepo)
+	h := newHandlerWithState(repo, stateRepo, maxConcurrentQueries)
 	lambda.Start(otellambda.InstrumentHandler(h.handle, xrayconfig.WithRecommendedOptions(tp)...))
 }

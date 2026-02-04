@@ -43,3 +43,9 @@ variable "max_body_value_bytes" {
   type        = number
   default     = 262144 # 256KB
 }
+
+variable "thread_query_concurrency" {
+  description = "Maximum concurrent DynamoDB queries for Thread/get"
+  type        = number
+  default     = 5
+}
