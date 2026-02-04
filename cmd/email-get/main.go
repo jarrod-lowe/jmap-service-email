@@ -25,6 +25,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/headers"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -76,16 +77,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Email/get" {
-		return plugincontract.PluginInvocationResponse{
-			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "unknownMethod",
-					"description": "This handler only supports Email/get",
-				},
-				ClientID: request.ClientID,
-			},
-		}, nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Email/get")), nil
 	}
 
 	// Parse request args
@@ -97,12 +89,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	// Extract and validate ids
 	idsArg, ok := request.Args["ids"]
 	if !ok {
-		return errorResponse(request.ClientID, "invalidArguments", "ids argument is required"), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument is required")), nil
 	}
 
 	idsSlice, ok := idsArg.([]any)
 	if !ok {
-		return errorResponse(request.ClientID, "invalidArguments", "ids argument must be an array"), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument must be an array")), nil
 	}
 
 	// Extract and validate properties (optional)
@@ -111,22 +103,22 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	if propsArg, ok := request.Args["properties"]; ok {
 		propsSlice, ok := propsArg.([]any)
 		if !ok {
-			return errorResponse(request.ClientID, "invalidArguments", "properties argument must be an array"), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties argument must be an array")), nil
 		}
 		for _, p := range propsSlice {
 			prop, ok := p.(string)
 			if !ok {
-				return errorResponse(request.ClientID, "invalidArguments", "properties must contain strings"), nil
+				return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties must contain strings")), nil
 			}
 			// Parse and validate header:* properties
 			if headers.IsHeaderProperty(prop) {
 				headerProp, err := headers.ParseHeaderProperty(prop)
 				if err != nil {
-					return errorResponse(request.ClientID, "invalidArguments", fmt.Sprintf("invalid header property %q: %v", prop, err)), nil
+					return errorResponse(request.ClientID, jmaperror.InvalidArguments(fmt.Sprintf("invalid header property %q: %v", prop, err))), nil
 				}
 				// Validate form is allowed for this header
 				if err := headers.ValidateForm(headerProp.Name, headerProp.Form); err != nil {
-					return errorResponse(request.ClientID, "invalidArguments", err.Error()), nil
+					return errorResponse(request.ClientID, jmaperror.InvalidArguments(err.Error())), nil
 				}
 				headerProps = append(headerProps, headerProp)
 			}
@@ -153,7 +145,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	for _, id := range idsSlice {
 		idStr, ok := id.(string)
 		if !ok {
-			return errorResponse(request.ClientID, "invalidArguments", "ids must contain strings"), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must contain strings")), nil
 		}
 		ids = append(ids, idStr)
 	}
@@ -175,7 +167,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("email_id", emailID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 
 		// Treat soft-deleted emails as not found
@@ -223,7 +215,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 		stateStr = strconv.FormatInt(currentState, 10)
 	}
@@ -559,15 +551,12 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// errorResponse creates an error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+// errorResponse creates an error response from a jmaperror.MethodError.
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

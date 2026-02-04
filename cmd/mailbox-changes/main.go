@@ -14,6 +14,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
@@ -47,7 +48,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Mailbox/changes" {
-		return errorResponse(request.ClientID, "unknownMethod", "This handler only supports Mailbox/changes"), nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Mailbox/changes")), nil
 	}
 
 	// Parse request args
@@ -59,17 +60,17 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	// Extract sinceState (required)
 	sinceStateArg, ok := request.Args["sinceState"]
 	if !ok {
-		return errorResponse(request.ClientID, "invalidArguments", "sinceState argument is required"), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("sinceState argument is required")), nil
 	}
 
 	sinceStateStr, ok := sinceStateArg.(string)
 	if !ok {
-		return errorResponse(request.ClientID, "invalidArguments", "sinceState must be a string"), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("sinceState must be a string")), nil
 	}
 
 	sinceState, err := strconv.ParseInt(sinceStateStr, 10, 64)
 	if err != nil {
-		return errorResponse(request.ClientID, "cannotCalculateChanges", "sinceState does not represent a valid state"), nil
+		return errorResponse(request.ClientID, jmaperror.CannotCalculateChanges("sinceState does not represent a valid state")), nil
 	}
 
 	// Extract maxChanges (optional)
@@ -90,7 +91,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			slog.String("account_id", accountID),
 			slog.String("error", err.Error()),
 		)
-		return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+		return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 	}
 
 	// Check for gap (cannotCalculateChanges)
@@ -100,18 +101,16 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			slog.String("account_id", accountID),
 			slog.String("error", err.Error()),
 		)
-		return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+		return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 	}
 
 	if oldestAvailable > 0 && sinceState < oldestAvailable-1 {
-		return errorResponse(request.ClientID, "cannotCalculateChanges",
-			"State is too old, change log entries have expired"), nil
+		return errorResponse(request.ClientID, jmaperror.CannotCalculateChanges("State is too old, change log entries have expired")), nil
 	}
 
 	// If sinceState > currentState, it's a future state we don't know about
 	if sinceState > currentState {
-		return errorResponse(request.ClientID, "cannotCalculateChanges",
-			"sinceState is newer than current state"), nil
+		return errorResponse(request.ClientID, jmaperror.CannotCalculateChanges("sinceState is newer than current state")), nil
 	}
 
 	// Query changes since sinceState
@@ -121,7 +120,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			slog.String("account_id", accountID),
 			slog.String("error", err.Error()),
 		)
-		return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+		return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 	}
 
 	// Process changes to determine created/updated/destroyed
@@ -205,14 +204,11 @@ func processChanges(changes []state.ChangeRecord) (created, updated, destroyed [
 }
 
 // errorResponse creates an error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

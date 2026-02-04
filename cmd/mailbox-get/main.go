@@ -16,6 +16,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
@@ -55,16 +56,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Mailbox/get" {
-		return plugincontract.PluginInvocationResponse{
-			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "unknownMethod",
-					"description": "This handler only supports Mailbox/get",
-				},
-				ClientID: request.ClientID,
-			},
-		}, nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Mailbox/get")), nil
 	}
 
 	// Parse request args
@@ -78,12 +70,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	if propsArg, ok := request.Args["properties"]; ok && propsArg != nil {
 		propsSlice, ok := propsArg.([]any)
 		if !ok {
-			return errorResponse(request.ClientID, "invalidArguments", "properties argument must be an array"), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties argument must be an array")), nil
 		}
 		for _, p := range propsSlice {
 			prop, ok := p.(string)
 			if !ok {
-				return errorResponse(request.ClientID, "invalidArguments", "properties must contain strings"), nil
+				return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties must contain strings")), nil
 			}
 			properties = append(properties, prop)
 		}
@@ -102,20 +94,20 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 		mailboxes = all
 	} else {
 		// Get specific mailboxes by ID
 		idsSlice, ok := idsArg.([]any)
 		if !ok {
-			return errorResponse(request.ClientID, "invalidArguments", "ids argument must be an array or null"), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument must be an array or null")), nil
 		}
 
 		for _, id := range idsSlice {
 			idStr, ok := id.(string)
 			if !ok {
-				return errorResponse(request.ClientID, "invalidArguments", "ids must contain strings"), nil
+				return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must contain strings")), nil
 			}
 
 			mbox, err := h.repo.GetMailbox(ctx, accountID, idStr)
@@ -130,7 +122,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 					slog.String("mailbox_id", idStr),
 					slog.String("error", err.Error()),
 				)
-				return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+				return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 			}
 			mailboxes = append(mailboxes, mbox)
 		}
@@ -159,7 +151,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 		stateStr = strconv.FormatInt(currentState, 10)
 	}
@@ -239,15 +231,12 @@ func transformRights(r mailbox.MailboxRights) map[string]any {
 	}
 }
 
-// errorResponse creates an error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+// errorResponse creates an error response from a jmaperror.MethodError.
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

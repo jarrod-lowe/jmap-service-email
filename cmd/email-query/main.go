@@ -14,6 +14,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
@@ -60,7 +61,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Email/query" {
-		return errorResponse(request.ClientID, "unknownMethod", "This handler only supports Email/query"), nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Email/query")), nil
 	}
 
 	// Parse request args
@@ -75,7 +76,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		// Check for unsupported filter properties
 		for key := range filterArg {
 			if key != "inMailbox" {
-				return errorResponse(request.ClientID, "unsupportedFilter", "Only inMailbox filter is supported"), nil
+				return errorResponse(request.ClientID, jmaperror.UnsupportedFilter("Only inMailbox filter is supported")), nil
 			}
 		}
 
@@ -88,10 +89,10 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 					slog.String("mailbox_id", inMailbox),
 					slog.String("error", err.Error()),
 				)
-				return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+				return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 			}
 			if !exists {
-				return errorResponse(request.ClientID, "invalidArguments", "Mailbox not found: "+inMailbox), nil
+				return errorResponse(request.ClientID, jmaperror.InvalidArguments("Mailbox not found: "+inMailbox)), nil
 			}
 			queryFilter = &email.QueryFilter{InMailbox: inMailbox}
 		}
@@ -107,7 +108,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			}
 			property, _ := sortMap["property"].(string)
 			if property != "" && property != "receivedAt" {
-				return errorResponse(request.ClientID, "unsupportedSort", "Only receivedAt sort is supported"), nil
+				return errorResponse(request.ClientID, jmaperror.UnsupportedSort("Only receivedAt sort is supported")), nil
 			}
 			isAscending, _ := sortMap["isAscending"].(bool)
 			comparators = append(comparators, email.Comparator{
@@ -131,14 +132,14 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		_, err := h.emailRepo.GetEmail(ctx, accountID, anchor)
 		if err != nil {
 			if err == email.ErrEmailNotFound {
-				return errorResponse(request.ClientID, "anchorNotFound", "Anchor email not found: "+anchor), nil
+				return errorResponse(request.ClientID, jmaperror.AnchorNotFound("Anchor email not found: "+anchor)), nil
 			}
 			logger.ErrorContext(ctx, "Failed to check anchor existence",
 				slog.String("account_id", accountID),
 				slog.String("anchor", anchor),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 	}
 
@@ -184,7 +185,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			slog.String("account_id", accountID),
 			slog.String("error", err.Error()),
 		)
-		return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+		return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 	}
 
 	logger.InfoContext(ctx, "Email/query completed",
@@ -221,15 +222,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}, nil
 }
 
-// errorResponse creates an error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+// errorResponse creates an error response from a jmaperror.MethodError.
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

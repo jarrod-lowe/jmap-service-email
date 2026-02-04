@@ -15,6 +15,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"golang.org/x/sync/errgroup"
@@ -67,16 +68,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Thread/get" {
-		return plugincontract.PluginInvocationResponse{
-			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "unknownMethod",
-					"description": "This handler only supports Thread/get",
-				},
-				ClientID: request.ClientID,
-			},
-		}, nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Thread/get")), nil
 	}
 
 	// Parse request args
@@ -95,19 +87,19 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 	}
 
 	// Extract and validate ids
 	idsArg, ok := request.Args["ids"]
 	if !ok {
-		return errorResponse(request.ClientID, "invalidArguments", "ids argument is required"), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument is required")), nil
 	}
 
 	idsSlice, ok := idsArg.([]any)
 	if !ok {
-		return errorResponse(request.ClientID, "invalidArguments", "ids argument must be an array"), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument must be an array")), nil
 	}
 
 	// Convert IDs to strings
@@ -115,7 +107,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	for _, id := range idsSlice {
 		idStr, ok := id.(string)
 		if !ok {
-			return errorResponse(request.ClientID, "invalidArguments", "ids must contain strings"), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must contain strings")), nil
 		}
 		ids = append(ids, idStr)
 	}
@@ -153,7 +145,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("thread_id", r.threadID),
 				slog.String("error", r.err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", r.err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(r.err.Error(), r.err)), nil
 		}
 
 		if len(r.emails) == 0 {
@@ -212,14 +204,11 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 }
 
 // errorResponse creates an error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

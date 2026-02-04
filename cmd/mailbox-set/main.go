@@ -18,6 +18,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
@@ -84,16 +85,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Mailbox/set" {
-		return plugincontract.PluginInvocationResponse{
-			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "unknownMethod",
-					"description": "This handler only supports Mailbox/set",
-				},
-				ClientID: request.ClientID,
-			},
-		}, nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Mailbox/set")), nil
 	}
 
 	accountID := request.AccountID
@@ -111,7 +103,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 	}
 
@@ -128,7 +120,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		for clientID, createData := range createArg {
 			data, ok := createData.(map[string]any)
 			if !ok {
-				notCreated[clientID] = setError("invalidArguments", "create data must be an object")
+				notCreated[clientID] = jmaperror.InvalidArguments("create data must be an object").ToMap()
 				continue
 			}
 
@@ -148,7 +140,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		for mailboxID, updateData := range updateArg {
 			data, ok := updateData.(map[string]any)
 			if !ok {
-				notUpdated[mailboxID] = setError("invalidArguments", "update data must be an object")
+				notUpdated[mailboxID] = jmaperror.InvalidArguments("update data must be an object").ToMap()
 				continue
 			}
 
@@ -232,12 +224,12 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 
 	// Reject non-null parentId — only flat mailboxes supported
 	if parentId, hasParentId := data["parentId"]; hasParentId && parentId != nil {
-		return nil, setError("invalidProperties", "Hierarchical mailboxes are not supported")
+		return nil, jmaperror.InvalidProperties("Hierarchical mailboxes are not supported", nil).ToMap()
 	}
 
 	// Validate role if provided
 	if role != "" && !mailbox.ValidRoles[role] {
-		return nil, setError("invalidProperties", "Invalid role: "+role)
+		return nil, jmaperror.InvalidProperties("Invalid role: "+role, nil).ToMap()
 	}
 
 	// Check for duplicate roles if transactor is available
@@ -248,11 +240,11 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return nil, setError("serverFail", err.Error())
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 		for _, m := range mailboxes {
 			if m.Role == role {
-				return nil, setError("invalidProperties", "A mailbox with this role already exists")
+				return nil, jmaperror.InvalidProperties("A mailbox with this role already exists", nil).ToMap()
 			}
 		}
 	}
@@ -301,7 +293,7 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", err.Error()),
 			)
-			return nil, setError("serverFail", err.Error())
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		return map[string]any{
@@ -314,13 +306,13 @@ func (h *handler) createMailbox(ctx context.Context, accountID string, data map[
 	err := h.repo.CreateMailbox(ctx, mbox)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrRoleAlreadyExists) {
-			return nil, setError("invalidProperties", "A mailbox with this role already exists")
+			return nil, jmaperror.InvalidProperties("A mailbox with this role already exists", nil).ToMap()
 		}
 		logger.ErrorContext(ctx, "Failed to create mailbox",
 			slog.String("account_id", accountID),
 			slog.String("error", err.Error()),
 		)
-		return nil, setError("serverFail", err.Error())
+		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 
 	// Track state change separately (old behavior)
@@ -350,7 +342,7 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 	// Check for parentId - we don't support hierarchy
 	if _, hasParentId := data["parentId"]; hasParentId {
 		if data["parentId"] != nil {
-			return nil, setError("invalidProperties", "Hierarchical mailboxes are not supported")
+			return nil, jmaperror.InvalidProperties("Hierarchical mailboxes are not supported", nil).ToMap()
 		}
 	}
 
@@ -358,14 +350,14 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 	mbox, err := h.repo.GetMailbox(ctx, accountID, mailboxID)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrMailboxNotFound) {
-			return nil, setError("notFound", "Mailbox not found")
+			return nil, jmaperror.NotFound("Mailbox not found").ToMap()
 		}
 		logger.ErrorContext(ctx, "Failed to get mailbox",
 			slog.String("account_id", accountID),
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return nil, setError("serverFail", err.Error())
+		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 
 	// Apply updates
@@ -374,7 +366,7 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 	}
 	if role, ok := data["role"].(string); ok {
 		if role != "" && !mailbox.ValidRoles[role] {
-			return nil, setError("invalidProperties", "Invalid role: "+role)
+			return nil, jmaperror.InvalidProperties("Invalid role: "+role, nil).ToMap()
 		}
 		mbox.Role = role
 	}
@@ -409,7 +401,7 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", err.Error()),
 			)
-			return nil, setError("serverFail", err.Error())
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		return map[string]any{
@@ -421,14 +413,14 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 	err = h.repo.UpdateMailbox(ctx, mbox)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrRoleAlreadyExists) {
-			return nil, setError("invalidProperties", "A mailbox with this role already exists")
+			return nil, jmaperror.InvalidProperties("A mailbox with this role already exists", nil).ToMap()
 		}
 		logger.ErrorContext(ctx, "Failed to update mailbox",
 			slog.String("account_id", accountID),
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return nil, setError("serverFail", err.Error())
+		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 
 	// Track state change separately (old behavior)
@@ -457,19 +449,19 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 	mbox, err := h.repo.GetMailbox(ctx, accountID, mailboxID)
 	if err != nil {
 		if errors.Is(err, mailbox.ErrMailboxNotFound) {
-			return nil, setError("notFound", "Mailbox not found")
+			return nil, jmaperror.NotFound("Mailbox not found").ToMap()
 		}
 		logger.ErrorContext(ctx, "Failed to get mailbox",
 			slog.String("account_id", accountID),
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return nil, setError("serverFail", err.Error())
+		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 
 	// Check if mailbox has emails
 	if mbox.TotalEmails > 0 && !onDestroyRemoveEmails {
-		return nil, setError("mailboxHasEmail", "Mailbox is not empty")
+		return nil, jmaperror.MailboxHasEmail("Mailbox is not empty").ToMap()
 	}
 
 	// If transactor is available, use transaction
@@ -494,7 +486,7 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", err.Error()),
 			)
-			return nil, setError("serverFail", err.Error())
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		// If onDestroyRemoveEmails and mailbox had emails, synchronously clean up
@@ -523,7 +515,7 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 			slog.String("mailbox_id", mailboxID),
 			slog.String("error", err.Error()),
 		)
-		return nil, setError("serverFail", err.Error())
+		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 
 	// Track state change separately (old behavior)
@@ -634,23 +626,12 @@ func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID
 	return nil
 }
 
-// setError creates a JMAP SetError response.
-func setError(errorType, description string) map[string]any {
-	return map[string]any{
-		"type":        errorType,
-		"description": description,
-	}
-}
-
 // errorResponse creates a method-level error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

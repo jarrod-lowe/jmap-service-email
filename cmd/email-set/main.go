@@ -20,6 +20,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
@@ -86,16 +87,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 	// Check method
 	if request.Method != "Email/set" {
-		return plugincontract.PluginInvocationResponse{
-			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "unknownMethod",
-					"description": "This handler only supports Email/set",
-				},
-				ClientID: request.ClientID,
-			},
-		}, nil
+		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Email/set")), nil
 	}
 
 	accountID := request.AccountID
@@ -113,7 +105,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				slog.String("account_id", accountID),
 				slog.String("error", err.Error()),
 			)
-			return errorResponse(request.ClientID, "serverFail", err.Error()), nil
+			return errorResponse(request.ClientID, jmaperror.ServerFail(err.Error(), err)), nil
 		}
 	}
 
@@ -133,16 +125,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 		// If ifInState is provided but invalid, or doesn't match current state, return stateMismatch
 		if parseErr != nil || expectedState != oldState {
-			return plugincontract.PluginInvocationResponse{
-				MethodResponse: plugincontract.MethodResponse{
-					Name: "error",
-					Args: map[string]any{
-						"type":        "stateMismatch",
-						"description": "State mismatch",
-					},
-					ClientID: request.ClientID,
-				},
-			}, nil
+			return errorResponse(request.ClientID, jmaperror.StateMismatch("State mismatch")), nil
 		}
 	}
 
@@ -158,7 +141,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	// Handle create (not supported)
 	if createArg, ok := request.Args["create"].(map[string]any); ok {
 		for clientID := range createArg {
-			notCreated[clientID] = setError("forbidden", "Email/set create is not supported. Use Email/import instead.")
+			notCreated[clientID] = jmaperror.SetForbidden("Email/set create is not supported. Use Email/import instead.").ToMap()
 		}
 	}
 
@@ -167,7 +150,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		for emailID, updateData := range updateArg {
 			data, ok := updateData.(map[string]any)
 			if !ok {
-				notUpdated[emailID] = setError("invalidArguments", "update data must be an object")
+				notUpdated[emailID] = jmaperror.InvalidProperties("update data must be an object", nil).ToMap()
 				continue
 			}
 
@@ -274,7 +257,7 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 		} else if key == "keywords" || strings.HasPrefix(key, "keywords/") {
 			hasKeywordUpdate = true
 		} else {
-			return 0, setError("invalidProperties", "unsupported property: "+key)
+			return 0, jmaperror.InvalidProperties("unsupported property: "+key, nil).ToMap()
 		}
 	}
 
@@ -291,7 +274,7 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 		if hasKeywordUpdate {
 			return 0, nil
 		}
-		return 0, setError("invalidProperties", "no mailboxIds or keywords update found")
+		return 0, jmaperror.InvalidProperties("no mailboxIds or keywords update found", nil).ToMap()
 	}
 
 	// Parse mailboxIds update (full replacement vs patch)
@@ -302,7 +285,7 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 
 	// Validate at least one mailbox
 	if len(newMailboxIDs) == 0 {
-		return 0, setError("invalidProperties", "email must belong to at least one mailbox")
+		return 0, jmaperror.InvalidProperties("email must belong to at least one mailbox", nil).ToMap()
 	}
 
 	// Validate all mailboxes exist
@@ -314,10 +297,10 @@ func (h *handler) updateEmail(ctx context.Context, accountID, emailID string, da
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", checkErr.Error()),
 			)
-			return 0, setError("serverFail", checkErr.Error())
+			return 0, jmaperror.SetServerFail(checkErr.Error()).ToMap()
 		}
 		if !exists {
-			return 0, setError("invalidProperties", "mailbox does not exist: "+mailboxID)
+			return 0, jmaperror.InvalidProperties("mailbox does not exist: "+mailboxID, nil).ToMap()
 		}
 	}
 
@@ -340,13 +323,13 @@ func (h *handler) updateEmailMailboxesTransactional(ctx context.Context, account
 		emailItem, err = h.emailRepo.GetEmail(ctx, accountID, emailID)
 		if err != nil {
 			if errors.Is(err, email.ErrEmailNotFound) {
-				return 0, setError("notFound", "email not found")
+				return 0, jmaperror.NotFound("email not found").ToMap()
 			}
-			return 0, setError("serverFail", err.Error())
+			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 	}
 	if emailItem.DeletedAt != nil {
-		return 0, setError("notFound", "email not found")
+		return 0, jmaperror.NotFound("email not found").ToMap()
 	}
 
 	// Get current states
@@ -355,11 +338,11 @@ func (h *handler) updateEmailMailboxesTransactional(ctx context.Context, account
 		var err error
 		emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
 		if err != nil {
-			return 0, setError("serverFail", err.Error())
+			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 		mailboxState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
 		if err != nil {
-			return 0, setError("serverFail", err.Error())
+			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 	}
 
@@ -399,7 +382,7 @@ func (h *handler) updateEmailMailboxesTransactional(ctx context.Context, account
 			slog.String("email_id", emailID),
 			slog.String("error", txErr.Error()),
 		)
-		return 0, setError("serverFail", txErr.Error())
+		return 0, jmaperror.SetServerFail(txErr.Error()).ToMap()
 	}
 
 	return newEmailState, nil
@@ -410,14 +393,14 @@ func (h *handler) updateEmailMailboxesLegacy(ctx context.Context, accountID, ema
 	oldMailboxIDs, emailItem, updateErr := h.emailRepo.UpdateEmailMailboxes(ctx, accountID, emailID, newMailboxIDs)
 	if updateErr != nil {
 		if errors.Is(updateErr, email.ErrEmailNotFound) {
-			return 0, setError("notFound", "email not found")
+			return 0, jmaperror.NotFound("email not found").ToMap()
 		}
 		logger.ErrorContext(ctx, "Failed to update email mailboxes",
 			slog.String("account_id", accountID),
 			slog.String("email_id", emailID),
 			slog.String("error", updateErr.Error()),
 		)
-		return 0, setError("serverFail", updateErr.Error())
+		return 0, jmaperror.SetServerFail(updateErr.Error()).ToMap()
 	}
 
 	isUnread := emailItem.Keywords == nil || !emailItem.Keywords["$seen"]
@@ -475,19 +458,19 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 
 	if !hasPatch {
 		// No mailboxIds update at all
-		return nil, nil, setError("invalidProperties", "no mailboxIds update found")
+		return nil, nil, jmaperror.InvalidProperties("no mailboxIds update found", nil).ToMap()
 	}
 
 	// Get current mailboxIds for the email
 	emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 	if err != nil {
 		if errors.Is(err, email.ErrEmailNotFound) {
-			return nil, nil, setError("notFound", "email not found")
+			return nil, nil, jmaperror.NotFound("email not found").ToMap()
 		}
-		return nil, nil, setError("serverFail", err.Error())
+		return nil, nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 	if emailItem.DeletedAt != nil {
-		return nil, nil, setError("notFound", "email not found")
+		return nil, nil, jmaperror.NotFound("email not found").ToMap()
 	}
 
 	// Start with current mailboxIds
@@ -504,7 +487,7 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 		mailboxID := strings.TrimPrefix(key, "mailboxIds/")
 		// Validate that the mailboxID doesn't contain nested paths (RFC 8620 Section 5.3)
 		if strings.Contains(mailboxID, "/") {
-			return nil, nil, setError("invalidPatch", "invalid patch path: "+key)
+			return nil, nil, jmaperror.InvalidPatch("invalid patch path: "+key).ToMap()
 		}
 
 		if value == nil {
@@ -526,12 +509,12 @@ func (h *handler) updateKeywords(ctx context.Context, accountID, emailID string,
 		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 		if err != nil {
 			if errors.Is(err, email.ErrEmailNotFound) {
-				return setError("notFound", "email not found")
+				return jmaperror.NotFound("email not found").ToMap()
 			}
-			return setError("serverFail", err.Error())
+			return jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 		if emailItem.DeletedAt != nil {
-			return setError("notFound", "email not found")
+			return jmaperror.NotFound("email not found").ToMap()
 		}
 
 		// Parse keyword updates
@@ -543,7 +526,7 @@ func (h *handler) updateKeywords(ctx context.Context, accountID, emailID string,
 		// Validate keywords
 		for keyword := range newKeywords {
 			if err := email.ValidateKeyword(keyword); err != nil {
-				return setError("invalidProperties", "invalid keyword: "+keyword+": "+err.Error())
+				return jmaperror.InvalidProperties("invalid keyword: "+keyword+": "+err.Error(), nil).ToMap()
 			}
 		}
 
@@ -560,14 +543,14 @@ func (h *handler) updateKeywords(ctx context.Context, accountID, emailID string,
 				continue
 			}
 			if errors.Is(updateErr, email.ErrEmailNotFound) {
-				return setError("notFound", "email not found")
+				return jmaperror.NotFound("email not found").ToMap()
 			}
 			logger.ErrorContext(ctx, "Failed to update email keywords",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailID),
 				slog.String("error", updateErr.Error()),
 			)
-			return setError("serverFail", updateErr.Error())
+			return jmaperror.SetServerFail(updateErr.Error()).ToMap()
 		}
 
 		// Success - mark mailboxes as affected since unread counts may have changed
@@ -582,7 +565,7 @@ func (h *handler) updateKeywords(ctx context.Context, accountID, emailID string,
 		slog.String("account_id", accountID),
 		slog.String("email_id", emailID),
 	)
-	return setError("serverFail", "concurrent update conflict, please retry")
+	return jmaperror.SetServerFail("concurrent update conflict, please retry").ToMap()
 }
 
 // parseKeywordUpdates parses the keywords update data.
@@ -626,7 +609,7 @@ func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[s
 		keyword := strings.TrimPrefix(key, "keywords/")
 		// Validate that the keyword doesn't contain nested paths (RFC 8620 Section 5.3)
 		if strings.Contains(keyword, "/") {
-			return nil, setError("invalidPatch", "invalid patch path: "+key)
+			return nil, jmaperror.InvalidPatch("invalid patch path: "+key).ToMap()
 		}
 		keyword = email.NormalizeKeyword(keyword)
 
@@ -654,14 +637,14 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 		if err != nil {
 			if errors.Is(err, email.ErrEmailNotFound) {
-				return 0, setError("notFound", "email not found")
+				return 0, jmaperror.NotFound("email not found").ToMap()
 			}
-			return 0, setError("serverFail", err.Error())
+			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		// Treat already soft-deleted emails as not found
 		if emailItem.DeletedAt != nil {
-			return 0, setError("notFound", "email not found")
+			return 0, jmaperror.NotFound("email not found").ToMap()
 		}
 
 		// 2. Read current states
@@ -670,15 +653,15 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 		if h.stateRepo != nil {
 			emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
 			if err != nil {
-				return 0, setError("serverFail", err.Error())
+				return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 			}
 			threadState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeThread)
 			if err != nil {
-				return 0, setError("serverFail", err.Error())
+				return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 			}
 			mailboxState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
 			if err != nil {
-				return 0, setError("serverFail", err.Error())
+				return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 			}
 		}
 
@@ -737,33 +720,22 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 				slog.String("email_id", emailID),
 				slog.String("error", err.Error()),
 			)
-			return 0, setError("serverFail", err.Error())
+			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		return newEmailState, nil
 	}
 
 	// All retries exhausted
-	return 0, setError("serverFail", "concurrent update conflict, please retry")
+	return 0, jmaperror.SetServerFail("concurrent update conflict, please retry").ToMap()
 }
 
-// setError creates a JMAP SetError response.
-func setError(errorType, description string) map[string]any {
-	return map[string]any{
-		"type":        errorType,
-		"description": description,
-	}
-}
-
-// errorResponse creates a method-level error response.
-func errorResponse(clientID, errorType, description string) plugincontract.PluginInvocationResponse {
+// errorResponse creates a method-level error response from a jmaperror.MethodError.
+func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.PluginInvocationResponse {
 	return plugincontract.PluginInvocationResponse{
 		MethodResponse: plugincontract.MethodResponse{
-			Name: "error",
-			Args: map[string]any{
-				"type":        errorType,
-				"description": description,
-			},
+			Name:     "error",
+			Args:     err.ToMap(),
 			ClientID: clientID,
 		},
 	}

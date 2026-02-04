@@ -23,6 +23,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -116,11 +117,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	if request.Method != "Email/import" {
 		return plugincontract.PluginInvocationResponse{
 			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "unknownMethod",
-					"description": "This handler only supports Email/import",
-				},
+				Name:     "error",
+				Args:     jmaperror.UnknownMethod("This handler only supports Email/import").ToMap(),
 				ClientID: request.ClientID,
 			},
 		}, nil
@@ -136,11 +134,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	if !ok {
 		return plugincontract.PluginInvocationResponse{
 			MethodResponse: plugincontract.MethodResponse{
-				Name: "error",
-				Args: map[string]any{
-					"type":        "invalidArguments",
-					"description": "emails argument must be an object",
-				},
+				Name:     "error",
+				Args:     jmaperror.InvalidArguments("emails argument must be an object").ToMap(),
 				ClientID: request.ClientID,
 			},
 		}, nil
@@ -153,10 +148,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	for clientRef, emailArg := range emailsArg {
 		emailMap, ok := emailArg.(map[string]any)
 		if !ok {
-			notCreated[clientRef] = map[string]any{
-				"type":        "invalidArguments",
-				"description": "email entry must be an object",
-			}
+			notCreated[clientRef] = jmaperror.InvalidProperties("email entry must be an object", nil).ToMap()
 			continue
 		}
 
@@ -186,10 +178,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 	// Extract required blobId
 	blobID, ok := emailArgs["blobId"].(string)
 	if !ok || blobID == "" {
-		return nil, map[string]any{
-			"type":        "invalidArguments",
-			"description": "blobId is required",
-		}
+		return nil, jmaperror.InvalidProperties("blobId is required", nil).ToMap()
 	}
 
 	// Extract mailboxIds
@@ -211,16 +200,10 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 				slog.String("mailbox_id", mailboxID),
 				slog.String("error", err.Error()),
 			)
-			return nil, map[string]any{
-				"type":        "serverFail",
-				"description": err.Error(),
-			}
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 		if !exists {
-			return nil, map[string]any{
-				"type":        "invalidMailboxId",
-				"description": "Mailbox does not exist: " + mailboxID,
-			}
+			return nil, jmaperror.InvalidMailboxId("Mailbox does not exist: " + mailboxID).ToMap()
 		}
 	}
 
@@ -253,14 +236,10 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 			slog.String("blob_id", blobID),
 			slog.String("error", err.Error()),
 		)
-		errorType := "serverFail"
 		if errors.Is(err, blob.ErrBlobNotFound) {
-			errorType = "blobNotFound"
+			return nil, jmaperror.BlobNotFound(err.Error()).ToMap()
 		}
-		return nil, map[string]any{
-			"type":        errorType,
-			"description": err.Error(),
-		}
+		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
 	defer stream.Close()
 
@@ -272,10 +251,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 			slog.String("blob_id", blobID),
 			slog.String("error", err.Error()),
 		)
-		return nil, map[string]any{
-			"type":        "invalidEmail",
-			"description": err.Error(),
-		}
+		return nil, jmaperror.InvalidEmail(err.Error()).ToMap()
 	}
 
 	// Generate email ID
@@ -325,10 +301,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 			)
 			// Clean up uploaded part blobs on failure
 			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
-			return nil, map[string]any{
-				"type":        "serverFail",
-				"description": err.Error(),
-			}
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 	} else {
 		// Fallback to non-transactional (legacy) path
@@ -341,10 +314,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 			)
 			// Clean up uploaded part blobs on failure
 			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
-			return nil, map[string]any{
-				"type":        "serverFail",
-				"description": err.Error(),
-			}
+			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		// Track state changes for Email (created) and Thread (updated)
