@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -87,7 +88,7 @@ func newHandler(mailboxRepo MailboxRepository, stateRepo StateRepository, transa
 
 // handle processes an SQS event containing account event messages.
 func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
-	tracer := otel.Tracer("jmap-account-init")
+	tracer := tracing.Tracer("jmap-account-init")
 	ctx, span := tracer.Start(ctx, "AccountInitHandler")
 	defer span.End()
 
@@ -220,7 +221,7 @@ func (h *handler) provisionMailboxes(ctx context.Context, accountID string) erro
 func main() {
 	ctx := context.Background()
 
-	tp, err := xrayconfig.NewTracerProvider(ctx)
+	tp, err := tracing.Init(ctx)
 	if err != nil {
 		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
 		panic(err)

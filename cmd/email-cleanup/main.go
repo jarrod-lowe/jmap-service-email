@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -56,7 +57,7 @@ func newHandler(emailRepo EmailRepository, blobDeletePublisher blobdelete.BlobDe
 
 // handle processes a DynamoDB Streams event.
 func (h *handler) handle(ctx context.Context, event events.DynamoDBEvent) error {
-	tracer := otel.Tracer("jmap-email-cleanup")
+	tracer := tracing.Tracer("jmap-email-cleanup")
 	ctx, span := tracer.Start(ctx, "EmailCleanupHandler")
 	defer span.End()
 
@@ -169,7 +170,7 @@ func collectPartBlobIDs(part *email.BodyPart, ids *[]string) {
 func main() {
 	ctx := context.Background()
 
-	tp, err := xrayconfig.NewTracerProvider(ctx)
+	tp, err := tracing.Init(ctx)
 	if err != nil {
 		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
 		panic(err)

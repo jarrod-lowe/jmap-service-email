@@ -25,12 +25,11 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/headers"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 )
 
 // defaultMaxBodyValueBytes is the fallback if MAX_BODY_VALUE_BYTES env var is not set.
@@ -75,7 +74,7 @@ func newHandler(repo EmailRepository, stateRepo StateRepository, blobStreamer Bl
 
 // handle processes an Email/get request.
 func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvocationRequest) (plugincontract.PluginInvocationResponse, error) {
-	tracer := otel.Tracer("jmap-email-get")
+	tracer := tracing.Tracer("jmap-email-get")
 	ctx, span := tracer.Start(ctx, "EmailGetHandler")
 	defer span.End()
 
@@ -595,19 +594,12 @@ func findBodyPart(root email.BodyPart, partID string) *email.BodyPart {
 func main() {
 	ctx := context.Background()
 
-	tp, err := xrayconfig.NewTracerProvider(ctx)
+	tp, err := tracing.Init(ctx)
 	if err != nil {
 		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
 		panic(err)
 	}
 	otel.SetTracerProvider(tp)
-
-	// Set X-Ray propagator as global propagator for HTTP client trace context injection
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		xray.Propagator{},
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")

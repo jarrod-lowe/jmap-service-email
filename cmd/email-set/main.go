@@ -21,6 +21,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/otel"
@@ -84,7 +85,7 @@ func newHandler(emailRepo EmailRepository, mailboxRepo MailboxRepository, stateR
 
 // handle processes an Email/set request.
 func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvocationRequest) (plugincontract.PluginInvocationResponse, error) {
-	tracer := otel.Tracer("jmap-email-set")
+	tracer := tracing.Tracer("jmap-email-set")
 	ctx, span := tracer.Start(ctx, "EmailSetHandler")
 	defer span.End()
 
@@ -794,7 +795,7 @@ func errorResponse(clientID, errorType, description string) plugincontract.Plugi
 func main() {
 	ctx := context.Background()
 
-	tp, err := xrayconfig.NewTracerProvider(ctx)
+	tp, err := tracing.Init(ctx)
 	if err != nil {
 		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
 		panic(err)

@@ -24,12 +24,11 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 )
 
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -114,7 +113,7 @@ func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUpload
 
 // handle processes an Email/import request.
 func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvocationRequest) (plugincontract.PluginInvocationResponse, error) {
-	tracer := otel.Tracer("jmap-email-import")
+	tracer := tracing.Tracer("jmap-email-import")
 	ctx, span := tracer.Start(ctx, "EmailImportHandler")
 	defer span.End()
 
@@ -538,19 +537,12 @@ func (h *handler) determineThreadID(ctx context.Context, accountID string, inRep
 func main() {
 	ctx := context.Background()
 
-	tp, err := xrayconfig.NewTracerProvider(ctx)
+	tp, err := tracing.Init(ctx)
 	if err != nil {
 		logger.Error("FATAL: Failed to initialize tracer provider", slog.String("error", err.Error()))
 		panic(err)
 	}
 	otel.SetTracerProvider(tp)
-
-	// Set X-Ray propagator as global propagator for HTTP client trace context injection
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		xray.Propagator{},
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
