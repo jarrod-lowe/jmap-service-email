@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
+
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -26,9 +28,7 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
+var logger = logging.New()
 
 // MailboxRepository defines the interface for mailbox operations.
 type MailboxRepository interface {

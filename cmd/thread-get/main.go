@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
+
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -24,9 +26,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
+var logger = logging.New()
 
 // defaultMaxConcurrentThreadQueries is the fallback if THREAD_QUERY_CONCURRENCY env var is not set.
 const defaultMaxConcurrentThreadQueries = 5

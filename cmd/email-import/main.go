@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"net/http"
 	"os"
+	"strings"
+
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -32,9 +34,7 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
+var logger = logging.New()
 
 // emailItem is an alias for the internal email.EmailItem type.
 type emailItem = email.EmailItem

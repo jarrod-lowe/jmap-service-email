@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
+
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,9 +25,7 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
+var logger = logging.New()
 
 // EventPayload represents the account event from jmap-service-core.
 type EventPayload struct {

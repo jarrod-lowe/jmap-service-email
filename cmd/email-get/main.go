@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+
+	"github.com/jarrod-lowe/jmap-service-libs/logging"
 	"strconv"
 	"strings"
 	"time"
@@ -37,9 +39,7 @@ import (
 // defaultMaxBodyValueBytes is the fallback if MAX_BODY_VALUE_BYTES env var is not set.
 const defaultMaxBodyValueBytes = 256 * 1024
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
+var logger = logging.New()
 
 // EmailRepository defines the interface for retrieving emails.
 type EmailRepository interface {
