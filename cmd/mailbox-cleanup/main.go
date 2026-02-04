@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailboxcleanup"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
@@ -263,7 +264,7 @@ func main() {
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
 	blobDeleteQueueURL := os.Getenv("BLOB_DELETE_QUEUE_URL")
 
-	dynamoClient := dynamodb.NewFromConfig(result.Config)
+	dynamoClient := dbclient.NewClient(result.Config)
 	emailRepo := email.NewRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 

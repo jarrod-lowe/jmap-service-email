@@ -9,28 +9,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 
 	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
 
-// DynamoDBClient defines the interface for DynamoDB operations.
-type DynamoDBClient interface {
-	GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
-	Query(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
-	PutItem(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
-	UpdateItem(ctx context.Context, input *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
-	DeleteItem(ctx context.Context, input *dynamodb.DeleteItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
-	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
-}
-
 // DynamoDBRepository implements Repository using DynamoDB.
 type DynamoDBRepository struct {
-	client    DynamoDBClient
+	client    dbclient.DynamoDBClient
 	tableName string
 }
 
 // NewDynamoDBRepository creates a new DynamoDBRepository.
-func NewDynamoDBRepository(client DynamoDBClient, tableName string) *DynamoDBRepository {
+func NewDynamoDBRepository(client dbclient.DynamoDBClient, tableName string) *DynamoDBRepository {
 	return &DynamoDBRepository{
 		client:    client,
 		tableName: tableName,

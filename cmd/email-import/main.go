@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
@@ -513,7 +514,7 @@ func main() {
 	coreAPIURL := os.Getenv("CORE_API_URL")
 
 	// Create DynamoDB client
-	dynamoClient := dynamodb.NewFromConfig(result.Config)
+	dynamoClient := dbclient.NewClient(result.Config)
 
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 
 	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 )
@@ -19,23 +20,15 @@ var (
 	ErrTransactionFailed = errors.New("transaction failed")
 )
 
-// DynamoDBClient defines the interface for DynamoDB operations.
-type DynamoDBClient interface {
-	GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
-	Query(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
-	UpdateItem(ctx context.Context, input *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
-	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
-}
-
 // Repository handles state tracking operations.
 type Repository struct {
-	client        DynamoDBClient
+	client        dbclient.DynamoDBClient
 	tableName     string
 	retentionDays int
 }
 
 // NewRepository creates a new Repository.
-func NewRepository(client DynamoDBClient, tableName string, retentionDays int) *Repository {
+func NewRepository(client dbclient.DynamoDBClient, tableName string, retentionDays int) *Repository {
 	if retentionDays <= 0 {
 		retentionDays = DefaultRetentionDays
 	}

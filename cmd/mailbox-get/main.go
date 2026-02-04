@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
@@ -255,7 +256,7 @@ func main() {
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
 
 	// Create DynamoDB client
-	dynamoClient := dynamodb.NewFromConfig(result.Config)
+	dynamoClient := dbclient.NewClient(result.Config)
 
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request

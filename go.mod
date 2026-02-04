@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.21
 	github.com/google/uuid v1.6.0
 	github.com/jarrod-lowe/jmap-service-core v0.0.0-20260121043827-8fcb1a50341e
-	github.com/jarrod-lowe/jmap-service-libs v0.0.0-20260204070741-a75cf01109e0
+	github.com/jarrod-lowe/jmap-service-libs v0.0.0-20260204084349-45e83fa168b5
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.65.0
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/sdk v1.40.0
@@ -17,8 +17,6 @@ require (
 	golang.org/x/sync v0.19.0
 	golang.org/x/text v0.33.0
 )
-
-replace github.com/jarrod-lowe/jmap-service-core => ../jmap-service-core
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.7 // indirect

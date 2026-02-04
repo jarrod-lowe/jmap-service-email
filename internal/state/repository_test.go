@@ -10,11 +10,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-// mockDynamoDBClient implements the DynamoDBClient interface for testing.
+// mockDynamoDBClient implements the dbclient.DynamoDBClient interface for testing.
 type mockDynamoDBClient struct {
 	getItemFunc       func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	queryFunc         func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	putItemFunc       func(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 	updateItemFunc    func(ctx context.Context, input *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	deleteItemFunc    func(ctx context.Context, input *dynamodb.DeleteItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 	transactWriteFunc func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 }
 
@@ -37,6 +39,20 @@ func (m *mockDynamoDBClient) UpdateItem(ctx context.Context, input *dynamodb.Upd
 		return m.updateItemFunc(ctx, input, opts...)
 	}
 	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func (m *mockDynamoDBClient) PutItem(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	if m.putItemFunc != nil {
+		return m.putItemFunc(ctx, input, opts...)
+	}
+	return &dynamodb.PutItemOutput{}, nil
+}
+
+func (m *mockDynamoDBClient) DeleteItem(ctx context.Context, input *dynamodb.DeleteItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+	if m.deleteItemFunc != nil {
+		return m.deleteItemFunc(ctx, input, opts...)
+	}
+	return &dynamodb.DeleteItemOutput{}, nil
 }
 
 func (m *mockDynamoDBClient) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {

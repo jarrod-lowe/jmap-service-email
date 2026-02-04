@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 
 	"github.com/jarrod-lowe/jmap-service-email/internal/dynamo"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
@@ -23,21 +24,14 @@ var (
 	ErrVersionConflict   = errors.New("version conflict")
 )
 
-// DynamoDBClient defines the interface for DynamoDB operations.
-type DynamoDBClient interface {
-	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
-	GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
-	Query(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
-}
-
 // Repository handles email storage operations.
 type Repository struct {
-	client    DynamoDBClient
+	client    dbclient.DynamoDBClient
 	tableName string
 }
 
 // NewRepository creates a new Repository.
-func NewRepository(client DynamoDBClient, tableName string) *Repository {
+func NewRepository(client dbclient.DynamoDBClient, tableName string) *Repository {
 	return &Repository{
 		client:    client,
 		tableName: tableName,
