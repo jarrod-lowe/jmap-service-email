@@ -19,7 +19,7 @@ import (
 type mockEmailRepository struct {
 	queryEmailsByMailboxFunc           func(ctx context.Context, accountID, mailboxID string) ([]string, error)
 	getEmailFunc                       func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
-	buildSoftDeleteEmailItemFunc       func(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
+	buildSoftDeleteEmailItemFunc       func(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem
 	buildUpdateEmailMailboxesItemsFunc func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem)
 }
 
@@ -37,9 +37,9 @@ func (m *mockEmailRepository) GetEmail(ctx context.Context, accountID, emailID s
 	return nil, email.ErrEmailNotFound
 }
 
-func (m *mockEmailRepository) BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem {
+func (m *mockEmailRepository) BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem {
 	if m.buildSoftDeleteEmailItemFunc != nil {
-		return m.buildSoftDeleteEmailItemFunc(emailItem, deletedAt)
+		return m.buildSoftDeleteEmailItemFunc(emailItem, deletedAt, apiURL)
 	}
 	return types.TransactWriteItem{Update: &types.Update{}}
 }
@@ -1161,7 +1161,7 @@ func TestHandler_DestroyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 				Version:    1,
 			}, nil
 		},
-		buildSoftDeleteEmailItemFunc: func(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem {
+		buildSoftDeleteEmailItemFunc: func(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem {
 			softDeletedEmails = append(softDeletedEmails, emailItem.EmailID)
 			return types.TransactWriteItem{Update: &types.Update{}}
 		},
@@ -1262,5 +1262,74 @@ func TestHandler_DestroyEmptyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 	// Verify NO email cleanup was attempted (empty mailbox)
 	if queryCalled {
 		t.Error("expected no email query for empty mailbox")
+	}
+}
+
+// Test: request.APIURL flows through to BuildSoftDeleteEmailItem
+func TestHandler_DestroyMailboxAPIURLPassedToSoftDelete(t *testing.T) {
+	mockRepo := &mockMailboxRepository{
+		getMailboxFunc: func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error) {
+			return &mailbox.MailboxItem{
+				AccountID:   accountID,
+				MailboxID:   mailboxID,
+				Name:        "Test",
+				TotalEmails: 1,
+			}, nil
+		},
+		buildDeleteMailboxItemFunc: func(accountID, mailboxID string) types.TransactWriteItem {
+			return types.TransactWriteItem{Delete: &types.Delete{}}
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+		buildStateChangeItemsFunc: func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem) {
+			return currentState + 1, []types.TransactWriteItem{}
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+
+	var capturedAPIURL string
+	mockEmailRepo := &mockEmailRepository{
+		queryEmailsByMailboxFunc: func(ctx context.Context, accountID, mailboxID string) ([]string, error) {
+			return []string{"email-1"}, nil
+		},
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				AccountID:  accountID,
+				EmailID:    emailID,
+				MailboxIDs: map[string]bool{"test-mailbox": true},
+				Version:    1,
+			}, nil
+		},
+		buildSoftDeleteEmailItemFunc: func(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem {
+			capturedAPIURL = apiURL
+			return types.TransactWriteItem{Update: &types.Update{}}
+		},
+	}
+
+	h := newHandler(mockRepo, mockStateRepo, mockTransactor)
+	h.emailRepo = mockEmailRepo
+
+	_, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Mailbox/set",
+		APIURL:    "https://api.example.com/stage",
+		Args: map[string]any{
+			"destroy":                []any{"test-mailbox"},
+			"onDestroyRemoveEmails": true,
+		},
+		ClientID: "c0",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	if capturedAPIURL != "https://api.example.com/stage" {
+		t.Errorf("apiURL = %q, want %q", capturedAPIURL, "https://api.example.com/stage")
 	}
 }

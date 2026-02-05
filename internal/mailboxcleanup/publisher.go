@@ -10,13 +10,14 @@ import (
 
 // MailboxCleanupPublisher publishes mailbox cleanup requests to an async queue.
 type MailboxCleanupPublisher interface {
-	PublishMailboxCleanup(ctx context.Context, accountID, mailboxID string) error
+	PublishMailboxCleanup(ctx context.Context, accountID, mailboxID, apiURL string) error
 }
 
 // MailboxCleanupMessage is the SQS message body for mailbox cleanup requests.
 type MailboxCleanupMessage struct {
 	AccountID string `json:"accountId"`
 	MailboxID string `json:"mailboxId"`
+	APIURL    string `json:"apiUrl"`
 }
 
 // SQSSender abstracts SQS send operations for dependency inversion.
@@ -39,10 +40,11 @@ func NewSQSPublisher(client SQSSender, queueURL string) *SQSPublisher {
 }
 
 // PublishMailboxCleanup sends a mailbox cleanup message to SQS.
-func (p *SQSPublisher) PublishMailboxCleanup(ctx context.Context, accountID, mailboxID string) error {
+func (p *SQSPublisher) PublishMailboxCleanup(ctx context.Context, accountID, mailboxID, apiURL string) error {
 	msg := MailboxCleanupMessage{
 		AccountID: accountID,
 		MailboxID: mailboxID,
+		APIURL:    apiURL,
 	}
 
 	body, err := json.Marshal(msg)

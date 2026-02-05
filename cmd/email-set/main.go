@@ -34,7 +34,7 @@ type EmailRepository interface {
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 	UpdateEmailKeywords(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
 	BuildDeleteEmailItems(emailItem *email.EmailItem) []types.TransactWriteItem
-	BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
+	BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem
 	BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
@@ -197,7 +197,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	// Handle destroy
 	if destroyIDs, ok := request.Args.StringSlice("destroy"); ok {
 		for _, emailID := range destroyIDs {
-			destroyNewState, destroyErr := h.destroyEmail(ctx, accountID, emailID, affectedMailboxes)
+			destroyNewState, destroyErr := h.destroyEmail(ctx, accountID, emailID, request.APIURL, affectedMailboxes)
 			if destroyErr != nil {
 				notDestroyed[emailID] = destroyErr
 			} else {
@@ -624,7 +624,7 @@ const maxDestroyRetries = 3
 // destroyEmail soft-deletes an email by setting deletedAt, updating state, and decrementing mailbox counters.
 // A DynamoDB Streams handler performs actual record deletion and blob cleanup.
 // Returns the new email state, or a JMAP error map.
-func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, affectedMailboxes map[string]bool) (int64, map[string]any) {
+func (h *handler) destroyEmail(ctx context.Context, accountID, emailID, apiURL string, affectedMailboxes map[string]bool) (int64, map[string]any) {
 	for attempt := 0; attempt < maxDestroyRetries; attempt++ {
 		// 1. Fetch email
 		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
@@ -662,7 +662,7 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID string, a
 		var transactItems []types.TransactWriteItem
 
 		// Soft-delete email (set deletedAt, increment version with condition)
-		transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, time.Now()))
+		transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, time.Now(), apiURL))
 
 		// Mailbox counter decrements
 		isUnread := emailItem.Keywords == nil || !emailItem.Keywords["$seen"]

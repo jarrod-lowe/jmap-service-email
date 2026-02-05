@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.54.0
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.21
 	github.com/google/uuid v1.6.0
-	github.com/jarrod-lowe/jmap-service-libs v0.0.0-20260205203710-a3a8415c27fe
+	github.com/jarrod-lowe/jmap-service-libs v0.0.0-20260205222551-477d6c00ad9e
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.65.0
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/sdk v1.40.0

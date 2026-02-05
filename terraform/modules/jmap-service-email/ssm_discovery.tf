@@ -21,10 +21,6 @@ data "aws_ssm_parameter" "jmap_api_gateway_execution_arn" {
   name = "${local.ssm_prefix}/api-gateway-execution-arn"
 }
 
-data "aws_ssm_parameter" "jmap_api_gateway_invoke_url" {
-  name = "${local.ssm_prefix}/api-gateway-invoke-url"
-}
-
 data "aws_ssm_parameter" "account_init_role_arn" {
   name = "${local.ssm_prefix}/account-init-role-arn"
 }

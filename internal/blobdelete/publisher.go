@@ -10,13 +10,14 @@ import (
 
 // BlobDeletePublisher publishes blob deletion requests to an async queue.
 type BlobDeletePublisher interface {
-	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error
+	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
 // BlobDeleteMessage is the SQS message body for blob deletion requests.
 type BlobDeleteMessage struct {
 	AccountID string   `json:"accountId"`
 	BlobIDs   []string `json:"blobIds"`
+	APIURL    string   `json:"apiUrl"`
 }
 
 // SQSSender abstracts SQS send operations for dependency inversion.
@@ -39,7 +40,7 @@ func NewSQSPublisher(client SQSSender, queueURL string) *SQSPublisher {
 }
 
 // PublishBlobDeletions sends a blob deletion message to SQS.
-func (p *SQSPublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+func (p *SQSPublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 	if len(blobIDs) == 0 {
 		return nil
 	}
@@ -47,6 +48,7 @@ func (p *SQSPublisher) PublishBlobDeletions(ctx context.Context, accountID strin
 	msg := BlobDeleteMessage{
 		AccountID: accountID,
 		BlobIDs:   blobIDs,
+		APIURL:    apiURL,
 	}
 
 	body, err := json.Marshal(msg)

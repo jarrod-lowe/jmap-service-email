@@ -163,14 +163,19 @@ func (m *mockStateRepository) BuildStateChangeItemsMulti(accountID string, objec
 
 // mockBlobDeletePublisher implements BlobDeletePublisher for testing.
 type mockBlobDeletePublisher struct {
-	publishFunc func(ctx context.Context, accountID string, blobIDs []string) error
+	publishFunc func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
-func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, blobIDs)
+		return m.publishFunc(ctx, accountID, blobIDs, apiURL)
 	}
 	return nil
+}
+
+// mockBlobClientFactory wraps mock streamer and uploader in a factory for testing.
+func mockBlobClientFactory(s BlobStreamer, u BlobUploader) func(string) (BlobStreamer, BlobUploader) {
+	return func(_ string) (BlobStreamer, BlobUploader) { return s, u }
 }
 
 func TestHandler_SingleEmailImport(t *testing.T) {
@@ -185,13 +190,14 @@ func TestHandler_SingleEmailImport(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -277,13 +283,14 @@ func TestHandler_SingleEmailImport_VerifiesFromField(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -339,13 +346,14 @@ func TestHandler_BlobStreamError(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -391,13 +399,14 @@ func TestHandler_RepositoryError(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -445,13 +454,14 @@ func TestHandler_MultipleEmails(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -497,13 +507,14 @@ func TestHandler_InvalidMethod(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args:      map[string]any{},
 	}
 
@@ -551,13 +562,14 @@ SGVsbG8gV29ybGQ=
 	}
 	mockMailboxRepo := &mockMailboxRepository{} // Default: mailbox exists
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -598,13 +610,14 @@ func TestHandler_InvalidMailboxId(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -663,13 +676,14 @@ func TestHandler_ValidMailboxIdIncrementsCounts(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -738,13 +752,14 @@ func TestHandler_NoSeenKeywordIncrementsUnread(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -802,13 +817,14 @@ func TestHandler_MultipleMailboxesIncrementAll(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -854,13 +870,14 @@ func TestHandler_MailboxCheckError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -908,13 +925,14 @@ func TestHandler_IncrementCountError(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -985,13 +1003,14 @@ func TestHandler_Threading_NoInReplyTo_NewThread(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1053,13 +1072,14 @@ func TestHandler_Threading_InReplyTo_InheritsThread(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1110,13 +1130,14 @@ func TestHandler_Threading_InReplyTo_ParentNotFound(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1167,13 +1188,14 @@ func TestHandler_Threading_LookupError_FallsBackToNewThread(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1230,13 +1252,14 @@ func TestHandler_StateTracking(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo)
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, mockStateRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1333,13 +1356,14 @@ func TestHandler_StateTracking_ThreadUpdated_ForReply(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo)
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, mockStateRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1398,13 +1422,14 @@ func TestHandler_SingleEmailImport_StoresHeaderSize(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{})
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{})
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1473,13 +1498,14 @@ func TestHandler_StateTracking_IncludesThread(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo)
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, mockStateRepo)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1548,13 +1574,14 @@ func TestHandler_ImportWithTransactor_UsesAtomicTransaction(t *testing.T) {
 	mockStateRepo := &mockStateRepository{}
 	mockTransactor := &mockTransactWriter{}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo, mockTransactor)
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, mockStateRepo, mockTransactor)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1635,7 +1662,7 @@ SGVsbG8gV29ybGQ=
 	}
 	mockStateRepo := &mockStateRepository{}
 	mockBlobPub := &mockBlobDeletePublisher{
-		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 			publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
 			return nil
 		},
@@ -1646,13 +1673,14 @@ SGVsbG8gV29ybGQ=
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, mockStateRepo, mockTransactor, mockBlobPub)
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, mockStateRepo, mockTransactor, mockBlobPub)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{
@@ -1725,19 +1753,20 @@ SGVsbG8gV29ybGQ=
 	}
 	mockMailboxRepo := &mockMailboxRepository{}
 	mockBlobPub := &mockBlobDeletePublisher{
-		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 			publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
 			return nil
 		},
 	}
 
-	h := newHandler(mockRepo, mockStreamer, mockUploader, mockMailboxRepo, &mockStateRepository{}, mockBlobPub)
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{}, mockBlobPub)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/import",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"emails": map[string]any{

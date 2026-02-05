@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
@@ -26,12 +25,12 @@ type BlobDeleter interface {
 
 // handler implements the blob-delete SQS consumer logic.
 type handler struct {
-	blobDeleter BlobDeleter
+	blobDeleterFactory func(baseURL string) BlobDeleter
 }
 
 // newHandler creates a new handler.
-func newHandler(blobDeleter BlobDeleter) *handler {
-	return &handler{blobDeleter: blobDeleter}
+func newHandler(blobDeleterFactory func(baseURL string) BlobDeleter) *handler {
+	return &handler{blobDeleterFactory: blobDeleterFactory}
 }
 
 // handle processes an SQS event containing blob deletion messages.
@@ -55,9 +54,11 @@ func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQS
 			continue
 		}
 
+		blobDeleter := h.blobDeleterFactory(msg.APIURL)
+
 		failed := false
 		for _, blobID := range msg.BlobIDs {
-			if err := h.blobDeleter.Delete(ctx, msg.AccountID, blobID); err != nil {
+			if err := blobDeleter.Delete(ctx, msg.AccountID, blobID); err != nil {
 				logger.ErrorContext(ctx, "Failed to delete blob",
 					slog.String("account_id", msg.AccountID),
 					slog.String("blob_id", blobID),
@@ -93,14 +94,15 @@ func main() {
 		panic(err)
 	}
 
-	coreAPIURL := os.Getenv("CORE_API_URL")
-
 	// Create blob client with OTel instrumentation and SigV4 signing
 	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
 	transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
 	httpClient := &http.Client{Transport: transport}
-	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
-	h := newHandler(blobClient)
+	factory := func(baseURL string) BlobDeleter {
+		return blob.NewHTTPBlobClient(baseURL, httpClient)
+	}
+
+	h := newHandler(factory)
 	result.Start(h.handle)
 }

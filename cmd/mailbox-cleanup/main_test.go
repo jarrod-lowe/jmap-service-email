@@ -93,20 +93,25 @@ func (m *mockTransactWriter) TransactWriteItems(ctx context.Context, input *dyna
 
 // mockBlobDeletePublisher implements BlobDeletePublisher for testing.
 type mockBlobDeletePublisher struct {
-	publishFunc func(ctx context.Context, accountID string, blobIDs []string) error
+	publishFunc func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
-func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, blobIDs)
+		return m.publishFunc(ctx, accountID, blobIDs, apiURL)
 	}
 	return nil
 }
 
 func makeMessage(accountID, mailboxID string) events.SQSMessage {
+	return makeMessageWithAPIURL(accountID, mailboxID, "")
+}
+
+func makeMessageWithAPIURL(accountID, mailboxID, apiURL string) events.SQSMessage {
 	msg := mailboxcleanup.MailboxCleanupMessage{
 		AccountID: accountID,
 		MailboxID: mailboxID,
+		APIURL:    apiURL,
 	}
 	body, _ := json.Marshal(msg)
 	return events.SQSMessage{
@@ -168,7 +173,7 @@ func TestHandler_OrphanedEmailDeleted(t *testing.T) {
 		},
 		&mockStateRepository{},
 		&mockBlobDeletePublisher{
-			publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+			publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 				publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
 				return nil
 			},
@@ -287,6 +292,56 @@ func TestHandler_InvalidJSON(t *testing.T) {
 	}
 	if len(resp.BatchItemFailures) != 1 {
 		t.Errorf("expected 1 failure, got %d", len(resp.BatchItemFailures))
+	}
+}
+
+// Test: apiURL from MailboxCleanupMessage flows to blob delete publisher
+func TestHandler_APIURLFromMessagePassedToPublisher(t *testing.T) {
+	var capturedAPIURL string
+
+	emailItem := &email.EmailItem{
+		AccountID:  "user-1",
+		EmailID:    "email-1",
+		BlobID:     "blob-1",
+		ThreadID:   "thread-1",
+		MailboxIDs: map[string]bool{"mbox-1": true},
+		ReceivedAt: time.Now(),
+	}
+
+	h := newHandler(
+		&mockEmailRepository{
+			queryEmailsByMailboxFunc: func(ctx context.Context, accountID, mailboxID string) ([]string, error) {
+				return []string{"email-1"}, nil
+			},
+			getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+				return emailItem, nil
+			},
+			buildDeleteEmailItemsFunc: func(item *email.EmailItem) []types.TransactWriteItem {
+				return []types.TransactWriteItem{{Delete: &types.Delete{}}}
+			},
+		},
+		&mockStateRepository{},
+		&mockBlobDeletePublisher{
+			publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
+				capturedAPIURL = apiURL
+				return nil
+			},
+		},
+		&mockTransactWriter{},
+	)
+
+	resp, err := h.handle(context.Background(), events.SQSEvent{
+		Records: []events.SQSMessage{makeMessageWithAPIURL("user-1", "mbox-1", "https://api.example.com/stage")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected 0 failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	if capturedAPIURL != "https://api.example.com/stage" {
+		t.Errorf("apiURL = %q, want %q", capturedAPIURL, "https://api.example.com/stage")
 	}
 }
 

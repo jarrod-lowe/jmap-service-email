@@ -31,7 +31,7 @@ func TestSQSPublisher_PublishBlobDeletions_Success(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/queue")
-	err := pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1", "blob-2"})
+	err := pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1", "blob-2"}, "https://api.example.com/stage")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,6 +47,9 @@ func TestSQSPublisher_PublishBlobDeletions_Success(t *testing.T) {
 	if len(msg.BlobIDs) != 2 || msg.BlobIDs[0] != "blob-1" || msg.BlobIDs[1] != "blob-2" {
 		t.Errorf("BlobIDs = %v, want [blob-1, blob-2]", msg.BlobIDs)
 	}
+	if msg.APIURL != "https://api.example.com/stage" {
+		t.Errorf("APIURL = %q, want %q", msg.APIURL, "https://api.example.com/stage")
+	}
 }
 
 func TestSQSPublisher_PublishBlobDeletions_SQSError(t *testing.T) {
@@ -57,7 +60,7 @@ func TestSQSPublisher_PublishBlobDeletions_SQSError(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/queue")
-	err := pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1"})
+	err := pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1"}, "https://api.example.com/stage")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -73,7 +76,7 @@ func TestSQSPublisher_PublishBlobDeletions_EmptyBlobIDs(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/queue")
-	err := pub.PublishBlobDeletions(context.Background(), "user-123", []string{})
+	err := pub.PublishBlobDeletions(context.Background(), "user-123", []string{}, "https://api.example.com/stage")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestSQSPublisher_PublishBlobDeletions_NilBlobIDs(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/queue")
-	err := pub.PublishBlobDeletions(context.Background(), "user-123", nil)
+	err := pub.PublishBlobDeletions(context.Background(), "user-123", nil, "https://api.example.com/stage")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +114,7 @@ func TestSQSPublisher_CorrectQueueURL(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/my-queue")
-	_ = pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1"})
+	_ = pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1"}, "https://api.example.com/stage")
 
 	if capturedQueueURL != "https://sqs.example.com/my-queue" {
 		t.Errorf("QueueUrl = %q, want %q", capturedQueueURL, "https://sqs.example.com/my-queue")

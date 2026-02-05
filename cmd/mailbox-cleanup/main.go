@@ -83,7 +83,7 @@ func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQS
 			continue
 		}
 
-		if err := h.processMailboxCleanup(ctx, msg.AccountID, msg.MailboxID); err != nil {
+		if err := h.processMailboxCleanup(ctx, msg.AccountID, msg.MailboxID, msg.APIURL); err != nil {
 			logger.ErrorContext(ctx, "Failed to process mailbox cleanup",
 				slog.String("account_id", msg.AccountID),
 				slog.String("mailbox_id", msg.MailboxID),
@@ -106,7 +106,7 @@ func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQS
 }
 
 // processMailboxCleanup handles cleanup for a single destroyed mailbox.
-func (h *handler) processMailboxCleanup(ctx context.Context, accountID, mailboxID string) error {
+func (h *handler) processMailboxCleanup(ctx context.Context, accountID, mailboxID, apiURL string) error {
 	// Query all email IDs that were in this mailbox
 	emailIDs, err := h.emailRepo.QueryEmailsByMailbox(ctx, accountID, mailboxID)
 	if err != nil {
@@ -119,7 +119,7 @@ func (h *handler) processMailboxCleanup(ctx context.Context, accountID, mailboxI
 
 	// Process each email individually (transactions have a 100-item limit)
 	for _, emailID := range emailIDs {
-		if err := h.processEmail(ctx, accountID, mailboxID, emailID); err != nil {
+		if err := h.processEmail(ctx, accountID, mailboxID, emailID, apiURL); err != nil {
 			return err
 		}
 	}
@@ -128,7 +128,7 @@ func (h *handler) processMailboxCleanup(ctx context.Context, accountID, mailboxI
 }
 
 // processEmail handles cleanup for a single email in the destroyed mailbox.
-func (h *handler) processEmail(ctx context.Context, accountID, mailboxID, emailID string) error {
+func (h *handler) processEmail(ctx context.Context, accountID, mailboxID, emailID, apiURL string) error {
 	emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 	if err != nil {
 		if err == email.ErrEmailNotFound {
@@ -148,7 +148,7 @@ func (h *handler) processEmail(ctx context.Context, accountID, mailboxID, emailI
 
 	if len(emailItem.MailboxIDs) == 1 {
 		// Orphaned email — destroy it
-		return h.destroyOrphanedEmail(ctx, accountID, mailboxID, emailItem, isUnread)
+		return h.destroyOrphanedEmail(ctx, accountID, mailboxID, emailItem, isUnread, apiURL)
 	}
 
 	// Multi-mailbox email — remove the destroyed mailbox
@@ -156,7 +156,7 @@ func (h *handler) processEmail(ctx context.Context, accountID, mailboxID, emailI
 }
 
 // destroyOrphanedEmail deletes an email that was only in the destroyed mailbox.
-func (h *handler) destroyOrphanedEmail(ctx context.Context, accountID, mailboxID string, emailItem *email.EmailItem, isUnread bool) error {
+func (h *handler) destroyOrphanedEmail(ctx context.Context, accountID, mailboxID string, emailItem *email.EmailItem, isUnread bool, apiURL string) error {
 	var transactItems []types.TransactWriteItem
 
 	// Email + membership deletes
@@ -190,7 +190,7 @@ func (h *handler) destroyOrphanedEmail(ctx context.Context, accountID, mailboxID
 	// Publish blob deletions (best-effort)
 	blobIDs := collectBlobIDs(emailItem)
 	if h.blobDeletePublisher != nil && len(blobIDs) > 0 {
-		if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs); err != nil {
+		if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs, apiURL); err != nil {
 			logger.ErrorContext(ctx, "Failed to publish blob deletions",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailItem.EmailID),

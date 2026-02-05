@@ -69,7 +69,7 @@ type StateRepository interface {
 
 // BlobDeletePublisher publishes blob deletion requests to an async queue.
 type BlobDeletePublisher interface {
-	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error
+	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
 // TransactWriter defines the interface for DynamoDB transactional writes.
@@ -80,8 +80,7 @@ type TransactWriter interface {
 // handler implements the Email/import logic.
 type handler struct {
 	repo                EmailRepository
-	streamer            BlobStreamer
-	uploader            BlobUploader
+	blobClientFactory   func(baseURL string) (BlobStreamer, BlobUploader)
 	mailboxRepo         MailboxRepository
 	stateRepo           StateRepository
 	blobDeletePublisher BlobDeletePublisher
@@ -89,13 +88,12 @@ type handler struct {
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, streamer BlobStreamer, uploader BlobUploader, mailboxRepo MailboxRepository, stateRepo StateRepository, opts ...any) *handler {
+func newHandler(repo EmailRepository, blobClientFactory func(baseURL string) (BlobStreamer, BlobUploader), mailboxRepo MailboxRepository, stateRepo StateRepository, opts ...any) *handler {
 	h := &handler{
-		repo:        repo,
-		streamer:    streamer,
-		uploader:    uploader,
-		mailboxRepo: mailboxRepo,
-		stateRepo:   stateRepo,
+		repo:              repo,
+		blobClientFactory: blobClientFactory,
+		mailboxRepo:       mailboxRepo,
+		stateRepo:         stateRepo,
 	}
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -139,6 +137,13 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}, nil
 	}
 
+	// Create blob client from request APIURL
+	var streamer BlobStreamer
+	var uploader BlobUploader
+	if h.blobClientFactory != nil && request.APIURL != "" {
+		streamer, uploader = h.blobClientFactory(request.APIURL)
+	}
+
 	created := make(map[string]any)
 	notCreated := make(map[string]any)
 
@@ -150,7 +155,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			continue
 		}
 
-		result, err := h.importEmail(ctx, accountID, emailMap)
+		result, err := h.importEmail(ctx, accountID, emailMap, streamer, uploader, request.APIURL)
 		if err != nil {
 			notCreated[clientRef] = err
 		} else {
@@ -172,7 +177,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 }
 
 // importEmail imports a single email and returns the created email info or an error map.
-func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs map[string]any) (map[string]any, map[string]any) {
+func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs map[string]any, streamer BlobStreamer, uploader BlobUploader, apiURL string) (map[string]any, map[string]any) {
 	// Extract required blobId
 	blobID, ok := emailArgs["blobId"].(string)
 	if !ok || blobID == "" {
@@ -227,7 +232,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 	}
 
 	// Stream blob
-	stream, err := h.streamer.Stream(ctx, accountID, blobID)
+	stream, err := streamer.Stream(ctx, accountID, blobID)
 	if err != nil {
 		logger.ErrorContext(ctx, "Failed to stream blob",
 			slog.String("account_id", accountID),
@@ -242,7 +247,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 	defer stream.Close()
 
 	// Parse email with streaming parser
-	parsed, err := email.ParseRFC5322Stream(ctx, stream, blobID, accountID, h.uploader)
+	parsed, err := email.ParseRFC5322Stream(ctx, stream, blobID, accountID, uploader)
 	if err != nil {
 		logger.ErrorContext(ctx, "Failed to parse email",
 			slog.String("account_id", accountID),
@@ -298,7 +303,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 				slog.String("error", err.Error()),
 			)
 			// Clean up uploaded part blobs on failure
-			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
+			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure, apiURL)
 			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 	} else {
@@ -311,7 +316,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 				slog.String("error", err.Error()),
 			)
 			// Clean up uploaded part blobs on failure
-			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure)
+			h.publishBlobCleanup(ctx, accountID, &parsed.BodyStructure, apiURL)
 			return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
@@ -440,7 +445,7 @@ func (h *handler) importEmailTransactional(ctx context.Context, accountID string
 }
 
 // publishBlobCleanup publishes blob IDs from a body structure for async deletion.
-func (h *handler) publishBlobCleanup(ctx context.Context, accountID string, bodyStructure *email.BodyPart) {
+func (h *handler) publishBlobCleanup(ctx context.Context, accountID string, bodyStructure *email.BodyPart, apiURL string) {
 	if h.blobDeletePublisher == nil {
 		return
 	}
@@ -449,7 +454,7 @@ func (h *handler) publishBlobCleanup(ctx context.Context, accountID string, body
 	if len(blobIDs) == 0 {
 		return
 	}
-	if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs); err != nil {
+	if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs, apiURL); err != nil {
 		logger.ErrorContext(ctx, "Failed to publish blob cleanup",
 			slog.String("account_id", accountID),
 			slog.String("error", err.Error()),
@@ -508,7 +513,6 @@ func main() {
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
-	coreAPIURL := os.Getenv("CORE_API_URL")
 
 	// Create DynamoDB client
 	dynamoClient := dbclient.NewClient(result.Config)
@@ -533,7 +537,11 @@ func main() {
 	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
 	transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
 	httpClient := &http.Client{Transport: transport}
-	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
+
+	factory := func(baseURL string) (BlobStreamer, BlobUploader) {
+		client := blob.NewHTTPBlobClient(baseURL, httpClient)
+		return client, client
+	}
 
 	// Set up blob delete publisher
 	blobDeleteQueueURL := os.Getenv("BLOB_DELETE_QUEUE_URL")
@@ -543,8 +551,7 @@ func main() {
 		blobPub = blobdelete.NewSQSPublisher(sqsClient, blobDeleteQueueURL)
 	}
 
-	// HTTPBlobClient implements both BlobStreamer and BlobUploader
 	// Pass dynamoClient as TransactWriter for atomic operations
-	h := newHandler(repo, blobClient, blobClient, mailboxRepo, stateRepo, dynamoClient, blobPub)
+	h := newHandler(repo, factory, mailboxRepo, stateRepo, dynamoClient, blobPub)
 	result.Start(h.handle)
 }

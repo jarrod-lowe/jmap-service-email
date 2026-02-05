@@ -54,18 +54,18 @@ type BlobStreamer interface {
 
 // handler implements the Email/get logic.
 type handler struct {
-	repo                  EmailRepository
-	stateRepo             StateRepository
-	blobStreamer          BlobStreamer
+	repo                    EmailRepository
+	stateRepo               StateRepository
+	blobStreamerFactory     func(baseURL string) BlobStreamer
 	serverMaxBodyValueBytes int
 }
 
 // newHandler creates a new handler.
-func newHandler(repo EmailRepository, stateRepo StateRepository, blobStreamer BlobStreamer, serverMaxBodyValueBytes int) *handler {
+func newHandler(repo EmailRepository, stateRepo StateRepository, blobStreamerFactory func(baseURL string) BlobStreamer, serverMaxBodyValueBytes int) *handler {
 	return &handler{
 		repo:                    repo,
 		stateRepo:               stateRepo,
-		blobStreamer:            blobStreamer,
+		blobStreamerFactory:     blobStreamerFactory,
 		serverMaxBodyValueBytes: serverMaxBodyValueBytes,
 	}
 }
@@ -130,6 +130,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		maxBodyValueBytes = h.serverMaxBodyValueBytes
 	}
 
+	// Create blob streamer from request APIURL
+	var blobStreamer BlobStreamer
+	if h.blobStreamerFactory != nil && request.APIURL != "" {
+		blobStreamer = h.blobStreamerFactory(request.APIURL)
+	}
+
 	// Fetch emails
 	var list []any
 	var notFound []any
@@ -158,10 +164,10 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 		// Fetch raw headers if header:* properties requested
 		var rawHeaders textproto.MIMEHeader
-		if len(headerProps) > 0 && h.blobStreamer != nil && emailItem.HeaderSize > 0 {
+		if len(headerProps) > 0 && blobStreamer != nil && emailItem.HeaderSize > 0 {
 			// Build range blob ID: {blobId},0,{headerSize}
 			rangeBlobID := fmt.Sprintf("%s,0,%d", emailItem.BlobID, emailItem.HeaderSize)
-			headerReader, err := h.blobStreamer.Stream(ctx, accountID, rangeBlobID)
+			headerReader, err := blobStreamer.Stream(ctx, accountID, rangeBlobID)
 			if err != nil {
 				logger.WarnContext(ctx, "Failed to fetch headers",
 					slog.String("email_id", emailID),
@@ -174,7 +180,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 
 		// Transform email to response format
-		emailMap := h.transformEmail(ctx, accountID, emailItem, properties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues, maxBodyValueBytes)
+		emailMap := h.transformEmail(ctx, accountID, emailItem, properties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues, maxBodyValueBytes, blobStreamer)
 		list = append(list, emailMap)
 	}
 
@@ -279,12 +285,12 @@ func collectAllTextPartIDs(bp email.BodyPart, seen map[string]bool, partIDs *[]s
 }
 
 // fetchBodyValue fetches and decodes the content of a body part.
-func (h *handler) fetchBodyValue(ctx context.Context, accountID string, part *email.BodyPart, maxBytes int) (value string, isTruncated bool, isEncodingProblem bool) {
-	if h.blobStreamer == nil || part == nil || part.BlobID == "" {
+func fetchBodyValue(ctx context.Context, blobStreamer BlobStreamer, accountID string, part *email.BodyPart, maxBytes int) (value string, isTruncated bool, isEncodingProblem bool) {
+	if blobStreamer == nil || part == nil || part.BlobID == "" {
 		return "", false, true
 	}
 
-	reader, err := h.blobStreamer.Stream(ctx, accountID, part.BlobID)
+	reader, err := blobStreamer.Stream(ctx, accountID, part.BlobID)
 	if err != nil {
 		logger.WarnContext(ctx, "Failed to stream body part",
 			slog.String("blob_id", part.BlobID),
@@ -325,14 +331,14 @@ func (h *handler) fetchBodyValue(ctx context.Context, accountID string, part *em
 }
 
 // buildBodyValues creates bodyValues entries by fetching actual content.
-func (h *handler) buildBodyValues(ctx context.Context, accountID string, e *email.EmailItem, fetchText, fetchHTML, fetchAll bool, maxBytes int) map[string]any {
+func buildBodyValues(ctx context.Context, blobStreamer BlobStreamer, accountID string, e *email.EmailItem, fetchText, fetchHTML, fetchAll bool, maxBytes int) map[string]any {
 	result := map[string]any{}
 
 	partIDs := collectBodyPartIDs(e, fetchText, fetchHTML, fetchAll)
 
 	for _, partID := range partIDs {
 		part := findBodyPart(e.BodyStructure, partID)
-		value, isTruncated, isEncodingProblem := h.fetchBodyValue(ctx, accountID, part, maxBytes)
+		value, isTruncated, isEncodingProblem := fetchBodyValue(ctx, blobStreamer, accountID, part, maxBytes)
 		result[partID] = map[string]any{
 			"value":             value,
 			"isTruncated":       isTruncated,
@@ -345,7 +351,7 @@ func (h *handler) buildBodyValues(ctx context.Context, accountID string, e *emai
 
 // transformEmail converts an EmailItem to the JMAP response format.
 // If properties is non-empty, only those properties are included.
-func (h *handler) transformEmail(ctx context.Context, accountID string, e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool, maxBodyValueBytes int) map[string]any {
+func (h *handler) transformEmail(ctx context.Context, accountID string, e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool, maxBodyValueBytes int, blobStreamer BlobStreamer) map[string]any {
 	// Build full email map
 	full := map[string]any{
 		"id":            e.EmailID,
@@ -372,7 +378,7 @@ func (h *handler) transformEmail(ctx context.Context, accountID string, e *email
 		"textBody":      transformBodyPartRefs(e.TextBody),
 		"htmlBody":      transformBodyPartRefs(e.HTMLBody),
 		"attachments":   transformBodyPartRefs(e.Attachments),
-		"bodyValues":    h.buildBodyValues(ctx, accountID, e, fetchText, fetchHTML, fetchAll, maxBodyValueBytes),
+		"bodyValues":    buildBodyValues(ctx, blobStreamer, accountID, e, fetchText, fetchHTML, fetchAll, maxBodyValueBytes),
 	}
 
 	// Add header:* properties if requested
@@ -567,7 +573,6 @@ func main() {
 
 	// Load config from environment
 	tableName := os.Getenv("EMAIL_TABLE_NAME")
-	coreAPIURL := os.Getenv("CORE_API_URL")
 
 	// Parse max body value bytes from environment (default if not set or invalid)
 	serverMaxBodyValueBytes := defaultMaxBodyValueBytes
@@ -599,8 +604,11 @@ func main() {
 	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
 	transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
 	httpClient := &http.Client{Transport: transport}
-	blobClient := blob.NewHTTPBlobClient(coreAPIURL, httpClient)
 
-	h := newHandler(repo, stateRepo, blobClient, serverMaxBodyValueBytes)
+	factory := func(baseURL string) BlobStreamer {
+		return blob.NewHTTPBlobClient(baseURL, httpClient)
+	}
+
+	h := newHandler(repo, stateRepo, factory, serverMaxBodyValueBytes)
 	result.Start(h.handle)
 }

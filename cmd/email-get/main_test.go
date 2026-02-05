@@ -52,6 +52,11 @@ func (m *mockBlobStreamer) Stream(ctx context.Context, accountID, blobID string)
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
+// mockBlobFactory wraps a BlobStreamer in a factory function for testing.
+func mockBlobFactory(bs BlobStreamer) func(string) BlobStreamer {
+	return func(_ string) BlobStreamer { return bs }
+}
+
 // Helper to create a test email item.
 func testEmailItem(accountID, emailID string) *emailItem {
 	return &emailItem{
@@ -78,6 +83,45 @@ func testEmailItem(accountID, emailID string) *emailItem {
 		TextBody:      []string{"1"},
 		HTMLBody:      nil,
 		Attachments:   nil,
+	}
+}
+
+func TestHandler_FactoryReceivesAPIURL(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	var capturedURL string
+	mock := &mockBlobStreamer{}
+	factory := func(baseURL string) BlobStreamer {
+		capturedURL = baseURL
+		return mock
+	}
+
+	h := newHandler(mockRepo, nil, factory, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		APIURL:    "https://api.example.com/prod",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"ids":       []any{"email-1"},
+		},
+	}
+
+	_, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if capturedURL != "https://api.example.com/prod" {
+		t.Errorf("factory received URL %q, want %q", capturedURL, "https://api.example.com/prod")
 	}
 }
 
@@ -363,13 +407,14 @@ func TestHandler_HeaderPropertySupported(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":  "user-123",
 			"ids":        []any{"email-1"},
@@ -411,7 +456,7 @@ func TestHandler_HeaderPropertyInvalidForm(t *testing.T) {
 	mockRepo := &mockEmailRepository{}
 	mockBlobStreamer := &mockBlobStreamer{}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	// Try to use asDate form on Subject (not allowed)
 	request := plugincontract.PluginInvocationRequest{
@@ -419,6 +464,7 @@ func TestHandler_HeaderPropertyInvalidForm(t *testing.T) {
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":  "user-123",
 			"ids":        []any{"email-1"},
@@ -462,13 +508,14 @@ func TestHandler_HeaderPropertyWithForm(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":  "user-123",
 			"ids":        []any{"email-1"},
@@ -1242,13 +1289,14 @@ func TestHandler_FetchTextBodyValues(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -1334,13 +1382,14 @@ func TestHandler_FetchHTMLBodyValues(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -1425,13 +1474,14 @@ func TestHandler_FetchAllBodyValues(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":          "user-123",
 			"ids":                []any{"email-1"},
@@ -1567,13 +1617,14 @@ func TestHandler_FetchHTMLBodyValuesFallsBackToTextBody(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -1658,13 +1709,14 @@ func TestHandler_FetchHTMLBodyValuesDoesNotFallbackWhenHTMLExists(t *testing.T) 
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -1730,13 +1782,14 @@ func TestHandler_HeaderAllModifierReturnEmptyArrayForMissingHeader(t *testing.T)
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId": "user-123",
 			"ids":       []any{"email-1"},
@@ -1959,13 +2012,14 @@ func TestHandler_FetchTextBodyValues_ReturnsActualContent(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -2039,13 +2093,14 @@ func TestHandler_FetchBodyValues_Truncation(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -2119,13 +2174,14 @@ func TestHandler_FetchBodyValues_CharsetDecoding(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -2193,13 +2249,14 @@ func TestHandler_FetchBodyValues_MissingBlob(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},
@@ -2270,13 +2327,14 @@ func TestHandler_FetchHTMLBodyValues_ReturnsActualContent(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mockRepo, nil, mockBlobStreamer, defaultMaxBodyValueBytes)
+	h := newHandler(mockRepo, nil, mockBlobFactory(mockBlobStreamer), defaultMaxBodyValueBytes)
 
 	request := plugincontract.PluginInvocationRequest{
 		RequestID: "req-123",
 		AccountID: "user-123",
 		Method:    "Email/get",
 		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
 		Args: map[string]any{
 			"accountId":           "user-123",
 			"ids":                 []any{"email-1"},

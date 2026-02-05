@@ -669,10 +669,11 @@ func (r *Repository) BuildDeleteEmailItems(emailItem *EmailItem) []types.Transac
 	return items
 }
 
-// BuildSoftDeleteEmailItem returns a transaction item that sets deletedAt on an email,
+// BuildSoftDeleteEmailItem returns a transaction item that sets deletedAt and apiUrl on an email,
 // incrementing the version with an optimistic lock. This is used instead of hard-deleting
 // the email record; a DynamoDB Streams handler performs actual cleanup.
-func (r *Repository) BuildSoftDeleteEmailItem(emailItem *EmailItem, deletedAt time.Time) types.TransactWriteItem {
+// The apiURL is stored so the cleanup handler knows which API endpoint to use for blob deletion.
+func (r *Repository) BuildSoftDeleteEmailItem(emailItem *EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem {
 	return types.TransactWriteItem{
 		Update: &types.Update{
 			TableName: aws.String(r.tableName),
@@ -680,10 +681,11 @@ func (r *Repository) BuildSoftDeleteEmailItem(emailItem *EmailItem, deletedAt ti
 				dynamo.AttrPK: &types.AttributeValueMemberS{Value: emailItem.PK()},
 				dynamo.AttrSK: &types.AttributeValueMemberS{Value: emailItem.SK()},
 			},
-			UpdateExpression:    aws.String("SET " + AttrDeletedAt + " = :deletedAt, " + AttrVersion + " = :newVersion"),
+			UpdateExpression:    aws.String("SET " + AttrDeletedAt + " = :deletedAt, " + AttrAPIURL + " = :apiUrl, " + AttrVersion + " = :newVersion"),
 			ConditionExpression: aws.String("attribute_exists(" + dynamo.AttrPK + ") AND " + AttrVersion + " = :expectedVersion AND attribute_not_exists(" + AttrDeletedAt + ")"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":deletedAt":       &types.AttributeValueMemberS{Value: deletedAt.UTC().Format(time.RFC3339)},
+				":apiUrl":          &types.AttributeValueMemberS{Value: apiURL},
 				":expectedVersion": &types.AttributeValueMemberN{Value: strconv.Itoa(emailItem.Version)},
 				":newVersion":      &types.AttributeValueMemberN{Value: strconv.Itoa(emailItem.Version + 1)},
 			},

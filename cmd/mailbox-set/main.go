@@ -54,7 +54,7 @@ type TransactWriter interface {
 type EmailRepository interface {
 	QueryEmailsByMailbox(ctx context.Context, accountID, mailboxID string) ([]string, error)
 	GetEmail(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
-	BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
+	BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem
 	BuildUpdateEmailMailboxesItems(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
@@ -160,7 +160,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		onDestroyRemoveEmails := request.Args.BoolOr("onDestroyRemoveEmails", false)
 
 		for _, mailboxID := range destroyIDs {
-			result, err := h.destroyMailbox(ctx, accountID, mailboxID, onDestroyRemoveEmails, newState)
+			result, err := h.destroyMailbox(ctx, accountID, mailboxID, onDestroyRemoveEmails, newState, request.APIURL)
 			if err != nil {
 				notDestroyed[mailboxID] = err
 			} else {
@@ -434,7 +434,7 @@ func (h *handler) updateMailbox(ctx context.Context, accountID, mailboxID string
 }
 
 // destroyMailbox deletes a mailbox.
-func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID string, onDestroyRemoveEmails bool, currentState int64) (map[string]any, map[string]any) {
+func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID string, onDestroyRemoveEmails bool, currentState int64, apiURL string) (map[string]any, map[string]any) {
 	// Get mailbox to check if it has emails
 	mbox, err := h.repo.GetMailbox(ctx, accountID, mailboxID)
 	if err != nil {
@@ -481,7 +481,7 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 
 		// If onDestroyRemoveEmails and mailbox had emails, synchronously clean up
 		if onDestroyRemoveEmails && mbox.TotalEmails > 0 && h.emailRepo != nil {
-			if cleanupErr := h.cleanupMailboxEmails(ctx, accountID, mailboxID); cleanupErr != nil {
+			if cleanupErr := h.cleanupMailboxEmails(ctx, accountID, mailboxID, apiURL); cleanupErr != nil {
 				logger.ErrorContext(ctx, "Failed to clean up mailbox emails",
 					slog.String("account_id", accountID),
 					slog.String("mailbox_id", mailboxID),
@@ -531,7 +531,7 @@ func (h *handler) destroyMailbox(ctx context.Context, accountID, mailboxID strin
 // cleanupMailboxEmails handles email cleanup when a mailbox is destroyed with onDestroyRemoveEmails=true.
 // For orphaned emails (only in destroyed mailbox), sets deletedAt.
 // For multi-mailbox emails, removes the destroyed mailbox from mailboxIds.
-func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID string) error {
+func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID, apiURL string) error {
 	emailIDs, err := h.emailRepo.QueryEmailsByMailbox(ctx, accountID, mailboxID)
 	if err != nil {
 		return err
@@ -555,7 +555,7 @@ func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID
 		if len(emailItem.MailboxIDs) == 1 {
 			// Orphaned email — soft-delete
 			var transactItems []types.TransactWriteItem
-			transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, now))
+			transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, now, apiURL))
 
 			if h.stateRepo != nil {
 				emailState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)

@@ -80,7 +80,9 @@ func (h *handler) handle(ctx context.Context, event events.DynamoDBEvent) error 
 			continue
 		}
 
-		if err := h.processEmailCleanup(ctx, accountID, emailID); err != nil {
+		apiURL := getStringAttr(newImage, email.AttrAPIURL)
+
+		if err := h.processEmailCleanup(ctx, accountID, emailID, apiURL); err != nil {
 			logger.ErrorContext(ctx, "Failed to process email cleanup",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailID),
@@ -94,7 +96,7 @@ func (h *handler) handle(ctx context.Context, event events.DynamoDBEvent) error 
 }
 
 // processEmailCleanup handles the actual deletion of an email and its related records.
-func (h *handler) processEmailCleanup(ctx context.Context, accountID, emailID string) error {
+func (h *handler) processEmailCleanup(ctx context.Context, accountID, emailID, apiURL string) error {
 	// Fetch the full email item
 	emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 	if err != nil {
@@ -119,7 +121,7 @@ func (h *handler) processEmailCleanup(ctx context.Context, accountID, emailID st
 	// Publish blob deletions (best-effort)
 	blobIDs := collectBlobIDs(emailItem)
 	if h.blobDeletePublisher != nil && len(blobIDs) > 0 {
-		if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs); err != nil {
+		if err := h.blobDeletePublisher.PublishBlobDeletions(ctx, accountID, blobIDs, apiURL); err != nil {
 			logger.ErrorContext(ctx, "Failed to publish blob deletions",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailID),

@@ -22,7 +22,6 @@ resource "aws_lambda_function" "email_import" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
-      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
 
       # OpenTelemetry SDK Configuration
@@ -78,7 +77,6 @@ resource "aws_lambda_function" "email_get" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
-      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
       MAX_BODY_VALUE_BYTES                = tostring(var.max_body_value_bytes)
 
       # OpenTelemetry SDK Configuration
@@ -185,7 +183,6 @@ resource "aws_lambda_function" "email_set" {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
-      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
 
       # OpenTelemetry SDK Configuration
@@ -555,7 +552,6 @@ resource "aws_lambda_function" "blob_delete" {
     variables = {
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
-      CORE_API_URL                        = data.aws_ssm_parameter.jmap_api_gateway_invoke_url.value
 
       # OpenTelemetry SDK Configuration
       OTEL_SERVICE_NAME           = "${local.name_prefix}-blob-delete"

@@ -41,4 +41,5 @@ const (
 	AttrEmail         = "email"
 	AttrVersion       = "version"
 	AttrDeletedAt     = "deletedAt"
+	AttrAPIURL        = "apiUrl"
 )

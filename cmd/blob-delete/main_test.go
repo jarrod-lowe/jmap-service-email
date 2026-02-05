@@ -21,10 +21,11 @@ func (m *mockBlobDeleter) Delete(ctx context.Context, accountID, blobID string) 
 	return nil
 }
 
-func makeRecord(accountID string, blobIDs []string) events.SQSMessage {
+func makeRecord(accountID string, blobIDs []string, apiURL string) events.SQSMessage {
 	msg := blobdelete.BlobDeleteMessage{
 		AccountID: accountID,
 		BlobIDs:   blobIDs,
+		APIURL:    apiURL,
 	}
 	body, _ := json.Marshal(msg)
 	return events.SQSMessage{
@@ -42,10 +43,10 @@ func TestHandler_SuccessfulDeletion(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(func(baseURL string) BlobDeleter { return mock })
 	resp, err := h.handle(context.Background(), events.SQSEvent{
 		Records: []events.SQSMessage{
-			makeRecord("user-123", []string{"blob-1", "blob-2"}),
+			makeRecord("user-123", []string{"blob-1", "blob-2"}, "https://api.example.com/stage"),
 		},
 	})
 
@@ -60,6 +61,27 @@ func TestHandler_SuccessfulDeletion(t *testing.T) {
 	}
 }
 
+func TestHandler_FactoryReceivesAPIURL(t *testing.T) {
+	var capturedURL string
+	mock := &mockBlobDeleter{}
+
+	factory := func(baseURL string) BlobDeleter {
+		capturedURL = baseURL
+		return mock
+	}
+
+	h := newHandler(factory)
+	_, _ = h.handle(context.Background(), events.SQSEvent{
+		Records: []events.SQSMessage{
+			makeRecord("user-123", []string{"blob-1"}, "https://api.test.com/v1"),
+		},
+	})
+
+	if capturedURL != "https://api.test.com/v1" {
+		t.Errorf("factory received URL %q, want %q", capturedURL, "https://api.test.com/v1")
+	}
+}
+
 func TestHandler_BlobDeleteError_ReportsFailure(t *testing.T) {
 	mock := &mockBlobDeleter{
 		deleteFunc: func(ctx context.Context, accountID, blobID string) error {
@@ -67,10 +89,10 @@ func TestHandler_BlobDeleteError_ReportsFailure(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(func(baseURL string) BlobDeleter { return mock })
 	resp, err := h.handle(context.Background(), events.SQSEvent{
 		Records: []events.SQSMessage{
-			makeRecord("user-123", []string{"blob-1"}),
+			makeRecord("user-123", []string{"blob-1"}, "https://api.example.com/stage"),
 		},
 	})
 
@@ -85,7 +107,7 @@ func TestHandler_BlobDeleteError_ReportsFailure(t *testing.T) {
 func TestHandler_InvalidJSON_ReportsFailure(t *testing.T) {
 	mock := &mockBlobDeleter{}
 
-	h := newHandler(mock)
+	h := newHandler(func(baseURL string) BlobDeleter { return mock })
 	resp, err := h.handle(context.Background(), events.SQSEvent{
 		Records: []events.SQSMessage{
 			{MessageId: "msg-bad", Body: "not json"},
@@ -112,11 +134,11 @@ func TestHandler_PartialFailure(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(func(baseURL string) BlobDeleter { return mock })
 	resp, err := h.handle(context.Background(), events.SQSEvent{
 		Records: []events.SQSMessage{
-			makeRecord("user-123", []string{"blob-ok"}),
-			makeRecord("user-123", []string{"blob-fail"}),
+			makeRecord("user-123", []string{"blob-ok"}, "https://api.example.com/stage"),
+			makeRecord("user-123", []string{"blob-fail"}, "https://api.example.com/stage"),
 		},
 	})
 
@@ -139,10 +161,10 @@ func TestHandler_MultipleBlobs_OneFailsReportsWholeMessage(t *testing.T) {
 		},
 	}
 
-	h := newHandler(mock)
+	h := newHandler(func(baseURL string) BlobDeleter { return mock })
 	resp, err := h.handle(context.Background(), events.SQSEvent{
 		Records: []events.SQSMessage{
-			makeRecord("user-123", []string{"blob-1", "blob-2", "blob-3"}),
+			makeRecord("user-123", []string{"blob-1", "blob-2", "blob-3"}, "https://api.example.com/stage"),
 		},
 	})
 

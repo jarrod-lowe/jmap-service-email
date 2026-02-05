@@ -1860,7 +1860,7 @@ func TestRepository_BuildSoftDeleteEmailItem(t *testing.T) {
 		ReceivedAt: now,
 	}
 
-	item := repo.BuildSoftDeleteEmailItem(emailItem, now)
+	item := repo.BuildSoftDeleteEmailItem(emailItem, now, "https://api.example.com/stage")
 
 	if item.Update == nil {
 		t.Fatal("Expected an Update operation")
@@ -1868,7 +1868,7 @@ func TestRepository_BuildSoftDeleteEmailItem(t *testing.T) {
 	if *item.Update.TableName != "test-table" {
 		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
 	}
-	// Should set deletedAt and increment version with condition on current version
+	// Should set deletedAt, apiUrl, and increment version with condition on current version
 	if item.Update.ConditionExpression == nil {
 		t.Fatal("Expected a ConditionExpression")
 	}
@@ -1881,6 +1881,9 @@ func TestRepository_BuildSoftDeleteEmailItem(t *testing.T) {
 	}
 	if v, ok := vals[":deletedAt"].(*types.AttributeValueMemberS); !ok || v.Value != "2024-01-15T12:00:00Z" {
 		t.Errorf("Expected deletedAt = 2024-01-15T12:00:00Z")
+	}
+	if v, ok := vals[":apiUrl"].(*types.AttributeValueMemberS); !ok || v.Value != "https://api.example.com/stage" {
+		t.Errorf("Expected apiUrl = https://api.example.com/stage, got %v", vals[":apiUrl"])
 	}
 }
 

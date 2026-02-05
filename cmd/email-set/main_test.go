@@ -19,7 +19,7 @@ type mockEmailRepository struct {
 	getEmailFunc                       func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
 	updateEmailKeywordsFunc            func(ctx context.Context, accountID, emailID string, newKeywords map[string]bool, expectedVersion int) (*email.EmailItem, error)
 	buildDeleteEmailItemsFunc          func(emailItem *email.EmailItem) []types.TransactWriteItem
-	buildSoftDeleteEmailItemFunc       func(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem
+	buildSoftDeleteEmailItemFunc       func(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem
 	buildUpdateEmailMailboxesItemsFunc func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) (addedMailboxes []string, removedMailboxes []string, items []types.TransactWriteItem)
 }
 
@@ -51,9 +51,9 @@ func (m *mockEmailRepository) BuildDeleteEmailItems(emailItem *email.EmailItem) 
 	return []types.TransactWriteItem{}
 }
 
-func (m *mockEmailRepository) BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time) types.TransactWriteItem {
+func (m *mockEmailRepository) BuildSoftDeleteEmailItem(emailItem *email.EmailItem, deletedAt time.Time, apiURL string) types.TransactWriteItem {
 	if m.buildSoftDeleteEmailItemFunc != nil {
-		return m.buildSoftDeleteEmailItemFunc(emailItem, deletedAt)
+		return m.buildSoftDeleteEmailItemFunc(emailItem, deletedAt, apiURL)
 	}
 	return types.TransactWriteItem{Update: &types.Update{}}
 }
@@ -152,12 +152,12 @@ func (m *mockStateRepository) BuildStateChangeItemsMulti(accountID string, objec
 }
 
 type mockBlobDeletePublisher struct {
-	publishFunc func(ctx context.Context, accountID string, blobIDs []string) error
+	publishFunc func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
-func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, blobIDs)
+		return m.publishFunc(ctx, accountID, blobIDs, apiURL)
 	}
 	return nil
 }
@@ -1284,7 +1284,7 @@ func TestHandler_DestroyEmail_Success(t *testing.T) {
 
 	var publishedBlobIDs []string
 	mockBlobPub := &mockBlobDeletePublisher{
-		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 			publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
 			return nil
 		},
@@ -1455,7 +1455,7 @@ func TestHandler_DestroyEmail_BlobDeleteError_StillSucceeds(t *testing.T) {
 	}
 
 	mockBlobPub := &mockBlobDeletePublisher{
-		publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+		publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 			return errors.New("sqs publish failed")
 		},
 	}

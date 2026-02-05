@@ -46,17 +46,21 @@ func (m *mockTransactWriter) TransactWriteItems(ctx context.Context, input *dyna
 
 // mockBlobDeletePublisher implements BlobDeletePublisher for testing.
 type mockBlobDeletePublisher struct {
-	publishFunc func(ctx context.Context, accountID string, blobIDs []string) error
+	publishFunc func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
-func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string) error {
+func (m *mockBlobDeletePublisher) PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, blobIDs)
+		return m.publishFunc(ctx, accountID, blobIDs, apiURL)
 	}
 	return nil
 }
 
 func makeDynamoDBEvent(oldHasDeletedAt, newHasDeletedAt bool) events.DynamoDBEvent {
+	return makeDynamoDBEventWithAPIURL(oldHasDeletedAt, newHasDeletedAt, "")
+}
+
+func makeDynamoDBEventWithAPIURL(oldHasDeletedAt, newHasDeletedAt bool, apiURL string) events.DynamoDBEvent {
 	oldImage := map[string]events.DynamoDBAttributeValue{
 		email.AttrAccountID: events.NewStringAttribute("user-1"),
 		email.AttrEmailID:   events.NewStringAttribute("email-1"),
@@ -70,6 +74,9 @@ func makeDynamoDBEvent(oldHasDeletedAt, newHasDeletedAt bool) events.DynamoDBEve
 	}
 	if newHasDeletedAt {
 		newImage[email.AttrDeletedAt] = events.NewStringAttribute("2024-01-15T12:00:00Z")
+	}
+	if apiURL != "" {
+		newImage[email.AttrAPIURL] = events.NewStringAttribute(apiURL)
 	}
 
 	return events.DynamoDBEvent{
@@ -112,7 +119,7 @@ func TestHandler_SoftDeleteTriggersCleanup(t *testing.T) {
 			},
 		},
 		&mockBlobDeletePublisher{
-			publishFunc: func(ctx context.Context, accountID string, blobIDs []string) error {
+			publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
 				publishedBlobIDs = append(publishedBlobIDs, blobIDs...)
 				return nil
 			},
@@ -237,5 +244,48 @@ func TestHandler_NonModifyEventsIgnored(t *testing.T) {
 	}
 	if getCalled {
 		t.Error("GetEmail should not have been called for non-MODIFY events")
+	}
+}
+
+// Test: apiUrl from stream newImage is passed to blob delete publisher
+func TestHandler_APIURLFromStreamPassedToPublisher(t *testing.T) {
+	now := time.Now()
+	var capturedAPIURL string
+
+	h := newHandler(
+		&mockEmailRepository{
+			getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+				deletedAt := now
+				return &email.EmailItem{
+					AccountID:  "user-1",
+					EmailID:    "email-1",
+					BlobID:     "blob-1",
+					ThreadID:   "thread-1",
+					MailboxIDs: map[string]bool{"mbox-1": true},
+					ReceivedAt: now,
+					DeletedAt:  &deletedAt,
+					Version:    2,
+				}, nil
+			},
+			buildDeleteEmailItemsFunc: func(emailItem *email.EmailItem) []types.TransactWriteItem {
+				return []types.TransactWriteItem{{Delete: &types.Delete{}}}
+			},
+		},
+		&mockBlobDeletePublisher{
+			publishFunc: func(ctx context.Context, accountID string, blobIDs []string, apiURL string) error {
+				capturedAPIURL = apiURL
+				return nil
+			},
+		},
+		&mockTransactWriter{},
+	)
+
+	err := h.handle(context.Background(), makeDynamoDBEventWithAPIURL(false, true, "https://api.example.com/stage"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAPIURL != "https://api.example.com/stage" {
+		t.Errorf("apiURL = %q, want %q", capturedAPIURL, "https://api.example.com/stage")
 	}
 }
