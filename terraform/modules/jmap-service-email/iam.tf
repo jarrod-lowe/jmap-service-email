@@ -94,7 +94,7 @@ resource "aws_iam_role_policy_attachment" "dynamodb_email_data" {
   policy_arn = aws_iam_policy.dynamodb_email_data.arn
 }
 
-# Policy document for invoking core API Gateway (IAM-authenticated download endpoint)
+# Policy document for invoking core API Gateway (IAM-authenticated blob endpoints)
 data "aws_iam_policy_document" "api_gateway_invoke" {
   statement {
     effect  = "Allow"
@@ -102,6 +102,7 @@ data "aws_iam_policy_document" "api_gateway_invoke" {
     resources = [
       "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/GET/download-iam/*",
       "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/DELETE/delete-iam/*",
+      "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/POST/upload-iam/*",
     ]
   }
 }
