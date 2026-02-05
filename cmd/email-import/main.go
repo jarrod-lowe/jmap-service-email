@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
@@ -126,12 +126,9 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse request args
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
-	emailsArg, ok := request.Args["emails"].(map[string]any)
+	emailsArg, ok := request.Args.Object("emails")
 	if !ok {
 		return plugincontract.PluginInvocationResponse{
 			MethodResponse: plugincontract.MethodResponse{

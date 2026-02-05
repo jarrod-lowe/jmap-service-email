@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
@@ -61,25 +61,16 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse request args
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Extract and validate properties (optional)
 	var properties []string
-	if propsArg, ok := request.Args["properties"]; ok && propsArg != nil {
-		propsSlice, ok := propsArg.([]any)
+	if request.Args.Has("properties") && request.Args["properties"] != nil {
+		props, ok := request.Args.StringSlice("properties")
 		if !ok {
-			return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties argument must be an array")), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties must be an array of strings")), nil
 		}
-		for _, p := range propsSlice {
-			prop, ok := p.(string)
-			if !ok {
-				return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties must contain strings")), nil
-			}
-			properties = append(properties, prop)
-		}
+		properties = props
 	}
 
 	// Check if ids is nil (get all) or a list

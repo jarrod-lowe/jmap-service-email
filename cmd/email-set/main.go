@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
@@ -91,10 +91,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Email/set")), nil
 	}
 
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Get old state
 	oldState := int64(0)
@@ -111,16 +108,15 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Check ifInState (handles both string and numeric values)
-	if ifInStateRaw, ok := request.Args["ifInState"]; ok {
+	if request.Args.Has("ifInState") {
 		var expectedState int64
 		var parseErr error
 
-		switch v := ifInStateRaw.(type) {
-		case string:
-			expectedState, parseErr = strconv.ParseInt(v, 10, 64)
-		case float64:
-			expectedState = int64(v)
-		default:
+		if strVal, ok := request.Args.String("ifInState"); ok {
+			expectedState, parseErr = strconv.ParseInt(strVal, 10, 64)
+		} else if intVal, ok := request.Args.Int("ifInState"); ok {
+			expectedState = intVal
+		} else {
 			parseErr = errors.New("invalid ifInState type")
 		}
 
@@ -140,14 +136,14 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	affectedMailboxes := make(map[string]bool)
 
 	// Handle create (not supported)
-	if createArg, ok := request.Args["create"].(map[string]any); ok {
+	if createArg, ok := request.Args.Object("create"); ok {
 		for clientID := range createArg {
 			notCreated[clientID] = jmaperror.SetForbidden("Email/set create is not supported. Use Email/import instead.").ToMap()
 		}
 	}
 
 	// Handle update
-	if updateArg, ok := request.Args["update"].(map[string]any); ok {
+	if updateArg, ok := request.Args.Object("update"); ok {
 		for emailID, updateData := range updateArg {
 			data, ok := updateData.(map[string]any)
 			if !ok {
@@ -199,12 +195,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Handle destroy
-	if destroyArg, ok := request.Args["destroy"].([]any); ok {
-		for _, id := range destroyArg {
-			emailID, ok := id.(string)
-			if !ok {
-				continue
-			}
+	if destroyIDs, ok := request.Args.StringSlice("destroy"); ok {
+		for _, emailID := range destroyIDs {
 			destroyNewState, destroyErr := h.destroyEmail(ctx, accountID, emailID, affectedMailboxes)
 			if destroyErr != nil {
 				notDestroyed[emailID] = destroyErr

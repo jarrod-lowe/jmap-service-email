@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
@@ -53,20 +53,12 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse request args
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Extract sinceState (required)
-	sinceStateArg, ok := request.Args["sinceState"]
+	sinceStateStr, ok := request.Args.String("sinceState")
 	if !ok {
 		return errorResponse(request.ClientID, jmaperror.InvalidArguments("sinceState argument is required")), nil
-	}
-
-	sinceStateStr, ok := sinceStateArg.(string)
-	if !ok {
-		return errorResponse(request.ClientID, jmaperror.InvalidArguments("sinceState must be a string")), nil
 	}
 
 	sinceState, err := strconv.ParseInt(sinceStateStr, 10, 64)
@@ -74,16 +66,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		return errorResponse(request.ClientID, jmaperror.CannotCalculateChanges("sinceState does not represent a valid state")), nil
 	}
 
-	// Extract maxChanges (optional)
-	maxChanges := 0 // 0 means no limit
-	if maxChangesArg, ok := request.Args["maxChanges"]; ok {
-		switch v := maxChangesArg.(type) {
-		case float64:
-			maxChanges = int(v)
-		case int:
-			maxChanges = v
-		}
-	}
+	// Extract maxChanges (optional, 0 means no limit)
+	maxChanges := int(request.Args.IntOr("maxChanges", 0))
 
 	// Get current state
 	currentState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)

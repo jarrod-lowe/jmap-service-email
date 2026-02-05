@@ -18,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/charset"
@@ -82,35 +82,27 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse request args
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Extract and validate ids
-	idsArg, ok := request.Args["ids"]
-	if !ok {
+	if !request.Args.Has("ids") {
 		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument is required")), nil
 	}
 
-	idsSlice, ok := idsArg.([]any)
+	ids, ok := request.Args.StringSlice("ids")
 	if !ok {
-		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument must be an array")), nil
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must be an array of strings")), nil
 	}
 
 	// Extract and validate properties (optional)
 	var properties []string
 	var headerProps []*headers.HeaderProperty
-	if propsArg, ok := request.Args["properties"]; ok {
-		propsSlice, ok := propsArg.([]any)
+	if request.Args.Has("properties") {
+		props, ok := request.Args.StringSlice("properties")
 		if !ok {
-			return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties argument must be an array")), nil
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties must be an array of strings")), nil
 		}
-		for _, p := range propsSlice {
-			prop, ok := p.(string)
-			if !ok {
-				return errorResponse(request.ClientID, jmaperror.InvalidArguments("properties must contain strings")), nil
-			}
+		for _, prop := range props {
 			// Parse and validate header:* properties
 			if headers.IsHeaderProperty(prop) {
 				headerProp, err := headers.ParseHeaderProperty(prop)
@@ -128,27 +120,14 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse fetch body values flags
-	fetchTextBodyValues, _ := request.Args["fetchTextBodyValues"].(bool)
-	fetchHTMLBodyValues, _ := request.Args["fetchHTMLBodyValues"].(bool)
-	fetchAllBodyValues, _ := request.Args["fetchAllBodyValues"].(bool)
+	fetchTextBodyValues := request.Args.BoolOr("fetchTextBodyValues", false)
+	fetchHTMLBodyValues := request.Args.BoolOr("fetchHTMLBodyValues", false)
+	fetchAllBodyValues := request.Args.BoolOr("fetchAllBodyValues", false)
 
 	// Parse maxBodyValueBytes (default to server max if not specified or invalid)
-	maxBodyValueBytes := h.serverMaxBodyValueBytes
-	if v, ok := request.Args["maxBodyValueBytes"].(float64); ok && v > 0 {
-		maxBodyValueBytes = int(v)
-		if maxBodyValueBytes > h.serverMaxBodyValueBytes {
-			maxBodyValueBytes = h.serverMaxBodyValueBytes
-		}
-	}
-
-	// Convert IDs to strings
-	var ids []string
-	for _, id := range idsSlice {
-		idStr, ok := id.(string)
-		if !ok {
-			return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must contain strings")), nil
-		}
-		ids = append(ids, idStr)
+	maxBodyValueBytes := int(request.Args.IntOr("maxBodyValueBytes", int64(h.serverMaxBodyValueBytes)))
+	if maxBodyValueBytes <= 0 || maxBodyValueBytes > h.serverMaxBodyValueBytes {
+		maxBodyValueBytes = h.serverMaxBodyValueBytes
 	}
 
 	// Fetch emails

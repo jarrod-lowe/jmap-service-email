@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
@@ -89,10 +89,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		return errorResponse(request.ClientID, jmaperror.UnknownMethod("This handler only supports Mailbox/set")), nil
 	}
 
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Get old state
 	oldState := int64(0)
@@ -117,7 +114,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	newState := oldState
 
 	// Handle create
-	if createArg, ok := request.Args["create"].(map[string]any); ok {
+	if createArg, ok := request.Args.Object("create"); ok {
 		for clientID, createData := range createArg {
 			data, ok := createData.(map[string]any)
 			if !ok {
@@ -137,7 +134,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Handle update
-	if updateArg, ok := request.Args["update"].(map[string]any); ok {
+	if updateArg, ok := request.Args.Object("update"); ok {
 		for mailboxID, updateData := range updateArg {
 			data, ok := updateData.(map[string]any)
 			if !ok {
@@ -159,18 +156,10 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Handle destroy
-	if destroyArg, ok := request.Args["destroy"].([]any); ok {
-		onDestroyRemoveEmails := false
-		if v, ok := request.Args["onDestroyRemoveEmails"].(bool); ok {
-			onDestroyRemoveEmails = v
-		}
+	if destroyIDs, ok := request.Args.StringSlice("destroy"); ok {
+		onDestroyRemoveEmails := request.Args.BoolOr("onDestroyRemoveEmails", false)
 
-		for _, id := range destroyArg {
-			mailboxID, ok := id.(string)
-			if !ok {
-				continue
-			}
-
+		for _, mailboxID := range destroyIDs {
 			result, err := h.destroyMailbox(ctx, accountID, mailboxID, onDestroyRemoveEmails, newState)
 			if err != nil {
 				notDestroyed[mailboxID] = err

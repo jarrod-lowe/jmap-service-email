@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
@@ -73,10 +73,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse request args
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Get current Thread state
 	var currentState int64
@@ -93,24 +90,13 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Extract and validate ids
-	idsArg, ok := request.Args["ids"]
-	if !ok {
+	if !request.Args.Has("ids") {
 		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument is required")), nil
 	}
 
-	idsSlice, ok := idsArg.([]any)
+	ids, ok := request.Args.StringSlice("ids")
 	if !ok {
-		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids argument must be an array")), nil
-	}
-
-	// Convert IDs to strings
-	var ids []string
-	for _, id := range idsSlice {
-		idStr, ok := id.(string)
-		if !ok {
-			return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must contain strings")), nil
-		}
-		ids = append(ids, idStr)
+		return errorResponse(request.ClientID, jmaperror.InvalidArguments("ids must be an array of strings")), nil
 	}
 
 	// Fetch threads concurrently

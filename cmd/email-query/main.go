@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-core/pkg/plugincontract"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
@@ -66,14 +66,11 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse request args
-	accountID := request.AccountID
-	if argAccountID, ok := request.Args["accountId"].(string); ok {
-		accountID = argAccountID
-	}
+	accountID := request.Args.StringOr("accountId", request.AccountID)
 
 	// Parse filter
 	var queryFilter *email.QueryFilter
-	if filterArg, ok := request.Args["filter"].(map[string]any); ok {
+	if filterArg, ok := request.Args.Object("filter"); ok {
 		// Check for unsupported filter properties
 		for key := range filterArg {
 			if key != "inMailbox" {
@@ -81,7 +78,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			}
 		}
 
-		if inMailbox, ok := filterArg["inMailbox"].(string); ok {
+		if inMailbox, ok := filterArg.String("inMailbox"); ok {
 			// Validate mailbox exists
 			exists, err := h.mailboxRepo.MailboxExists(ctx, accountID, inMailbox)
 			if err != nil {
@@ -107,28 +104,24 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			if !ok {
 				continue
 			}
-			property, _ := sortMap["property"].(string)
+			sortArgs := plugincontract.Args(sortMap)
+			property := sortArgs.StringOr("property", "")
 			if property != "" && property != "receivedAt" {
 				return errorResponse(request.ClientID, jmaperror.UnsupportedSort("Only receivedAt sort is supported")), nil
 			}
-			isAscending, _ := sortMap["isAscending"].(bool)
 			comparators = append(comparators, email.Comparator{
 				Property:    property,
-				IsAscending: isAscending,
+				IsAscending: sortArgs.BoolOr("isAscending", false),
 			})
 		}
 	}
 
 	// Parse position
-	position := 0
-	if posArg, ok := request.Args["position"].(float64); ok {
-		position = int(posArg)
-	}
+	position := int(request.Args.IntOr("position", 0))
 
 	// Parse anchor
-	anchor := ""
-	if anchorArg, ok := request.Args["anchor"].(string); ok {
-		anchor = anchorArg
+	anchor, hasAnchor := request.Args.String("anchor")
+	if hasAnchor {
 		// Validate anchor exists
 		_, err := h.emailRepo.GetEmail(ctx, accountID, anchor)
 		if err != nil {
@@ -145,16 +138,10 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse anchorOffset
-	anchorOffset := 0
-	if offsetArg, ok := request.Args["anchorOffset"].(float64); ok {
-		anchorOffset = int(offsetArg)
-	}
+	anchorOffset := int(request.Args.IntOr("anchorOffset", 0))
 
 	// Parse limit
-	limit := defaultLimit
-	if limitArg, ok := request.Args["limit"].(float64); ok {
-		limit = int(limitArg)
-	}
+	limit := int(request.Args.IntOr("limit", int64(defaultLimit)))
 	if limit > maxLimit {
 		limit = maxLimit
 	}
@@ -163,10 +150,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	}
 
 	// Parse collapseThreads
-	collapseThreads := false
-	if ct, ok := request.Args["collapseThreads"].(bool); ok {
-		collapseThreads = ct
-	}
+	collapseThreads := request.Args.BoolOr("collapseThreads", false)
 
 	// Build query request
 	queryReq := &email.QueryRequest{
