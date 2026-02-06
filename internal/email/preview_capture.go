@@ -39,7 +39,7 @@ func (pc *PreviewCapture) Full() bool {
 // Preview returns the captured text, cleaned up for use as an email preview:
 // - \r\n and \n replaced with spaces
 // - multiple spaces collapsed
-// - truncated at word boundary with "..." suffix if over maxBytes
+// - truncated at word boundary with "…" suffix if over maxBytes
 func (pc *PreviewCapture) Preview() string {
 	text := string(pc.buf)
 
@@ -58,7 +58,7 @@ func (pc *PreviewCapture) Preview() string {
 		if lastSpace := strings.LastIndex(text, " "); lastSpace > len(text)-50 {
 			text = text[:lastSpace]
 		}
-		text += "..."
+		text += "…"
 	}
 
 	return text

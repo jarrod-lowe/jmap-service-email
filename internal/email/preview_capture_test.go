@@ -31,8 +31,8 @@ func TestPreviewCapture_TruncatesLargeInput(t *testing.T) {
 	if len(got) > 260 { // some tolerance for "..." suffix
 		t.Errorf("Preview() length = %d, should be <= ~260", len(got))
 	}
-	if !strings.HasSuffix(got, "...") {
-		t.Errorf("Preview() = %q, should end with '...'", got)
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("Preview() = %q, should end with '…'", got)
 	}
 }
 
@@ -70,11 +70,11 @@ func TestPreviewCapture_TruncatesAtWordBoundary(t *testing.T) {
 	if len(got) > 25 {
 		t.Errorf("Preview() length = %d, should be <= ~25", len(got))
 	}
-	if !strings.HasSuffix(got, "...") {
-		t.Errorf("Preview() = %q, should end with '...'", got)
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("Preview() = %q, should end with '…'", got)
 	}
 	// Should not cut in the middle of a word
-	withoutSuffix := strings.TrimSuffix(got, "...")
+	withoutSuffix := strings.TrimSuffix(got, "…")
 	if strings.Contains(withoutSuffix, "thi") && !strings.Contains(withoutSuffix, "this") {
 		t.Errorf("Preview() = %q, cuts in middle of word", got)
 	}

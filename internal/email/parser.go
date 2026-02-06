@@ -304,7 +304,7 @@ func generatePreview(parsed *ParsedEmail, rootPart *BodyPart, fullBody []byte) s
 		if lastSpace := strings.LastIndex(text, " "); lastSpace > maxPreview-50 {
 			text = text[:lastSpace]
 		}
-		text += "..."
+		text += "…"
 	}
 
 	return text
