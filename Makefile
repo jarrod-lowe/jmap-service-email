@@ -88,7 +88,7 @@ deps: go.sum
 	@echo "Dependencies are up to date"
 
 # Pattern rule: build any lambda binary
-build/%/bootstrap: go.sum cmd/%/*.go
+build/%/bootstrap: go.sum $(GO_SOURCES)
 	@echo "Building Lambda: $*"
 	@mkdir -p build/$*
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o $@ ./cmd/$*

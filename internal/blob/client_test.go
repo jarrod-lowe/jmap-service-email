@@ -819,11 +819,12 @@ func TestUpload_ReturnsNetworkError(t *testing.T) {
 // setupTestTracer creates a test tracer provider and returns the span recorder.
 func setupTestTracer(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
+	prev := otel.GetTracerProvider()
 	recorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
 	otel.SetTracerProvider(tp)
 	t.Cleanup(func() {
-		otel.SetTracerProvider(nil)
+		otel.SetTracerProvider(prev)
 	})
 	return recorder
 }

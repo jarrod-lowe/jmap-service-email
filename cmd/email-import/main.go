@@ -533,14 +533,16 @@ func main() {
 	mailboxRepo := mailbox.NewDynamoDBRepository(dynamoClient, tableName)
 	stateRepo := state.NewRepository(dynamoClient, tableName, 7)
 
-	// Create blob client with OTel instrumentation and SigV4 signing
+	// Create HTTP clients: signed for IAM-authenticated API calls, plain for presigned URL PUTs
 	baseTransport := otelhttp.NewTransport(http.DefaultTransport)
-	transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
-	httpClient := &http.Client{Transport: transport}
+	sigv4Transport := blob.NewSigV4Transport(baseTransport, result.Config.Credentials, result.Config.Region)
+	signedHTTPClient := &http.Client{Transport: sigv4Transport}
+	plainHTTPClient := &http.Client{Transport: baseTransport}
 
 	factory := func(baseURL string) (BlobStreamer, BlobUploader) {
-		client := blob.NewHTTPBlobClient(baseURL, httpClient)
-		return client, client
+		streamer := blob.NewHTTPBlobClient(baseURL, signedHTTPClient)
+		uploader := blob.NewPresignedUploadClient(baseURL, signedHTTPClient, plainHTTPClient)
+		return streamer, uploader
 	}
 
 	// Set up blob delete publisher

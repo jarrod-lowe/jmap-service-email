@@ -1,9 +1,11 @@
 package blob
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"time"
 
@@ -44,9 +46,21 @@ func (t *SigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone the request to avoid modifying the original
 	signedReq := req.Clone(ctx)
 
-	// Calculate payload hash (empty for GET requests)
-	payloadHash := sha256.Sum256(nil)
-	payloadHashHex := hex.EncodeToString(payloadHash[:])
+	var payloadHashHex string
+	if signedReq.Body == nil || signedReq.Body == http.NoBody {
+		h := sha256.Sum256(nil)
+		payloadHashHex = hex.EncodeToString(h[:])
+	} else {
+		bodyBytes, err := io.ReadAll(signedReq.Body)
+		if err != nil {
+			return nil, err
+		}
+		signedReq.Body.Close()
+		h := sha256.Sum256(bodyBytes)
+		payloadHashHex = hex.EncodeToString(h[:])
+		signedReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		signedReq.ContentLength = int64(len(bodyBytes))
+	}
 
 	// Sign the request
 	err = t.signer.SignHTTP(ctx, creds, signedReq, payloadHashHex, "execute-api", t.region, time.Now())
