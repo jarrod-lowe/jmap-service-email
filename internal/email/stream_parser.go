@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -11,6 +12,18 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"strings"
+)
+
+// Limits for MIME structure to guard against "part bomb" emails.
+const (
+	MaxParts          = 100 // Maximum total parts (leaf + container combined)
+	MaxMultipartDepth = 10  // Maximum levels of multipart nesting
+)
+
+// Sentinel errors for part bomb detection.
+var (
+	ErrTooManyParts  = errors.New("too many MIME parts")
+	ErrNestingTooDeep = errors.New("MIME nesting too deep")
 )
 
 // BlobUploader abstracts blob uploads for dependency inversion.
@@ -95,7 +108,7 @@ func ParseRFC5322Stream(
 
 		subParts, err := parseMultipartStreaming(
 			ctx, bodyReader, boundary,
-			emailBlobID, accountID, uploader, &partCounter, previewCapture,
+			emailBlobID, accountID, uploader, &partCounter, previewCapture, 1,
 		)
 		if err != nil {
 			return nil, err
@@ -293,6 +306,7 @@ func parseSinglePartStreaming(
 
 // parseMultipartStreaming parses a multipart body from a stream using mime/multipart.Reader.
 // All leaf parts are uploaded via uploader. First text/plain part is teed to previewCapture.
+// depth tracks the current multipart nesting level (1 = top-level multipart).
 func parseMultipartStreaming(
 	ctx context.Context,
 	bodyReader io.Reader,
@@ -302,7 +316,12 @@ func parseMultipartStreaming(
 	uploader BlobUploader,
 	counter *int,
 	previewCapture *PreviewCapture,
+	depth int,
 ) ([]BodyPart, error) {
+	if depth > MaxMultipartDepth {
+		return nil, ErrNestingTooDeep
+	}
+
 	mr := multipart.NewReader(bodyReader, boundary)
 	var subParts []BodyPart
 
@@ -316,6 +335,9 @@ func parseMultipartStreaming(
 		}
 
 		*counter++
+		if *counter > MaxParts {
+			return nil, ErrTooManyParts
+		}
 		partID := fmt.Sprintf("%d", *counter)
 
 		contentType := p.Header.Get("Content-Type")
@@ -356,7 +378,7 @@ func parseMultipartStreaming(
 			if ok {
 				nested, err := parseMultipartStreaming(
 					ctx, p, innerBoundary,
-					emailBlobID, accountID, uploader, counter, previewCapture,
+					emailBlobID, accountID, uploader, counter, previewCapture, depth+1,
 				)
 				if err != nil {
 					return nil, err

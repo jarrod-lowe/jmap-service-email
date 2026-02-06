@@ -3,6 +3,7 @@ package email
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -1034,6 +1035,7 @@ func TestParseMultipartStreaming_TwoPartAlternative(t *testing.T) {
 		uploader,
 		&counter,
 		pc,
+		1,
 	)
 	if err != nil {
 		t.Fatalf("parseMultipartStreaming error = %v", err)
@@ -1105,6 +1107,7 @@ func TestParseMultipartStreaming_NestedMultipart(t *testing.T) {
 		uploader,
 		&counter,
 		pc,
+		1,
 	)
 	if err != nil {
 		t.Fatalf("parseMultipartStreaming error = %v", err)
@@ -1166,6 +1169,7 @@ func TestParseMultipartStreaming_PreviewFromTextPlain(t *testing.T) {
 		uploader,
 		&counter,
 		pc,
+		1,
 	)
 	if err != nil {
 		t.Fatalf("parseMultipartStreaming error = %v", err)
@@ -1362,5 +1366,157 @@ func TestParseRFC5322Stream_SizeIsAccurate(t *testing.T) {
 				t.Errorf("Size = %d, want %d", parsed.Size, len(tt.email))
 			}
 		})
+	}
+}
+
+func TestParseRFC5322Stream_TooManyParts(t *testing.T) {
+	// Build a multipart message with 101 leaf parts (+ 1 root container = 102 total).
+	// MaxParts is 100, so this should be rejected.
+	boundary := "PARTBOMB"
+	var body strings.Builder
+	for i := 0; i < 101; i++ {
+		body.WriteString("--" + boundary + "\r\n")
+		body.WriteString("Content-Type: text/plain\r\n\r\n")
+		body.WriteString(fmt.Sprintf("part %d\r\n", i))
+	}
+	body.WriteString("--" + boundary + "--\r\n")
+
+	email := "From: alice@example.com\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n" +
+		"\r\n" +
+		body.String()
+
+	uploader := &sequentialUploader{prefix: "blob"}
+	_, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"blob-123",
+		"acct-1",
+		uploader,
+	)
+
+	if err == nil {
+		t.Fatal("expected error for too many parts, got nil")
+	}
+	if !errors.Is(err, ErrTooManyParts) {
+		t.Errorf("error = %v, want ErrTooManyParts", err)
+	}
+}
+
+func TestParseRFC5322Stream_NestingTooDeep(t *testing.T) {
+	// Build 11 levels of nested multipart. MaxMultipartDepth is 10.
+	// Level 1 is the root multipart, levels 2-11 are nested.
+	levels := 11
+	var sb strings.Builder
+
+	// Build nested multipart from outer to inner
+	for i := 1; i <= levels; i++ {
+		boundary := fmt.Sprintf("level%d", i)
+		sb.WriteString("--" + boundary + "\r\n")
+		if i < levels {
+			nextBoundary := fmt.Sprintf("level%d", i+1)
+			sb.WriteString("Content-Type: multipart/mixed; boundary=\"" + nextBoundary + "\"\r\n\r\n")
+		} else {
+			// Innermost leaf part
+			sb.WriteString("Content-Type: text/plain\r\n\r\n")
+			sb.WriteString("deep leaf\r\n")
+		}
+	}
+	// Close all boundaries from inner to outer
+	for i := levels; i >= 1; i-- {
+		boundary := fmt.Sprintf("level%d", i)
+		sb.WriteString("--" + boundary + "--\r\n")
+	}
+
+	email := "From: alice@example.com\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"level1\"\r\n" +
+		"\r\n" +
+		sb.String()
+
+	uploader := &sequentialUploader{prefix: "blob"}
+	_, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"blob-123",
+		"acct-1",
+		uploader,
+	)
+
+	if err == nil {
+		t.Fatal("expected error for nesting too deep, got nil")
+	}
+	if !errors.Is(err, ErrNestingTooDeep) {
+		t.Errorf("error = %v, want ErrNestingTooDeep", err)
+	}
+}
+
+func TestParseRFC5322Stream_AtPartLimit(t *testing.T) {
+	// Build a multipart message with exactly 99 leaf parts.
+	// Together with the root container part, total = 100 = MaxParts. Should succeed.
+	boundary := "LIMIT"
+	var body strings.Builder
+	for i := 0; i < 99; i++ {
+		body.WriteString("--" + boundary + "\r\n")
+		body.WriteString("Content-Type: text/plain\r\n\r\n")
+		body.WriteString(fmt.Sprintf("part %d\r\n", i))
+	}
+	body.WriteString("--" + boundary + "--\r\n")
+
+	email := "From: alice@example.com\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n" +
+		"\r\n" +
+		body.String()
+
+	uploader := &sequentialUploader{prefix: "blob"}
+	_, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"blob-123",
+		"acct-1",
+		uploader,
+	)
+
+	if err != nil {
+		t.Fatalf("expected no error at part limit (100 parts), got %v", err)
+	}
+}
+
+func TestParseRFC5322Stream_AtDepthLimit(t *testing.T) {
+	// Build exactly 10 levels of nested multipart. MaxMultipartDepth is 10. Should succeed.
+	levels := 10
+	var sb strings.Builder
+
+	for i := 1; i <= levels; i++ {
+		boundary := fmt.Sprintf("depth%d", i)
+		sb.WriteString("--" + boundary + "\r\n")
+		if i < levels {
+			nextBoundary := fmt.Sprintf("depth%d", i+1)
+			sb.WriteString("Content-Type: multipart/mixed; boundary=\"" + nextBoundary + "\"\r\n\r\n")
+		} else {
+			sb.WriteString("Content-Type: text/plain\r\n\r\n")
+			sb.WriteString("deep leaf\r\n")
+		}
+	}
+	for i := levels; i >= 1; i-- {
+		boundary := fmt.Sprintf("depth%d", i)
+		sb.WriteString("--" + boundary + "--\r\n")
+	}
+
+	email := "From: alice@example.com\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"depth1\"\r\n" +
+		"\r\n" +
+		sb.String()
+
+	uploader := &sequentialUploader{prefix: "blob"}
+	_, err := ParseRFC5322Stream(
+		context.Background(),
+		strings.NewReader(email),
+		"blob-123",
+		"acct-1",
+		uploader,
+	)
+
+	if err != nil {
+		t.Fatalf("expected no error at depth limit (10 levels), got %v", err)
 	}
 }
