@@ -103,6 +103,7 @@ data "aws_iam_policy_document" "api_gateway_invoke" {
       "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/GET/download-iam/*",
       "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/DELETE/delete-iam/*",
       "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/POST/upload-iam/*",
+      "${data.aws_ssm_parameter.jmap_api_gateway_execution_arn.value}/*/POST/jmap-iam/*",
     ]
   }
 }
