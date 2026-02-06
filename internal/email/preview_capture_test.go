@@ -3,6 +3,7 @@ package email
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPreviewCapture_SmallInput(t *testing.T) {
@@ -28,8 +29,9 @@ func TestPreviewCapture_TruncatesLargeInput(t *testing.T) {
 	_, _ = pc.Write([]byte(input))
 
 	got := pc.Preview()
-	if len(got) > 260 { // some tolerance for "..." suffix
-		t.Errorf("Preview() length = %d, should be <= ~260", len(got))
+	runeLen := utf8.RuneCountInString(got)
+	if runeLen > 260 { // some tolerance for "…" suffix
+		t.Errorf("Preview() rune length = %d, should be <= ~260", runeLen)
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Errorf("Preview() = %q, should end with '…'", got)
@@ -66,9 +68,10 @@ func TestPreviewCapture_TruncatesAtWordBoundary(t *testing.T) {
 	_, _ = pc.Write([]byte(input))
 
 	got := pc.Preview()
-	// Should truncate at a word boundary near 20 chars and add "..."
-	if len(got) > 25 {
-		t.Errorf("Preview() length = %d, should be <= ~25", len(got))
+	// Should truncate at a word boundary near 20 characters (runes) and add "…"
+	runeLen := utf8.RuneCountInString(got)
+	if runeLen > 25 {
+		t.Errorf("Preview() rune length = %d, should be <= ~25", runeLen)
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Errorf("Preview() = %q, should end with '…'", got)
@@ -129,5 +132,40 @@ func TestPreviewCapture_FullReturnsFalseBeforeMaxBytes(t *testing.T) {
 
 	if pc.Full() {
 		t.Error("Full() should return false before reaching max bytes")
+	}
+}
+
+func TestPreviewCapture_MultiByte(t *testing.T) {
+	pc := NewPreviewCapture(256)
+	// Each CJK character is 3 bytes in UTF-8, so 256 chars = 768 bytes.
+	// With byte-based limiting, we'd only get ~85 characters instead of 256.
+	input := strings.Repeat("日", 300) // 300 CJK chars = 900 bytes
+	_, _ = pc.Write([]byte(input))
+
+	got := pc.Preview()
+
+	// Must be valid UTF-8
+	if !utf8.ValidString(got) {
+		t.Errorf("Preview() is not valid UTF-8")
+	}
+
+	runeLen := utf8.RuneCountInString(got)
+
+	// Preview must be at most 256 characters (runes) + "…" suffix (1 rune) = 257 runes max
+	// The "…" is appended because input was truncated
+	withoutSuffix := strings.TrimSuffix(got, "…")
+	suffixRuneLen := utf8.RuneCountInString(withoutSuffix)
+	if suffixRuneLen > 256 {
+		t.Errorf("Preview() content before suffix has %d runes, want <= 256", suffixRuneLen)
+	}
+
+	// With byte-based limiting, we'd get far fewer than 256 characters.
+	// Ensure we actually get close to 256 characters of content.
+	if suffixRuneLen < 200 {
+		t.Errorf("Preview() content has only %d runes, want close to 256 (byte-based bug?)", suffixRuneLen)
+	}
+
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("Preview() = length %d runes, should end with '…' for truncated input", runeLen)
 	}
 }

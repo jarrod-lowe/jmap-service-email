@@ -1,32 +1,32 @@
 package email
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
-// PreviewCapture captures the first ~maxBytes of text content for email preview generation.
+// PreviewCapture captures text content for email preview generation.
+// It limits output to maxChars characters (runes) per RFC 8621 Section 4.1.4.
 // It implements io.Writer so it can be used with io.TeeReader or io.MultiWriter.
 type PreviewCapture struct {
-	maxBytes int
+	maxChars int
 	buf      []byte
 	full     bool
 }
 
-// NewPreviewCapture creates a PreviewCapture that captures up to maxBytes of input.
-func NewPreviewCapture(maxBytes int) *PreviewCapture {
-	return &PreviewCapture{maxBytes: maxBytes}
+// NewPreviewCapture creates a PreviewCapture that captures up to maxChars characters (runes).
+func NewPreviewCapture(maxChars int) *PreviewCapture {
+	return &PreviewCapture{maxChars: maxChars}
 }
 
 // Write implements io.Writer. It always returns len(p), nil to satisfy the
 // io.Writer contract, even when discarding data after the buffer is full.
 func (pc *PreviewCapture) Write(p []byte) (int, error) {
-	if remaining := pc.maxBytes - len(pc.buf); remaining > 0 {
-		toCapture := p
-		if len(toCapture) > remaining {
-			toCapture = toCapture[:remaining]
+	if !pc.full {
+		pc.buf = append(pc.buf, p...)
+		if utf8.RuneCount(pc.buf) >= pc.maxChars {
 			pc.full = true
 		}
-		pc.buf = append(pc.buf, toCapture...)
-	} else {
-		pc.full = true
 	}
 	return len(p), nil
 }
@@ -39,7 +39,7 @@ func (pc *PreviewCapture) Full() bool {
 // Preview returns the captured text, cleaned up for use as an email preview:
 // - \r\n and \n replaced with spaces
 // - multiple spaces collapsed
-// - truncated at word boundary with "…" suffix if over maxBytes
+// - truncated at word boundary with "…" suffix if over maxChars characters
 func (pc *PreviewCapture) Preview() string {
 	text := string(pc.buf)
 
@@ -51,9 +51,11 @@ func (pc *PreviewCapture) Preview() string {
 		text = strings.ReplaceAll(text, "  ", " ")
 	}
 
-	if pc.full || len(text) > pc.maxBytes {
-		if len(text) > pc.maxBytes {
-			text = text[:pc.maxBytes]
+	runeLen := utf8.RuneCountInString(text)
+	if pc.full || runeLen > pc.maxChars {
+		if runeLen > pc.maxChars {
+			runes := []rune(text)
+			text = string(runes[:pc.maxChars])
 		}
 		if lastSpace := strings.LastIndex(text, " "); lastSpace > len(text)-50 {
 			text = text[:lastSpace]
