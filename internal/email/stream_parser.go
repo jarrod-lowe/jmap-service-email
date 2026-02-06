@@ -1,16 +1,15 @@
 package email
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
-	"net/textproto"
 	"strings"
 )
 
@@ -19,9 +18,13 @@ type BlobUploader interface {
 	Upload(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (blobID string, size int64, err error)
 }
 
-// ParseRFC5322Stream parses an RFC5322 message from a reader, generating blob IDs for body parts.
-// For identity-encoded parts (7bit, 8bit, binary), it returns byte-range blob IDs.
-// For non-identity encoded parts (base64, quoted-printable), it decodes and uploads the content.
+// ParseRFC5322Stream parses an RFC5322 message from a stream, generating blob IDs for body parts.
+// For single-part identity-encoded messages (7bit, 8bit, binary), it returns byte-range blob IDs.
+// For multipart messages, all leaf parts are uploaded via the BlobUploader.
+// For non-identity encoded parts (base64, quoted-printable), content is decoded and uploaded.
+//
+// This function streams the email without buffering the entire message in memory.
+// Only headers are buffered; body content flows through to blob storage or is discarded.
 func ParseRFC5322Stream(
 	ctx context.Context,
 	r io.Reader,
@@ -29,20 +32,24 @@ func ParseRFC5322Stream(
 	accountID string,
 	uploader BlobUploader,
 ) (*ParsedEmail, error) {
-	// Read the full email to enable byte offset tracking
-	// TODO: For very large emails, consider chunked processing
-	data, err := io.ReadAll(r)
+	// Wrap in CountingReader to track total bytes
+	cr := NewCountingReader(r)
+
+	// Read headers only - body stays in the stream
+	headerData, bodyReader, err := readHeaderBytes(cr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read email: %w", err)
+		return nil, fmt.Errorf("failed to read headers: %w", err)
 	}
 
-	msg, err := mail.ReadMessage(bytes.NewReader(data))
+	headerSize := int64(len(headerData))
+
+	// Parse headers via mail.ReadMessage
+	msg, err := mail.ReadMessage(bytes.NewReader(headerData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse message: %w", err)
 	}
 
 	parsed := &ParsedEmail{
-		Size:        int64(len(data)),
 		Sender:      []EmailAddress{},
 		To:          []EmailAddress{},
 		CC:          []EmailAddress{},
@@ -56,21 +63,14 @@ func ParseRFC5322Stream(
 		Attachments: []string{},
 	}
 
-	// Parse headers
 	parseHeaders(parsed, msg.Header)
+	parsed.HeaderSize = headerSize
 
-	// Find body start position (after headers + blank line)
-	bodyStart := findBodyStart(data)
-
-	// Store header size for later retrieval (e.g., header:* properties)
-	parsed.HeaderSize = int64(bodyStart)
-
-	// Parse body structure
+	// Determine content type
 	contentType := msg.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "text/plain"
 	}
-
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		mediaType = "text/plain"
@@ -78,29 +78,54 @@ func ParseRFC5322Stream(
 	}
 
 	encoding := msg.Header.Get("Content-Transfer-Encoding")
-
+	previewCapture := NewPreviewCapture(256)
 	partCounter := 0
-	parsed.BodyStructure, err = parsePartStream(
-		ctx,
-		data[bodyStart:],
-		int64(bodyStart),
-		mediaType,
-		params,
-		encoding,
-		emailBlobID,
-		accountID,
-		uploader,
-		&partCounter,
-	)
-	if err != nil {
-		return nil, err
+
+	if strings.HasPrefix(mediaType, "multipart/") {
+		boundary, ok := params["boundary"]
+		if !ok {
+			return nil, fmt.Errorf("multipart message missing boundary parameter")
+		}
+
+		partCounter++
+		parsed.BodyStructure = BodyPart{
+			PartID: fmt.Sprintf("%d", partCounter),
+			Type:   mediaType,
+		}
+
+		subParts, err := parseMultipartStreaming(
+			ctx, bodyReader, boundary,
+			emailBlobID, accountID, uploader, &partCounter, previewCapture,
+		)
+		if err != nil {
+			return nil, err
+		}
+		parsed.BodyStructure.SubParts = subParts
+	} else {
+		// Single-part message
+		partCounter++
+		part, err := parseSinglePartStreaming(
+			ctx, bodyReader, headerSize, cr,
+			mediaType, encoding, emailBlobID, accountID, uploader, previewCapture,
+		)
+		if err != nil {
+			return nil, err
+		}
+		part.PartID = fmt.Sprintf("%d", partCounter)
+		part.Type = mediaType
+		if charset, ok := params["charset"]; ok {
+			part.Charset = charset
+		}
+		parsed.BodyStructure = part
 	}
+
+	// Drain any remaining bytes to get accurate total size
+	_, _ = io.Copy(io.Discard, bodyReader)
+	parsed.Size = cr.BytesRead()
+	parsed.Preview = previewCapture.Preview()
 
 	// Collect text/html body parts and attachments
 	collectParts(parsed, &parsed.BodyStructure)
-
-	// Generate preview
-	parsed.Preview = generatePreviewFromData(parsed, &parsed.BodyStructure, data[bodyStart:])
 
 	return parsed, nil
 }
@@ -134,255 +159,6 @@ func parseHeaders(parsed *ParsedEmail, header mail.Header) {
 	}
 }
 
-// findBodyStart finds the byte offset where the body starts (after headers + CRLF or LF).
-func findBodyStart(data []byte) int {
-	// Look for double newline (CRLFCRLF or LFLF)
-	for i := 0; i < len(data)-1; i++ {
-		if data[i] == '\n' {
-			if data[i+1] == '\n' {
-				return i + 2
-			}
-			if i+2 < len(data) && data[i+1] == '\r' && data[i+2] == '\n' {
-				return i + 3
-			}
-		}
-		if i+3 < len(data) && data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
-			return i + 4
-		}
-	}
-	return len(data)
-}
-
-// parsePartStream parses a MIME part, handling encoding and generating blob IDs.
-func parsePartStream(
-	ctx context.Context,
-	partData []byte,
-	absoluteOffset int64,
-	mediaType string,
-	params map[string]string,
-	encoding string,
-	emailBlobID string,
-	accountID string,
-	uploader BlobUploader,
-	counter *int,
-) (BodyPart, error) {
-	*counter++
-	partID := fmt.Sprintf("%d", *counter)
-
-	part := BodyPart{
-		PartID: partID,
-		Type:   mediaType,
-	}
-
-	if charset, ok := params["charset"]; ok {
-		part.Charset = charset
-	}
-
-	// Handle multipart
-	if strings.HasPrefix(mediaType, "multipart/") {
-		boundary, ok := params["boundary"]
-		if !ok {
-			return part, nil
-		}
-
-		subParts, err := parseMultipartStream(
-			ctx,
-			partData,
-			absoluteOffset,
-			boundary,
-			emailBlobID,
-			accountID,
-			uploader,
-			counter,
-		)
-		if err != nil {
-			return part, err
-		}
-		part.SubParts = subParts
-		// Multipart containers don't have their own blob ID
-		return part, nil
-	}
-
-	// Handle leaf part
-	if isIdentityEncoding(encoding) {
-		// Identity encoding: use byte-range blob ID
-		startByte := absoluteOffset
-		endByte := absoluteOffset + int64(len(partData))
-		part.BlobID = fmt.Sprintf("%s,%d,%d", emailBlobID, startByte, endByte)
-		part.Size = int64(len(partData))
-	} else {
-		// Non-identity encoding: decode and upload
-		decodedReader := getDecoder(encoding, bytes.NewReader(partData))
-
-		blobID, size, err := uploader.Upload(ctx, accountID, emailBlobID, mediaType, decodedReader)
-		if err != nil {
-			return part, fmt.Errorf("failed to upload decoded part: %w", err)
-		}
-		part.BlobID = blobID
-		part.Size = size
-	}
-
-	return part, nil
-}
-
-// parseMultipartStream parses multipart content and returns sub-parts.
-func parseMultipartStream(
-	ctx context.Context,
-	data []byte,
-	baseOffset int64,
-	boundary string,
-	emailBlobID string,
-	accountID string,
-	uploader BlobUploader,
-	counter *int,
-) ([]BodyPart, error) {
-	var subParts []BodyPart
-
-	// Parse the multipart content to find boundaries and part positions
-	boundaryBytes := []byte("--" + boundary)
-
-	// Find all boundary positions
-	parts := findMultipartParts(data, boundaryBytes)
-
-	for _, partInfo := range parts {
-		// Parse part headers
-		partReader := bytes.NewReader(partInfo.data)
-		tp := textproto.NewReader(bufio.NewReader(partReader))
-		header, err := tp.ReadMIMEHeader()
-		if err != nil && err != io.EOF {
-			continue
-		}
-
-		// Find where body starts within this part
-		partBodyStart := findBodyStart(partInfo.data)
-		if partBodyStart >= len(partInfo.data) {
-			continue
-		}
-
-		partBody := partInfo.data[partBodyStart:]
-		partAbsoluteOffset := baseOffset + int64(partInfo.offset) + int64(partBodyStart)
-
-		// Parse content type
-		contentType := header.Get("Content-Type")
-		if contentType == "" {
-			contentType = "text/plain"
-		}
-		partMediaType, partParams, err := mime.ParseMediaType(contentType)
-		if err != nil {
-			partMediaType = "text/plain"
-			partParams = nil
-		}
-
-		partEncoding := header.Get("Content-Transfer-Encoding")
-
-		subPart, err := parsePartStream(
-			ctx,
-			partBody,
-			partAbsoluteOffset,
-			partMediaType,
-			partParams,
-			partEncoding,
-			emailBlobID,
-			accountID,
-			uploader,
-			counter,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// Check for disposition
-		disposition := header.Get("Content-Disposition")
-		if disposition != "" {
-			dispType, dispParams, _ := mime.ParseMediaType(disposition)
-			subPart.Disposition = dispType
-			if filename, ok := dispParams["filename"]; ok {
-				subPart.Name = filename
-			}
-		}
-
-		// Also check Content-Type name parameter
-		if subPart.Name == "" {
-			if name, ok := partParams["name"]; ok {
-				subPart.Name = name
-			}
-		}
-
-		subParts = append(subParts, subPart)
-	}
-
-	return subParts, nil
-}
-
-// partRange represents a part's data and its offset within the multipart content.
-type partRange struct {
-	data   []byte
-	offset int
-}
-
-// findMultipartParts finds all parts between boundaries.
-func findMultipartParts(data []byte, boundary []byte) []partRange {
-	var parts []partRange
-
-	// Find the first boundary
-	idx := bytes.Index(data, boundary)
-	if idx == -1 {
-		return parts
-	}
-
-	// Skip past first boundary and its trailing CRLF/LF
-	pos := idx + len(boundary)
-	pos = skipLineEnding(data, pos)
-
-	for {
-		// Find the next boundary
-		nextIdx := bytes.Index(data[pos:], boundary)
-		if nextIdx == -1 {
-			break
-		}
-
-		// Extract part data (everything before the boundary, minus trailing CRLF)
-		partEnd := pos + nextIdx
-		// Remove trailing line ending before boundary
-		if partEnd > 0 && data[partEnd-1] == '\n' {
-			partEnd--
-		}
-		if partEnd > 0 && data[partEnd-1] == '\r' {
-			partEnd--
-		}
-
-		if partEnd > pos {
-			parts = append(parts, partRange{
-				data:   data[pos:partEnd],
-				offset: pos,
-			})
-		}
-
-		// Move past this boundary
-		pos = pos + nextIdx + len(boundary)
-
-		// Check for closing boundary (--)
-		if pos+2 <= len(data) && data[pos] == '-' && data[pos+1] == '-' {
-			break
-		}
-
-		pos = skipLineEnding(data, pos)
-	}
-
-	return parts
-}
-
-// skipLineEnding advances past CRLF or LF.
-func skipLineEnding(data []byte, pos int) int {
-	if pos < len(data) && data[pos] == '\r' {
-		pos++
-	}
-	if pos < len(data) && data[pos] == '\n' {
-		pos++
-	}
-	return pos
-}
-
 // isIdentityEncoding returns true for encodings that don't transform the content.
 // Per RFC 8621, unknown encodings should be treated as identity.
 func isIdentityEncoding(encoding string) bool {
@@ -411,34 +187,240 @@ func getDecoder(encoding string, r io.Reader) io.Reader {
 	}
 }
 
-// generatePreviewFromData creates a preview string from raw body data.
-func generatePreviewFromData(parsed *ParsedEmail, rootPart *BodyPart, bodyData []byte) string {
-	var text string
+// readHeaderBytes reads from r until it finds the header/body separator (CRLFCRLF or LFLF),
+// returning the raw header bytes (including the separator) and a reader for the remaining body.
+// The returned body reader yields any excess bytes read past the separator, followed by the
+// remaining unread data from r.
+func readHeaderBytes(r io.Reader) ([]byte, io.Reader, error) {
+	const chunkSize = 4096
+	var headerBuf []byte
+	readBuf := make([]byte, chunkSize)
 
-	// For simple non-multipart messages, use the body directly
-	if !strings.HasPrefix(rootPart.Type, "multipart/") {
-		text = string(bodyData)
-	}
+	for {
+		n, err := r.Read(readBuf)
+		if n > 0 {
+			headerBuf = append(headerBuf, readBuf[:n]...)
 
-	// Clean up whitespace
-	text = strings.TrimSpace(text)
-	text = strings.ReplaceAll(text, "\r\n", " ")
-	text = strings.ReplaceAll(text, "\n", " ")
+			// Scan for separator in the accumulated buffer.
+			// We need to check a window that spans the previous chunk boundary,
+			// so scan from max(0, len(headerBuf)-n-3) to cover overlap.
+			scanStart := len(headerBuf) - n - 3
+			if scanStart < 0 {
+				scanStart = 0
+			}
 
-	// Collapse multiple spaces
-	for strings.Contains(text, "  ") {
-		text = strings.ReplaceAll(text, "  ", " ")
-	}
-
-	// Truncate to ~256 chars
-	const maxPreview = 256
-	if len(text) > maxPreview {
-		text = text[:maxPreview]
-		if lastSpace := strings.LastIndex(text, " "); lastSpace > maxPreview-50 {
-			text = text[:lastSpace]
+			for i := scanStart; i < len(headerBuf)-1; i++ {
+				// Check for \n\n (LF LF)
+				if headerBuf[i] == '\n' && headerBuf[i+1] == '\n' {
+					sepEnd := i + 2
+					excess := headerBuf[sepEnd:]
+					bodyReader := io.MultiReader(bytes.NewReader(excess), r)
+					return headerBuf[:sepEnd], bodyReader, nil
+				}
+				// Check for \r\n\r\n (CRLF CRLF)
+				if i+3 < len(headerBuf) &&
+					headerBuf[i] == '\r' && headerBuf[i+1] == '\n' &&
+					headerBuf[i+2] == '\r' && headerBuf[i+3] == '\n' {
+					sepEnd := i + 4
+					excess := headerBuf[sepEnd:]
+					bodyReader := io.MultiReader(bytes.NewReader(excess), r)
+					return headerBuf[:sepEnd], bodyReader, nil
+				}
+			}
 		}
-		text += "..."
+		if err == io.EOF {
+			// No separator found; treat entire input as headers
+			return headerBuf, bytes.NewReader(nil), nil
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading headers: %w", err)
+		}
+	}
+}
+
+// parseSinglePartStreaming processes a single (non-multipart) body part from a stream.
+// For identity-encoded parts, it uses byte-range blob IDs.
+// For non-identity encoded parts, it decodes and uploads via uploader.
+// Text/plain content is teed to previewCapture for preview generation.
+func parseSinglePartStreaming(
+	ctx context.Context,
+	bodyReader io.Reader,
+	headerSize int64,
+	cr *CountingReader,
+	mediaType string,
+	encoding string,
+	emailBlobID string,
+	accountID string,
+	uploader BlobUploader,
+	previewCapture *PreviewCapture,
+) (BodyPart, error) {
+	var part BodyPart
+	isText := strings.HasPrefix(mediaType, "text/plain")
+
+	if isIdentityEncoding(encoding) {
+		// Identity encoding: drain body to count bytes, optionally capturing preview
+		startByte := headerSize
+		var w io.Writer = io.Discard
+		if isText && !previewCapture.Full() {
+			w = io.MultiWriter(io.Discard, previewCapture)
+		}
+		n, err := io.Copy(w, bodyReader)
+		if err != nil {
+			return part, fmt.Errorf("draining identity body: %w", err)
+		}
+		endByte := startByte + n
+		part.BlobID = fmt.Sprintf("%s,%d,%d", emailBlobID, startByte, endByte)
+		part.Size = n
+	} else {
+		// Non-identity encoding: decode and upload
+		decodedReader := getDecoder(encoding, bodyReader)
+
+		var uploadReader io.Reader = decodedReader
+		if isText && !previewCapture.Full() {
+			uploadReader = io.TeeReader(decodedReader, previewCapture)
+		}
+
+		blobID, size, err := uploader.Upload(ctx, accountID, emailBlobID, mediaType, uploadReader)
+		if err != nil {
+			return part, fmt.Errorf("uploading decoded part: %w", err)
+		}
+		part.BlobID = blobID
+		part.Size = size
 	}
 
-	return text
+	return part, nil
+}
+
+// parseMultipartStreaming parses a multipart body from a stream using mime/multipart.Reader.
+// All leaf parts are uploaded via uploader. First text/plain part is teed to previewCapture.
+func parseMultipartStreaming(
+	ctx context.Context,
+	bodyReader io.Reader,
+	boundary string,
+	emailBlobID string,
+	accountID string,
+	uploader BlobUploader,
+	counter *int,
+	previewCapture *PreviewCapture,
+) ([]BodyPart, error) {
+	mr := multipart.NewReader(bodyReader, boundary)
+	var subParts []BodyPart
+
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return subParts, fmt.Errorf("reading multipart: %w", err)
+		}
+
+		*counter++
+		partID := fmt.Sprintf("%d", *counter)
+
+		contentType := p.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "text/plain"
+		}
+		partMediaType, partParams, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			partMediaType = "text/plain"
+			partParams = nil
+		}
+
+		subPart := BodyPart{
+			PartID: partID,
+			Type:   partMediaType,
+		}
+		if charset, ok := partParams["charset"]; ok {
+			subPart.Charset = charset
+		}
+
+		// Check for disposition
+		disposition := p.Header.Get("Content-Disposition")
+		if disposition != "" {
+			dispType, dispParams, _ := mime.ParseMediaType(disposition)
+			subPart.Disposition = dispType
+			if filename, ok := dispParams["filename"]; ok {
+				subPart.Name = filename
+			}
+		}
+		if subPart.Name == "" {
+			if name, ok := partParams["name"]; ok {
+				subPart.Name = name
+			}
+		}
+
+		if strings.HasPrefix(partMediaType, "multipart/") {
+			innerBoundary, ok := partParams["boundary"]
+			if ok {
+				nested, err := parseMultipartStreaming(
+					ctx, p, innerBoundary,
+					emailBlobID, accountID, uploader, counter, previewCapture,
+				)
+				if err != nil {
+					return nil, err
+				}
+				subPart.SubParts = nested
+			}
+		} else {
+			partEncoding := p.Header.Get("Content-Transfer-Encoding")
+			leaf, err := processLeafPartStreaming(
+				ctx, p, partMediaType, partEncoding,
+				emailBlobID, accountID, uploader, previewCapture,
+			)
+			if err != nil {
+				return nil, err
+			}
+			subPart.BlobID = leaf.BlobID
+			subPart.Size = leaf.Size
+		}
+
+		subParts = append(subParts, subPart)
+	}
+
+	return subParts, nil
+}
+
+// processLeafPartStreaming processes a single leaf part within a multipart message.
+// ALL leaf parts in multipart messages are uploaded via uploader (both identity and
+// non-identity encoded), since mime/multipart.Reader's internal buffering makes
+// exact byte-offset tracking impossible for sub-parts.
+//
+// This is the right tradeoff: multipart emails benefit most from streaming, and
+// the BlobUploader interface provides the injection point for future optimizations
+// like signed-URL uploads — no parser changes needed.
+func processLeafPartStreaming(
+	ctx context.Context,
+	partReader io.Reader,
+	mediaType string,
+	encoding string,
+	emailBlobID string,
+	accountID string,
+	uploader BlobUploader,
+	previewCapture *PreviewCapture,
+) (BodyPart, error) {
+	var part BodyPart
+	isText := strings.HasPrefix(mediaType, "text/plain")
+
+	// Decode if non-identity encoding
+	var contentReader io.Reader = partReader
+	if !isIdentityEncoding(encoding) {
+		contentReader = getDecoder(encoding, partReader)
+	}
+
+	// Tee text/plain to preview capture
+	var uploadReader io.Reader = contentReader
+	if isText && !previewCapture.Full() {
+		uploadReader = io.TeeReader(contentReader, previewCapture)
+	}
+
+	blobID, size, err := uploader.Upload(ctx, accountID, emailBlobID, mediaType, uploadReader)
+	if err != nil {
+		return part, fmt.Errorf("uploading multipart leaf: %w", err)
+	}
+	part.BlobID = blobID
+	part.Size = size
+
+	return part, nil
 }
