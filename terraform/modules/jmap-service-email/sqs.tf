@@ -78,3 +78,21 @@ resource "aws_sqs_queue_policy" "account_events" {
     ]
   })
 }
+
+# SQS queue for async search indexing
+
+resource "aws_sqs_queue" "search_index_dlq" {
+  name                      = "${local.name_prefix}-search-index-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}
+
+resource "aws_sqs_queue" "search_index" {
+  name                       = "${local.name_prefix}-search-index"
+  visibility_timeout_seconds = 300
+  message_retention_seconds  = 86400 # 1 day
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.search_index_dlq.arn
+    maxReceiveCount     = 3
+  })
+}

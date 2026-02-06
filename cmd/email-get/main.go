@@ -347,7 +347,7 @@ func buildBodyValues(ctx context.Context, blobStreamer BlobStreamer, accountID s
 	partIDs := collectBodyPartIDs(e, fetchText, fetchHTML, fetchAll)
 
 	for _, partID := range partIDs {
-		part := findBodyPart(e.BodyStructure, partID)
+		part := email.FindBodyPart(e.BodyStructure, partID)
 		value, isTruncated, isEncodingProblem := fetchBodyValue(ctx, blobStreamer, accountID, part, maxBytes)
 		result[partID] = map[string]any{
 			"value":             value,
@@ -555,7 +555,7 @@ func resolveBodyPartRefs(refs []string, bodyStructure email.BodyPart, bodyProper
 
 	result := make([]map[string]any, len(refs))
 	for i, ref := range refs {
-		part := findBodyPart(bodyStructure, ref)
+		part := email.FindBodyPart(bodyStructure, ref)
 		if part == nil {
 			result[i] = map[string]any{"partId": ref}
 			continue
@@ -609,20 +609,6 @@ func errorResponse(clientID string, err *jmaperror.MethodError) plugincontract.P
 			ClientID: clientID,
 		},
 	}
-}
-
-// findBodyPart recursively searches a BodyPart tree to find a part by ID.
-// Returns nil if not found.
-func findBodyPart(root email.BodyPart, partID string) *email.BodyPart {
-	if root.PartID == partID {
-		return &root
-	}
-	for _, sub := range root.SubParts {
-		if found := findBodyPart(sub, partID); found != nil {
-			return found
-		}
-	}
-	return nil
 }
 
 func main() {

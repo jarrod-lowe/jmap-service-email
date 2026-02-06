@@ -55,6 +55,7 @@ type EmailItem struct {
 	HTMLBody      []string        `json:"htmlBody"`
 	Attachments   []string        `json:"attachments"`
 	Version       int             `json:"version"`
+	SearchChunks  int             `json:"searchChunks,omitempty"`
 	DeletedAt     *time.Time      `json:"deletedAt,omitempty"`
 }
 

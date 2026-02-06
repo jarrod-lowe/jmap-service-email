@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
@@ -1752,6 +1753,147 @@ func TestUpdateEmail_MailboxIDs_TransactionalStateUpdate(t *testing.T) {
 	newState := resp.MethodResponse.Args["newState"].(string)
 	if newState != "11" {
 		t.Errorf("newState = %q, want %q", newState, "11")
+	}
+}
+
+type mockSearchIndexPublisher struct {
+	publishFunc func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+	calls       []struct {
+		accountID string
+		emailID   string
+		action    searchindex.Action
+		apiURL    string
+	}
+}
+
+func (m *mockSearchIndexPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+	m.calls = append(m.calls, struct {
+		accountID string
+		emailID   string
+		action    searchindex.Action
+		apiURL    string
+	}{accountID, emailID, action, apiURL})
+	if m.publishFunc != nil {
+		return m.publishFunc(ctx, accountID, emailID, action, apiURL)
+	}
+	return nil
+}
+
+// Test: Destroy publishes search index delete request
+func TestHandler_DestroyPublishesSearchIndex(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    "email-456",
+				AccountID:  accountID,
+				BlobID:     "blob-root",
+				ThreadID:   "thread-1",
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    1,
+			}, nil
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+	searchPub := &mockSearchIndexPublisher{}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, nil, mockTransactor, searchPub)
+	_, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"email-456"},
+		},
+		ClientID: "c0",
+		APIURL:   "https://api.example.com",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	if len(searchPub.calls) != 1 {
+		t.Fatalf("expected 1 search index publish call, got %d", len(searchPub.calls))
+	}
+	call := searchPub.calls[0]
+	if call.accountID != "user-123" {
+		t.Errorf("accountID = %q, want %q", call.accountID, "user-123")
+	}
+	if call.emailID != "email-456" {
+		t.Errorf("emailID = %q, want %q", call.emailID, "email-456")
+	}
+	if call.action != searchindex.ActionDelete {
+		t.Errorf("action = %q, want %q", call.action, searchindex.ActionDelete)
+	}
+	if call.apiURL != "https://api.example.com" {
+		t.Errorf("apiURL = %q, want %q", call.apiURL, "https://api.example.com")
+	}
+}
+
+// Test: Search index publish error on destroy is non-fatal
+func TestHandler_DestroySearchIndexPublishError_NonFatal(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:    "email-456",
+				AccountID:  accountID,
+				BlobID:     "blob-root",
+				ThreadID:   "thread-1",
+				ReceivedAt: receivedAt,
+				MailboxIDs: map[string]bool{"inbox-id": true},
+				Keywords:   map[string]bool{"$seen": true},
+				Version:    1,
+			}, nil
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+	searchPub := &mockSearchIndexPublisher{
+		publishFunc: func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+			return errors.New("sqs publish failed")
+		},
+	}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, nil, mockTransactor, searchPub)
+	resp, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"email-456"},
+		},
+		ClientID: "c0",
+		APIURL:   "https://api.example.com",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	// Should still succeed despite publish failure
+	destroyed, ok := resp.MethodResponse.Args["destroyed"].([]any)
+	if !ok {
+		t.Fatalf("destroyed not a slice: %T", resp.MethodResponse.Args["destroyed"])
+	}
+	if len(destroyed) != 1 || destroyed[0] != "email-456" {
+		t.Errorf("destroyed = %v, want [email-456]", destroyed)
 	}
 }
 

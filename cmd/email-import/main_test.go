@@ -12,6 +12,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 )
 
@@ -1717,6 +1718,127 @@ SGVsbG8gV29ybGQ=
 	// Should have published blob cleanup for the uploaded part blob
 	if len(publishedBlobIDs) == 0 {
 		t.Error("expected blob cleanup to be published on transaction failure")
+	}
+}
+
+// mockSearchIndexPublisher implements SearchIndexPublisher for testing.
+type mockSearchIndexPublisher struct {
+	publishFunc func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+	calls       []struct {
+		accountID string
+		emailID   string
+		action    searchindex.Action
+		apiURL    string
+	}
+}
+
+func (m *mockSearchIndexPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+	m.calls = append(m.calls, struct {
+		accountID string
+		emailID   string
+		action    searchindex.Action
+		apiURL    string
+	}{accountID, emailID, action, apiURL})
+	if m.publishFunc != nil {
+		return m.publishFunc(ctx, accountID, emailID, action, apiURL)
+	}
+	return nil
+}
+
+// Test: Successful import publishes search index request
+func TestHandler_ImportPublishesSearchIndex(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+	searchPub := &mockSearchIndexPublisher{}
+
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{}, searchPub)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId":     "blob-456",
+					"mailboxIds": map[string]any{"inbox": true},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/import" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/import")
+	}
+
+	// Should have published search index request
+	if len(searchPub.calls) != 1 {
+		t.Fatalf("expected 1 search index publish call, got %d", len(searchPub.calls))
+	}
+	if searchPub.calls[0].accountID != "user-123" {
+		t.Errorf("accountID = %q, want %q", searchPub.calls[0].accountID, "user-123")
+	}
+	if searchPub.calls[0].action != searchindex.ActionIndex {
+		t.Errorf("action = %q, want %q", searchPub.calls[0].action, searchindex.ActionIndex)
+	}
+	if searchPub.calls[0].apiURL != "https://api.test.com" {
+		t.Errorf("apiURL = %q, want %q", searchPub.calls[0].apiURL, "https://api.test.com")
+	}
+}
+
+// Test: Search index publish error is non-fatal
+func TestHandler_ImportSearchIndexPublishError_NonFatal(t *testing.T) {
+	mockRepo := &mockEmailRepository{}
+	mockStreamer := &mockBlobStreamer{}
+	mockUploader := &mockBlobUploader{}
+	mockMailboxRepo := &mockMailboxRepository{}
+	searchPub := &mockSearchIndexPublisher{
+		publishFunc: func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+			return errors.New("SQS publish failed")
+		},
+	}
+
+	h := newHandler(mockRepo, mockBlobClientFactory(mockStreamer, mockUploader), mockMailboxRepo, &mockStateRepository{}, searchPub)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/import",
+		ClientID:  "c0",
+		APIURL:    "https://api.test.com",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"emails": map[string]any{
+				"client-ref-1": map[string]any{
+					"blobId":     "blob-456",
+					"mailboxIds": map[string]any{"inbox": true},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	// Import should still succeed despite search index publish error
+	created, ok := response.MethodResponse.Args["created"].(map[string]any)
+	if !ok {
+		t.Fatal("created should be a map")
+	}
+	if _, ok := created["client-ref-1"]; !ok {
+		t.Fatal("created should contain client-ref-1")
 	}
 }
 

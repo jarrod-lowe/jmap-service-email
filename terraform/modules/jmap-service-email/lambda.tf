@@ -23,6 +23,7 @@ resource "aws_lambda_function" "email_import" {
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+      SEARCH_INDEX_QUEUE_URL              = aws_sqs_queue.search_index.url
 
       # OpenTelemetry SDK Configuration
       OTEL_SERVICE_NAME           = "${local.name_prefix}-email-import"
@@ -40,7 +41,7 @@ resource "aws_lambda_function" "email_import" {
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
     aws_iam_role_policy_attachment.api_gateway_invoke,
-    aws_iam_role_policy_attachment.sqs_blob_delete
+    aws_iam_role_policy_attachment.sqs_queues
   ]
 }
 
@@ -184,6 +185,7 @@ resource "aws_lambda_function" "email_set" {
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       BLOB_DELETE_QUEUE_URL               = aws_sqs_queue.blob_delete.url
+      SEARCH_INDEX_QUEUE_URL              = aws_sqs_queue.search_index.url
 
       # OpenTelemetry SDK Configuration
       OTEL_SERVICE_NAME           = "${local.name_prefix}-email-set"
@@ -201,7 +203,7 @@ resource "aws_lambda_function" "email_set" {
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
     aws_iam_role_policy_attachment.api_gateway_invoke,
-    aws_iam_role_policy_attachment.sqs_blob_delete
+    aws_iam_role_policy_attachment.sqs_queues
   ]
 }
 
@@ -307,7 +309,7 @@ resource "aws_lambda_function" "mailbox_set" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
-    aws_iam_role_policy_attachment.sqs_mailbox_cleanup
+    aws_iam_role_policy_attachment.sqs_queues
   ]
 }
 
@@ -568,7 +570,7 @@ resource "aws_lambda_function" "blob_delete" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.api_gateway_invoke,
-    aws_iam_role_policy_attachment.sqs_blob_delete
+    aws_iam_role_policy_attachment.sqs_queues
   ]
 }
 
@@ -622,8 +624,7 @@ resource "aws_lambda_function" "mailbox_cleanup" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
-    aws_iam_role_policy_attachment.sqs_blob_delete,
-    aws_iam_role_policy_attachment.sqs_mailbox_cleanup
+    aws_iam_role_policy_attachment.sqs_queues
   ]
 }
 
@@ -677,7 +678,7 @@ resource "aws_lambda_function" "email_cleanup" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
-    aws_iam_role_policy_attachment.sqs_blob_delete,
+    aws_iam_role_policy_attachment.sqs_queues,
     aws_iam_role_policy_attachment.dynamodb_stream_email_data
   ]
 }
@@ -755,7 +756,7 @@ resource "aws_lambda_function" "account_init" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_iam_role_policy_attachment.lambda_xray,
     aws_iam_role_policy_attachment.dynamodb_email_data,
-    aws_iam_role_policy_attachment.sqs_account_events
+    aws_iam_role_policy_attachment.sqs_queues
   ]
 }
 
@@ -763,6 +764,69 @@ resource "aws_lambda_function" "account_init" {
 resource "aws_lambda_event_source_mapping" "account_init_sqs" {
   event_source_arn                   = aws_sqs_queue.account_events.arn
   function_name                      = aws_lambda_function.account_init.arn
+  batch_size                         = 10
+  function_response_types            = ["ReportBatchItemFailures"]
+  maximum_batching_window_in_seconds = 5
+}
+
+# Lambda function for email-index (SQS consumer for search indexing)
+resource "aws_lambda_function" "email_index" {
+  function_name = "${local.name_prefix}-email-index"
+  role          = aws_iam_role.lambda_execution.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = var.lambda_memory_size
+  timeout       = 300
+
+  filename         = "${path.module}/../../../build/email-index/lambda.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/email-index/lambda.zip")
+
+  layers = [local.adot_layer_arn]
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  environment {
+    variables = {
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
+      EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
+      VECTOR_BUCKET_NAME                  = aws_s3vectors_vector_bucket.search_vectors.vector_bucket_name
+      RESOURCE_TAGS = jsonencode({
+        Project     = "jmap-service-email"
+        ManagedBy   = "terraform"
+        Environment = var.environment
+        Application = "jmap-service-email-${var.environment}"
+      })
+
+      # OpenTelemetry SDK Configuration
+      OTEL_SERVICE_NAME           = "${local.name_prefix}-email-index"
+      OTEL_TRACES_SAMPLER         = "always_on"
+      OTEL_PROPAGATORS            = "tracecontext,baggage,xray"
+      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+      OTEL_RESOURCE_ATTRIBUTES    = "service.version=1.0.0"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.email_index,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_xray,
+    aws_iam_role_policy_attachment.dynamodb_email_data,
+    aws_iam_role_policy_attachment.api_gateway_invoke,
+    aws_iam_role_policy_attachment.sqs_queues,
+    aws_iam_role_policy_attachment.bedrock_embeddings,
+    aws_iam_role_policy_attachment.s3vectors_search
+  ]
+}
+
+# SQS event source mapping for email-index Lambda
+resource "aws_lambda_event_source_mapping" "email_index_sqs" {
+  event_source_arn                   = aws_sqs_queue.search_index.arn
+  function_name                      = aws_lambda_function.email_index.arn
   batch_size                         = 10
   function_response_types            = ["ReportBatchItemFailures"]
   maximum_batching_window_in_seconds = 5

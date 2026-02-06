@@ -141,3 +141,26 @@ resource "aws_cloudwatch_metric_alarm" "account_events_dlq" {
     QueueName = aws_sqs_queue.account_events_dlq.name
   }
 }
+
+resource "aws_cloudwatch_log_group" "email_index" {
+  name              = "/aws/lambda/${local.name_prefix}-email-index"
+  retention_in_days = var.log_retention_days
+}
+
+# CloudWatch alarm for search-index DLQ depth
+resource "aws_cloudwatch_metric_alarm" "search_index_dlq" {
+  alarm_name          = "${local.name_prefix}-search-index-dlq-depth"
+  alarm_description   = "Search index DLQ has messages - investigate failed search indexing"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.search_index_dlq.name
+  }
+}

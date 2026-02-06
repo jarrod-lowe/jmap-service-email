@@ -245,6 +245,26 @@ func (r *Repository) GetEmail(ctx context.Context, accountID, emailID string) (*
 	return r.unmarshalEmailItem(output.Item)
 }
 
+// UpdateSearchChunks updates the searchChunks field on an email record.
+func (r *Repository) UpdateSearchChunks(ctx context.Context, accountID, emailID string, searchChunks int) error {
+	e := &EmailItem{AccountID: accountID, EmailID: emailID}
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: e.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: e.SK()},
+		},
+		UpdateExpression: aws.String("SET " + AttrSearchChunks + " = :sc"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":sc": &types.AttributeValueMemberN{Value: strconv.Itoa(searchChunks)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update search chunks: %w", err)
+	}
+	return nil
+}
+
 // marshalEmailItem converts an EmailItem to DynamoDB attribute values.
 func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.AttributeValue {
 	item := map[string]types.AttributeValue{
@@ -368,6 +388,11 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 
 	// Version
 	item[AttrVersion] = &types.AttributeValueMemberN{Value: strconv.Itoa(email.Version)}
+
+	// SearchChunks
+	if email.SearchChunks > 0 {
+		item[AttrSearchChunks] = &types.AttributeValueMemberN{Value: strconv.Itoa(email.SearchChunks)}
+	}
 
 	// DeletedAt
 	if email.DeletedAt != nil {
@@ -527,6 +552,13 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	if v, ok := item[AttrVersion].(*types.AttributeValueMemberN); ok {
 		if n, err := strconv.Atoi(v.Value); err == nil {
 			email.Version = n
+		}
+	}
+
+	// SearchChunks
+	if v, ok := item[AttrSearchChunks].(*types.AttributeValueMemberN); ok {
+		if n, err := strconv.Atoi(v.Value); err == nil {
+			email.SearchChunks = n
 		}
 	}
 

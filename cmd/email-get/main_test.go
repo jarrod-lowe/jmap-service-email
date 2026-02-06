@@ -1914,7 +1914,7 @@ func TestFindBodyPart_TopLevel(t *testing.T) {
 		BlobID: "blob-1",
 	}
 
-	part := findBodyPart(root, "1")
+	part := email.FindBodyPart(root, "1")
 	if part == nil {
 		t.Fatal("expected to find part 1")
 	}
@@ -1934,7 +1934,7 @@ func TestFindBodyPart_Nested(t *testing.T) {
 	}
 
 	// Find nested part
-	part := findBodyPart(root, "2")
+	part := email.FindBodyPart(root, "2")
 	if part == nil {
 		t.Fatal("expected to find part 2")
 	}
@@ -1964,7 +1964,7 @@ func TestFindBodyPart_DeeplyNested(t *testing.T) {
 	}
 
 	// Find deeply nested part
-	part := findBodyPart(root, "1.2")
+	part := email.FindBodyPart(root, "1.2")
 	if part == nil {
 		t.Fatal("expected to find part 1.2")
 	}
@@ -1979,7 +1979,7 @@ func TestFindBodyPart_NotFound(t *testing.T) {
 		Type:   "text/plain",
 	}
 
-	part := findBodyPart(root, "nonexistent")
+	part := email.FindBodyPart(root, "nonexistent")
 	if part != nil {
 		t.Errorf("expected nil for nonexistent part, got %+v", part)
 	}

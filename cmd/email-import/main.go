@@ -21,6 +21,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
@@ -72,6 +73,11 @@ type BlobDeletePublisher interface {
 	PublishBlobDeletions(ctx context.Context, accountID string, blobIDs []string, apiURL string) error
 }
 
+// SearchIndexPublisher publishes search index requests to an async queue.
+type SearchIndexPublisher interface {
+	PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+}
+
 // TransactWriter defines the interface for DynamoDB transactional writes.
 type TransactWriter interface {
 	TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
@@ -79,12 +85,13 @@ type TransactWriter interface {
 
 // handler implements the Email/import logic.
 type handler struct {
-	repo                EmailRepository
-	blobClientFactory   func(baseURL string) (BlobStreamer, BlobUploader)
-	mailboxRepo         MailboxRepository
-	stateRepo           StateRepository
-	blobDeletePublisher BlobDeletePublisher
-	transactor          TransactWriter
+	repo                  EmailRepository
+	blobClientFactory     func(baseURL string) (BlobStreamer, BlobUploader)
+	mailboxRepo           MailboxRepository
+	stateRepo             StateRepository
+	blobDeletePublisher   BlobDeletePublisher
+	searchIndexPublisher  SearchIndexPublisher
+	transactor            TransactWriter
 }
 
 // newHandler creates a new handler.
@@ -99,6 +106,8 @@ func newHandler(repo EmailRepository, blobClientFactory func(baseURL string) (Bl
 		switch v := opt.(type) {
 		case BlobDeletePublisher:
 			h.blobDeletePublisher = v
+		case SearchIndexPublisher:
+			h.searchIndexPublisher = v
 		case TransactWriter:
 			h.transactor = v
 		}
@@ -373,6 +382,17 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		}
 	}
 
+	// Publish search index request (best-effort)
+	if h.searchIndexPublisher != nil {
+		if err := h.searchIndexPublisher.PublishIndexRequest(ctx, accountID, emailID, searchindex.ActionIndex, apiURL); err != nil {
+			logger.ErrorContext(ctx, "Failed to publish search index request",
+				slog.String("account_id", accountID),
+				slog.String("email_id", emailID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
 	logger.InfoContext(ctx, "Email imported successfully",
 		slog.String("account_id", accountID),
 		slog.String("email_id", emailID),
@@ -553,7 +573,15 @@ func main() {
 		blobPub = blobdelete.NewSQSPublisher(sqsClient, blobDeleteQueueURL)
 	}
 
+	// Set up search index publisher
+	searchIndexQueueURL := os.Getenv("SEARCH_INDEX_QUEUE_URL")
+	var searchPub SearchIndexPublisher
+	if searchIndexQueueURL != "" {
+		sqsClient := sqs.NewFromConfig(result.Config)
+		searchPub = searchindex.NewSQSPublisher(sqsClient, searchIndexQueueURL)
+	}
+
 	// Pass dynamoClient as TransactWriter for atomic operations
-	h := newHandler(repo, factory, mailboxRepo, stateRepo, dynamoClient, blobPub)
+	h := newHandler(repo, factory, mailboxRepo, stateRepo, dynamoClient, blobPub, searchPub)
 	result.Start(h.handle)
 }

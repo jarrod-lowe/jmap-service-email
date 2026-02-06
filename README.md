@@ -83,14 +83,22 @@ jmap-service-email/
 │   ├── mailbox-changes/       # Mailbox/changes Lambda
 │   ├── thread-get/            # Thread/get Lambda
 │   ├── thread-changes/        # Thread/changes Lambda
-│   └── blob-delete/           # Blob delete SQS consumer Lambda
+│   ├── blob-delete/           # Blob delete SQS consumer Lambda
+│   ├── email-cleanup/         # DynamoDB Streams email cleanup Lambda
+│   ├── email-index/           # Search indexing SQS consumer Lambda
+│   ├── account-init/          # Account initialization SQS consumer Lambda
+│   └── mailbox-cleanup/       # Mailbox cleanup SQS consumer Lambda
 ├── internal/
 │   ├── email/                 # Email types, repository, parser
 │   ├── headers/               # Header property parsing and form transformations
 │   ├── mailbox/               # Mailbox types and repository
 │   ├── state/                 # State tracking repository
 │   ├── blob/                  # Blob API client
-│   └── blobdelete/            # Async blob deletion SQS publisher
+│   ├── blobdelete/            # Async blob deletion SQS publisher
+│   ├── searchindex/           # Search index SQS publisher
+│   ├── htmlstrip/             # Streaming HTML-to-text converter
+│   ├── embeddings/            # Bedrock Titan Embeddings client
+│   └── vectorstore/           # S3 Vectors client
 ├── terraform/
 │   ├── modules/
 │   │   └── jmap-service-email/
@@ -174,6 +182,30 @@ Email/import fail ──┘         │
 - Investigate DLQ messages via the AWS Console or `aws sqs receive-message`
 - For transient failures: requeue messages from DLQ back to the main queue
 - For persistent failures: investigate the blob service or message content
+
+## Search Indexing
+
+Emails are indexed for full-text search using vector embeddings stored in S3 Vectors. When an email is imported or destroyed, a message is published to an SQS queue, and a dedicated `email-index` Lambda processes it asynchronously.
+
+```
+Email/import ──┐
+               ├──> SQS Queue ──> email-index Lambda ──> S3 Vectors
+Email/set ─────┘         │              │
+  (destroy)              │              ├── Fetch text parts from blob storage
+                         │              ├── Strip HTML (if needed)
+                         │              ├── Chunk text (~30K chars with overlap)
+                         │              ├── Generate embeddings (Bedrock Titan v2)
+                         │              └── Store/delete vectors
+                         └──> DLQ (after 3 retries) ──> CloudWatch Alarm
+```
+
+- **Embedding model**: Amazon Titan Embeddings v2 (1024 dimensions, ~$0.00002/1K tokens)
+- **Vector store**: AWS S3 Vectors, one index per account (`acct-{accountId}`)
+- **Account limit**: 10,000 accounts per vector bucket (S3 Vectors index limit)
+- **Chunking**: ~30K chars per chunk with 800-char overlap; subject/addresses prepended to each chunk
+- **Metadata**: Each vector stores emailId, mailboxIds, keywords, receivedAt, from, to, subject, size for future hybrid filtering
+
+See `docs/plans/search-indexing-design.md` for the full system design.
 
 ## DynamoDB Indexes
 

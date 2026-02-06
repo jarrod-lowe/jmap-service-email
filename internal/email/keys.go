@@ -40,6 +40,7 @@ const (
 	AttrName          = "name"
 	AttrEmail         = "email"
 	AttrVersion       = "version"
+	AttrSearchChunks  = "searchChunks"
 	AttrDeletedAt     = "deletedAt"
 	AttrAPIURL        = "apiUrl"
 )

@@ -119,16 +119,22 @@ resource "aws_iam_role_policy_attachment" "api_gateway_invoke" {
   policy_arn = aws_iam_policy.api_gateway_invoke.arn
 }
 
-# Policy document for SQS blob-delete queue operations
-data "aws_iam_policy_document" "sqs_blob_delete" {
+# Consolidated SQS queue policy (all queues in one policy to stay under IAM limit)
+data "aws_iam_policy_document" "sqs_queues" {
+  # Send messages to queues that receive work items
   statement {
     effect = "Allow"
     actions = [
       "sqs:SendMessage"
     ]
-    resources = [aws_sqs_queue.blob_delete.arn]
+    resources = [
+      aws_sqs_queue.blob_delete.arn,
+      aws_sqs_queue.mailbox_cleanup.arn,
+      aws_sqs_queue.search_index.arn,
+    ]
   }
 
+  # Consume messages from all queues
   statement {
     effect = "Allow"
     actions = [
@@ -136,51 +142,33 @@ data "aws_iam_policy_document" "sqs_blob_delete" {
       "sqs:DeleteMessage",
       "sqs:GetQueueAttributes"
     ]
-    resources = [aws_sqs_queue.blob_delete.arn]
+    resources = [
+      aws_sqs_queue.blob_delete.arn,
+      aws_sqs_queue.mailbox_cleanup.arn,
+      aws_sqs_queue.account_events.arn,
+      aws_sqs_queue.search_index.arn,
+    ]
   }
-}
 
-resource "aws_iam_policy" "sqs_blob_delete" {
-  name        = "${local.name_prefix}-sqs-blob-delete"
-  description = "Allow SQS operations on blob-delete queue"
-  policy      = data.aws_iam_policy_document.sqs_blob_delete.json
-}
-
-resource "aws_iam_role_policy_attachment" "sqs_blob_delete" {
-  role       = aws_iam_role.lambda_execution.name
-  policy_arn = aws_iam_policy.sqs_blob_delete.arn
-}
-
-# Policy document for SQS mailbox-cleanup queue operations
-data "aws_iam_policy_document" "sqs_mailbox_cleanup" {
+  # Allow sending to DLQ on search-index event source mapping failures
   statement {
     effect = "Allow"
     actions = [
       "sqs:SendMessage"
     ]
-    resources = [aws_sqs_queue.mailbox_cleanup.arn]
-  }
-
-  statement {
-    effect = "Allow"
-    actions = [
-      "sqs:ReceiveMessage",
-      "sqs:DeleteMessage",
-      "sqs:GetQueueAttributes"
-    ]
-    resources = [aws_sqs_queue.mailbox_cleanup.arn]
+    resources = [aws_sqs_queue.search_index_dlq.arn]
   }
 }
 
-resource "aws_iam_policy" "sqs_mailbox_cleanup" {
-  name        = "${local.name_prefix}-sqs-mailbox-cleanup"
-  description = "Allow SQS operations on mailbox-cleanup queue"
-  policy      = data.aws_iam_policy_document.sqs_mailbox_cleanup.json
+resource "aws_iam_policy" "sqs_queues" {
+  name        = "${local.name_prefix}-sqs-queues"
+  description = "Allow SQS operations on all queues"
+  policy      = data.aws_iam_policy_document.sqs_queues.json
 }
 
-resource "aws_iam_role_policy_attachment" "sqs_mailbox_cleanup" {
+resource "aws_iam_role_policy_attachment" "sqs_queues" {
   role       = aws_iam_role.lambda_execution.name
-  policy_arn = aws_iam_policy.sqs_mailbox_cleanup.arn
+  policy_arn = aws_iam_policy.sqs_queues.arn
 }
 
 # DynamoDB Streams permissions for email-cleanup Lambda
@@ -217,26 +205,57 @@ resource "aws_iam_role_policy_attachment" "dynamodb_stream_email_data" {
   policy_arn = aws_iam_policy.dynamodb_stream_email_data.arn
 }
 
-# Policy document for SQS account-events queue operations
-data "aws_iam_policy_document" "sqs_account_events" {
+# Policy for Bedrock Titan Embeddings v2
+data "aws_iam_policy_document" "bedrock_embeddings" {
   statement {
     effect = "Allow"
     actions = [
-      "sqs:ReceiveMessage",
-      "sqs:DeleteMessage",
-      "sqs:GetQueueAttributes"
+      "bedrock:InvokeModel"
     ]
-    resources = [aws_sqs_queue.account_events.arn]
+    resources = [
+      "arn:aws:bedrock:${data.aws_region.current.id}::foundation-model/amazon.titan-embed-text-v2:0"
+    ]
   }
 }
 
-resource "aws_iam_policy" "sqs_account_events" {
-  name        = "${local.name_prefix}-sqs-account-events"
-  description = "Allow SQS operations on account-events queue"
-  policy      = data.aws_iam_policy_document.sqs_account_events.json
+resource "aws_iam_policy" "bedrock_embeddings" {
+  name        = "${local.name_prefix}-bedrock-embeddings"
+  description = "Allow invoking Bedrock Titan Embeddings v2 model"
+  policy      = data.aws_iam_policy_document.bedrock_embeddings.json
 }
 
-resource "aws_iam_role_policy_attachment" "sqs_account_events" {
+resource "aws_iam_role_policy_attachment" "bedrock_embeddings" {
   role       = aws_iam_role.lambda_execution.name
-  policy_arn = aws_iam_policy.sqs_account_events.arn
+  policy_arn = aws_iam_policy.bedrock_embeddings.arn
+}
+
+# Policy for S3 Vectors operations
+data "aws_iam_policy_document" "s3vectors_search" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3vectors:CreateIndex",
+      "s3vectors:TagResource",
+      "s3vectors:PutVectors",
+      "s3vectors:DeleteVectors",
+      "s3vectors:GetVectors",
+      "s3vectors:QueryVectors",
+      "s3vectors:ListIndexes"
+    ]
+    resources = [
+      aws_s3vectors_vector_bucket.search_vectors.vector_bucket_arn,
+      "${aws_s3vectors_vector_bucket.search_vectors.vector_bucket_arn}/*"
+    ]
+  }
+}
+
+resource "aws_iam_policy" "s3vectors_search" {
+  name        = "${local.name_prefix}-s3vectors-search"
+  description = "Allow S3 Vectors operations on search vectors bucket"
+  policy      = data.aws_iam_policy_document.s3vectors_search.json
+}
+
+resource "aws_iam_role_policy_attachment" "s3vectors_search" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.s3vectors_search.arn
 }
