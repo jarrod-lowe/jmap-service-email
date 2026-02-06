@@ -119,6 +119,16 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 	}
 
+	// Parse bodyProperties (optional - defaults handled in resolveBodyPartRefs)
+	var bodyProperties []string
+	if request.Args.Has("bodyProperties") {
+		bp, ok := request.Args.StringSlice("bodyProperties")
+		if !ok {
+			return errorResponse(request.ClientID, jmaperror.InvalidArguments("bodyProperties must be an array of strings")), nil
+		}
+		bodyProperties = bp
+	}
+
 	// Parse fetch body values flags
 	fetchTextBodyValues := request.Args.BoolOr("fetchTextBodyValues", false)
 	fetchHTMLBodyValues := request.Args.BoolOr("fetchHTMLBodyValues", false)
@@ -180,7 +190,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		}
 
 		// Transform email to response format
-		emailMap := h.transformEmail(ctx, accountID, emailItem, properties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues, maxBodyValueBytes, blobStreamer)
+		emailMap := h.transformEmail(ctx, accountID, emailItem, properties, bodyProperties, headerProps, rawHeaders, fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues, maxBodyValueBytes, blobStreamer)
 		list = append(list, emailMap)
 	}
 
@@ -351,7 +361,7 @@ func buildBodyValues(ctx context.Context, blobStreamer BlobStreamer, accountID s
 
 // transformEmail converts an EmailItem to the JMAP response format.
 // If properties is non-empty, only those properties are included.
-func (h *handler) transformEmail(ctx context.Context, accountID string, e *email.EmailItem, properties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool, maxBodyValueBytes int, blobStreamer BlobStreamer) map[string]any {
+func (h *handler) transformEmail(ctx context.Context, accountID string, e *email.EmailItem, properties []string, bodyProperties []string, headerProps []*headers.HeaderProperty, rawHeaders textproto.MIMEHeader, fetchText, fetchHTML, fetchAll bool, maxBodyValueBytes int, blobStreamer BlobStreamer) map[string]any {
 	// Build full email map
 	full := map[string]any{
 		"id":            e.EmailID,
@@ -375,9 +385,9 @@ func (h *handler) transformEmail(ctx context.Context, accountID string, e *email
 		"hasAttachment": e.HasAttachment,
 		"preview":       e.Preview,
 		"bodyStructure": transformBodyPart(e.BodyStructure),
-		"textBody":      transformBodyPartRefs(e.TextBody),
-		"htmlBody":      transformBodyPartRefs(e.HTMLBody),
-		"attachments":   transformBodyPartRefs(e.Attachments),
+		"textBody":      resolveBodyPartRefs(e.TextBody, e.BodyStructure, bodyProperties),
+		"htmlBody":      resolveBodyPartRefs(e.HTMLBody, e.BodyStructure, bodyProperties),
+		"attachments":   resolveBodyPartRefs(e.Attachments, e.BodyStructure, bodyProperties),
 		"bodyValues":    buildBodyValues(ctx, blobStreamer, accountID, e, fetchText, fetchHTML, fetchAll, maxBodyValueBytes),
 	}
 
@@ -517,14 +527,67 @@ func transformBodyPart(bp email.BodyPart) map[string]any {
 	return result
 }
 
-// transformBodyPartRefs converts string slice to body part reference format.
-func transformBodyPartRefs(refs []string) []map[string]any {
+// defaultBodyProperties lists the default properties returned for body part
+// references per RFC 8621 Section 4.1.4 (all EmailBodyPart properties except subParts).
+var defaultBodyProperties = []string{
+	"partId", "blobId", "size", "name", "type",
+	"charset", "disposition", "cid", "language", "location",
+}
+
+// resolveBodyPartRefs resolves part ID references to full EmailBodyPart objects
+// by looking them up in the bodyStructure tree. If bodyProperties is nil, all
+// default leaf-part properties are included. Falls back to {"partId": ref} if
+// a part is not found in the tree.
+func resolveBodyPartRefs(refs []string, bodyStructure email.BodyPart, bodyProperties []string) []map[string]any {
 	if refs == nil {
 		return nil
 	}
+
+	if bodyProperties == nil {
+		bodyProperties = defaultBodyProperties
+	}
+
+	// Build a set for fast lookup
+	propSet := make(map[string]bool, len(bodyProperties))
+	for _, p := range bodyProperties {
+		propSet[p] = true
+	}
+
 	result := make([]map[string]any, len(refs))
 	for i, ref := range refs {
-		result[i] = map[string]any{"partId": ref}
+		part := findBodyPart(bodyStructure, ref)
+		if part == nil {
+			result[i] = map[string]any{"partId": ref}
+			continue
+		}
+
+		// Build full map of all leaf-part properties (no subParts)
+		full := map[string]any{
+			"partId": part.PartID,
+			"type":   part.Type,
+			"size":   part.Size,
+		}
+		if part.BlobID != "" {
+			full["blobId"] = part.BlobID
+		}
+		if part.Charset != "" {
+			full["charset"] = part.Charset
+		}
+		if part.Disposition != "" {
+			full["disposition"] = part.Disposition
+		}
+		if part.Name != "" {
+			full["name"] = part.Name
+		}
+
+		// Filter to requested bodyProperties
+		filtered := make(map[string]any, len(bodyProperties))
+		for _, key := range bodyProperties {
+			if val, ok := full[key]; ok {
+				filtered[key] = val
+			}
+		}
+		result[i] = filtered
 	}
 	return result
 }

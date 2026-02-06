@@ -2372,3 +2372,314 @@ func TestHandler_FetchHTMLBodyValues_ReturnsActualContent(t *testing.T) {
 		t.Errorf("bodyValues[\"2\"].value = %q, want %q", entry["value"], "<html><body>Hello</body></html>")
 	}
 }
+
+func TestResolveBodyPartRefs_AttachmentWithFullProperties(t *testing.T) {
+	bodyStructure := email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/mixed",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "blob-1", Size: 100, Charset: "utf-8"},
+			{PartID: "2", Type: "image/png", BlobID: "blob-2", Size: 50000, Name: "photo.png", Disposition: "attachment"},
+		},
+	}
+
+	result := resolveBodyPartRefs([]string{"2"}, bodyStructure, nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+
+	part := result[0]
+	if part["partId"] != "2" {
+		t.Errorf("partId = %v, want %q", part["partId"], "2")
+	}
+	if part["type"] != "image/png" {
+		t.Errorf("type = %v, want %q", part["type"], "image/png")
+	}
+	if part["blobId"] != "blob-2" {
+		t.Errorf("blobId = %v, want %q", part["blobId"], "blob-2")
+	}
+	if part["size"] != int64(50000) {
+		t.Errorf("size = %v, want %d", part["size"], 50000)
+	}
+	if part["name"] != "photo.png" {
+		t.Errorf("name = %v, want %q", part["name"], "photo.png")
+	}
+	if part["disposition"] != "attachment" {
+		t.Errorf("disposition = %v, want %q", part["disposition"], "attachment")
+	}
+	// Should not have subParts
+	if _, ok := part["subParts"]; ok {
+		t.Error("subParts should not be present in leaf part references")
+	}
+}
+
+func TestResolveBodyPartRefs_TextBodyWithCharset(t *testing.T) {
+	bodyStructure := email.BodyPart{
+		PartID: "1",
+		Type:   "text/plain",
+		BlobID: "blob-1",
+		Size:   200,
+		Charset: "iso-8859-1",
+	}
+
+	result := resolveBodyPartRefs([]string{"1"}, bodyStructure, nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+
+	part := result[0]
+	if part["partId"] != "1" {
+		t.Errorf("partId = %v, want %q", part["partId"], "1")
+	}
+	if part["charset"] != "iso-8859-1" {
+		t.Errorf("charset = %v, want %q", part["charset"], "iso-8859-1")
+	}
+	if part["type"] != "text/plain" {
+		t.Errorf("type = %v, want %q", part["type"], "text/plain")
+	}
+}
+
+func TestResolveBodyPartRefs_NilInput(t *testing.T) {
+	bodyStructure := email.BodyPart{PartID: "1", Type: "text/plain"}
+	result := resolveBodyPartRefs(nil, bodyStructure, nil)
+	if result != nil {
+		t.Errorf("expected nil for nil input, got %v", result)
+	}
+}
+
+func TestResolveBodyPartRefs_FallbackForNotFound(t *testing.T) {
+	bodyStructure := email.BodyPart{PartID: "1", Type: "text/plain"}
+
+	result := resolveBodyPartRefs([]string{"nonexistent"}, bodyStructure, nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+
+	part := result[0]
+	if part["partId"] != "nonexistent" {
+		t.Errorf("partId = %v, want %q", part["partId"], "nonexistent")
+	}
+	// Should only have partId for not-found parts
+	if len(part) != 1 {
+		t.Errorf("expected only partId key for not-found part, got %d keys: %v", len(part), part)
+	}
+}
+
+func TestResolveBodyPartRefs_FiltersByBodyProperties(t *testing.T) {
+	bodyStructure := email.BodyPart{
+		PartID:      "1",
+		Type:        "text/plain",
+		BlobID:      "blob-1",
+		Size:        200,
+		Charset:     "utf-8",
+		Disposition: "inline",
+		Name:        "message.txt",
+	}
+
+	// Only request partId and type
+	bodyProperties := []string{"partId", "type"}
+	result := resolveBodyPartRefs([]string{"1"}, bodyStructure, bodyProperties)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+
+	part := result[0]
+	if part["partId"] != "1" {
+		t.Errorf("partId = %v, want %q", part["partId"], "1")
+	}
+	if part["type"] != "text/plain" {
+		t.Errorf("type = %v, want %q", part["type"], "text/plain")
+	}
+	// Should NOT have properties not in bodyProperties
+	if _, ok := part["blobId"]; ok {
+		t.Error("blobId should not be present when not in bodyProperties")
+	}
+	if _, ok := part["size"]; ok {
+		t.Error("size should not be present when not in bodyProperties")
+	}
+	if _, ok := part["charset"]; ok {
+		t.Error("charset should not be present when not in bodyProperties")
+	}
+	if _, ok := part["name"]; ok {
+		t.Error("name should not be present when not in bodyProperties")
+	}
+}
+
+func TestHandler_BodyProperties_FiltersBodyPartOutput(t *testing.T) {
+	// When bodyProperties is specified in request args, textBody/htmlBody/attachments
+	// should only include those properties
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.Attachments = []string{"2"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID: "0",
+		Type:   "multipart/mixed",
+		SubParts: []email.BodyPart{
+			{PartID: "1", Type: "text/plain", BlobID: "blob-1", Size: 100, Charset: "utf-8"},
+			{PartID: "2", Type: "image/png", BlobID: "blob-2", Size: 50000, Name: "photo.png", Disposition: "attachment"},
+		},
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":      "user-123",
+			"ids":            []any{"email-1"},
+			"properties":     []any{"textBody", "attachments"},
+			"bodyProperties": []any{"partId", "type", "name"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	// Check attachments have filtered properties
+	attachments, ok := emailMap["attachments"].([]map[string]any)
+	if !ok {
+		t.Fatalf("attachments should be []map[string]any, got %T: %v", emailMap["attachments"], emailMap["attachments"])
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("attachments length = %d, want 1", len(attachments))
+	}
+	att := attachments[0]
+	if att["partId"] != "2" {
+		t.Errorf("attachment partId = %v, want %q", att["partId"], "2")
+	}
+	if att["type"] != "image/png" {
+		t.Errorf("attachment type = %v, want %q", att["type"], "image/png")
+	}
+	if att["name"] != "photo.png" {
+		t.Errorf("attachment name = %v, want %q", att["name"], "photo.png")
+	}
+	// blobId should NOT be present (not in bodyProperties)
+	if _, ok := att["blobId"]; ok {
+		t.Error("attachment blobId should not be present when not in bodyProperties")
+	}
+	// size should NOT be present
+	if _, ok := att["size"]; ok {
+		t.Error("attachment size should not be present when not in bodyProperties")
+	}
+}
+
+func TestHandler_TextBody_ReturnsFullBodyParts(t *testing.T) {
+	// textBody should return full EmailBodyPart objects, not just {"partId": ref}
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.TextBody = []string{"1"}
+	testEmail.BodyStructure = email.BodyPart{
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "blob-text-1",
+		Size:    500,
+		Charset: "utf-8",
+	}
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, nil, nil, defaultMaxBodyValueBytes)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/get",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId":  "user-123",
+			"ids":        []any{"email-1"},
+			"properties": []any{"textBody"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	list, ok := response.MethodResponse.Args["list"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("list should have one email")
+	}
+
+	emailMap, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatal("list[0] should be a map")
+	}
+
+	textBody, ok := emailMap["textBody"].([]map[string]any)
+	if !ok {
+		t.Fatalf("textBody should be []map[string]any, got %T: %v", emailMap["textBody"], emailMap["textBody"])
+	}
+	if len(textBody) != 1 {
+		t.Fatalf("textBody length = %d, want 1", len(textBody))
+	}
+
+	part := textBody[0]
+	if part["partId"] != "1" {
+		t.Errorf("textBody[0].partId = %v, want %q", part["partId"], "1")
+	}
+	if part["type"] != "text/plain" {
+		t.Errorf("textBody[0].type = %v, want %q", part["type"], "text/plain")
+	}
+	if part["blobId"] != "blob-text-1" {
+		t.Errorf("textBody[0].blobId = %v, want %q", part["blobId"], "blob-text-1")
+	}
+	if part["size"] != int64(500) {
+		t.Errorf("textBody[0].size = %v, want %d", part["size"], 500)
+	}
+	if part["charset"] != "utf-8" {
+		t.Errorf("textBody[0].charset = %v, want %q", part["charset"], "utf-8")
+	}
+}
+
+func TestResolveBodyPartRefs_DefaultBodyProperties(t *testing.T) {
+	// When bodyProperties is nil, all default leaf-part properties should be included
+	bodyStructure := email.BodyPart{
+		PartID:      "1",
+		Type:        "text/plain",
+		BlobID:      "blob-1",
+		Size:        200,
+		Charset:     "utf-8",
+		Disposition: "inline",
+		Name:        "message.txt",
+	}
+
+	result := resolveBodyPartRefs([]string{"1"}, bodyStructure, nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+
+	part := result[0]
+	// All set properties should be present with default bodyProperties
+	expectedKeys := []string{"partId", "type", "blobId", "size", "charset", "disposition", "name"}
+	for _, key := range expectedKeys {
+		if _, ok := part[key]; !ok {
+			t.Errorf("expected key %q to be present with default bodyProperties", key)
+		}
+	}
+}
