@@ -40,10 +40,19 @@ type SearchResult struct {
 	Position int
 }
 
+const (
+	// subjectBoost multiplies similarity scores for subject vectors in Text queries.
+	subjectBoost = 1.5
+	// relevanceWeight controls the blend between relevance and recency in Text queries.
+	// 0.6 means 60% relevance, 40% recency.
+	relevanceWeight = 0.6
+)
+
 // searchResult is an internal type for sorting results.
 type searchResult struct {
 	emailID    string
 	receivedAt string
+	score      float32
 }
 
 // Search performs a vector-based search for emails matching the filter.
@@ -68,8 +77,15 @@ func (vs *VectorSearcher) Search(ctx context.Context, accountID string, filter *
 		metaFilter["type"] = map[string]any{"$eq": typeFilter}
 	}
 
-	// Query vectors with headroom for deduplication and pagination
-	topK := int32((position + limit) * 3)
+	// Query vectors with headroom for deduplication and pagination.
+	// Text queries (no type filter) use a higher multiplier to give subject
+	// vectors more room to survive the top-K cutoff.
+	isTextQuery := typeFilter == ""
+	multiplier := 3
+	if isTextQuery {
+		multiplier = 5
+	}
+	topK := int32((position + limit) * multiplier)
 	if topK < 50 {
 		topK = 50
 	}
@@ -83,26 +99,75 @@ func (vs *VectorSearcher) Search(ctx context.Context, accountID string, filter *
 		return nil, fmt.Errorf("query vectors: %w", err)
 	}
 
-	// Deduplicate by emailId and collect receivedAt for sorting
-	seen := make(map[string]bool)
+	// Deduplicate by emailId, tracking the best score per email.
+	// For Text queries, subject vectors get a similarity boost.
+	seen := make(map[string]int) // emailID → index in items
 	var items []searchResult
 	for _, r := range results {
 		emailID, _ := r.Metadata["emailId"].(string)
-		if emailID == "" || seen[emailID] {
+		if emailID == "" {
 			continue
 		}
-		seen[emailID] = true
+
+		similarity := 1 - r.Distance
+		if isTextQuery {
+			vecType, _ := r.Metadata["type"].(string)
+			if vecType == "subject" {
+				similarity *= subjectBoost
+				if similarity > 1.0 {
+					similarity = 1.0
+				}
+			}
+		}
+
+		if idx, exists := seen[emailID]; exists {
+			// Max-wins: keep the higher boosted score
+			if similarity > items[idx].score {
+				items[idx].score = similarity
+			}
+			continue
+		}
+
+		seen[emailID] = len(items)
 		receivedAt, _ := r.Metadata["receivedAt"].(string)
 		items = append(items, searchResult{
 			emailID:    emailID,
 			receivedAt: receivedAt,
+			score:      similarity,
 		})
 	}
 
-	// Sort by receivedAt descending
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].receivedAt > items[j].receivedAt
-	})
+	if isTextQuery && len(items) > 0 {
+		// Compute recency scores normalised across the result set
+		minTime := items[0].receivedAt
+		maxTime := items[0].receivedAt
+		for _, item := range items[1:] {
+			if item.receivedAt < minTime {
+				minTime = item.receivedAt
+			}
+			if item.receivedAt > maxTime {
+				maxTime = item.receivedAt
+			}
+		}
+
+		for i := range items {
+			var recency float32 = 1.0
+			if minTime != maxTime {
+				recency = timestampToRecency(items[i].receivedAt, minTime, maxTime)
+			}
+			items[i].score = float32(relevanceWeight)*items[i].score + float32(1-relevanceWeight)*recency
+		}
+
+		// Sort by blended score descending
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].score > items[j].score
+		})
+	} else {
+		// Sort by receivedAt descending for type-filtered queries
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].receivedAt > items[j].receivedAt
+		})
+	}
 
 	// Apply position/limit pagination
 	startIdx := position
@@ -198,4 +263,34 @@ func BuildMetadataFilter(filter *email.QueryFilter) map[string]any {
 	}
 
 	return meta
+}
+
+// timestampToRecency normalises a timestamp string to a 0.0–1.0 recency score
+// relative to the min and max timestamps in the result set. Newest = 1.0, oldest = 0.0.
+// Uses byte-level comparison which works correctly for RFC3339 timestamps.
+func timestampToRecency(ts, minTS, maxTS string) float32 {
+	// Convert to comparable numeric values using the timestamp bytes directly.
+	// Since timestamps are fixed-format RFC3339 (e.g. "2024-01-20T10:00:00Z"),
+	// lexicographic order equals chronological order.
+	tsVal := timestampToFloat(ts)
+	minVal := timestampToFloat(minTS)
+	maxVal := timestampToFloat(maxTS)
+	if maxVal == minVal {
+		return 1.0
+	}
+	return float32((tsVal - minVal) / (maxVal - minVal))
+}
+
+// timestampToFloat converts an RFC3339 timestamp to a float64 for normalisation.
+// Extracts numeric components to produce a comparable value.
+func timestampToFloat(ts string) float64 {
+	// Parse "2024-01-20T10:00:00Z" into a numeric value.
+	// We only need relative ordering, so we can use a simple positional extraction.
+	var val float64
+	for _, b := range []byte(ts) {
+		if b >= '0' && b <= '9' {
+			val = val*10 + float64(b-'0')
+		}
+	}
+	return val
 }
