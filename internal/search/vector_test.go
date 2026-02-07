@@ -342,3 +342,290 @@ func TestSortByReceivedAtDescending(t *testing.T) {
 		t.Errorf("items[2] = %q, want email-1", items[2].emailID)
 	}
 }
+
+func TestVectorSearch_TextFilter_SubjectBoostRanking(t *testing.T) {
+	// In a Text query (no type filter), a subject match on an older email should
+	// rank above a weak body match on a newer email when the relevance gap is
+	// large enough to overcome the recency difference.
+	//
+	// Scores:
+	//   email-new: body, distance=0.7 → sim=0.3, no boost → relevance=0.3
+	//   email-old: subject, distance=0.3 → sim=0.7, boosted=0.7*1.5=1.0 (capped) → relevance=1.0
+	// Recency (normalised): email-new=1.0, email-old=0.0
+	// Final: email-old = 0.6*1.0 + 0.4*0.0 = 0.60
+	//        email-new = 0.6*0.3 + 0.4*1.0 = 0.58
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return []vectorstore.QueryResult{
+				{
+					Key:      "email-new#body0",
+					Distance: 0.7, // similarity = 0.3 (weak body match)
+					Metadata: map[string]any{
+						"emailId":    "email-new",
+						"receivedAt": "2024-01-20T12:00:00Z",
+						"type":       "body",
+					},
+				},
+				{
+					Key:      "email-old#subj",
+					Distance: 0.3, // similarity = 0.7, boosted to 1.0 (capped)
+					Metadata: map[string]any{
+						"emailId":    "email-old",
+						"receivedAt": "2024-01-20T10:00:00Z",
+						"type":       "subject",
+					},
+				},
+			}, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	result, err := vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Text: "meeting notes",
+	}, 0, 25)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	// Subject-boosted email-old should rank first despite being older
+	if result.IDs[0] != "email-old" {
+		t.Errorf("IDs[0] = %q, want %q (subject boost should rank higher)", result.IDs[0], "email-old")
+	}
+	if result.IDs[1] != "email-new" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-new")
+	}
+}
+
+func TestVectorSearch_TextFilter_MaxWinsDedup(t *testing.T) {
+	// When an email has both a subject vector and body chunks, dedup should
+	// keep the higher boosted score (subject), not first-seen (body).
+	//
+	// Scores:
+	//   email-1: body distance=0.4 → sim=0.6, subject distance=0.3 → sim=0.7 → boosted=1.0
+	//            Max-wins keeps 1.0
+	//   email-2: body distance=0.6 → sim=0.4
+	// Recency: email-2 is newer (1.0), email-1 is older (0.0)
+	// Final: email-1 = 0.6*1.0 + 0.4*0.0 = 0.60
+	//        email-2 = 0.6*0.4 + 0.4*1.0 = 0.64
+	//
+	// Without max-wins (first-seen body score=0.6):
+	//   email-1 = 0.6*0.6 + 0.4*0.0 = 0.36 → email-2 wins
+	// With max-wins (subject score=1.0):
+	//   email-1 = 0.6*1.0 + 0.4*0.0 = 0.60 → close, but we need email-1 to win.
+	//   To guarantee this, make email-2's body match even weaker.
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return []vectorstore.QueryResult{
+				{
+					Key:      "email-1#body0",
+					Distance: 0.4, // similarity = 0.6 (no boost for body)
+					Metadata: map[string]any{
+						"emailId":    "email-1",
+						"receivedAt": "2024-01-20T10:00:00Z",
+						"type":       "body",
+					},
+				},
+				{
+					Key:      "email-1#subj",
+					Distance: 0.3, // similarity = 0.7, boosted to 1.0 (capped)
+					Metadata: map[string]any{
+						"emailId":    "email-1",
+						"receivedAt": "2024-01-20T10:00:00Z",
+						"type":       "subject",
+					},
+				},
+				{
+					Key:      "email-2#body0",
+					Distance: 0.8, // similarity = 0.2 (weak match)
+					Metadata: map[string]any{
+						"emailId":    "email-2",
+						"receivedAt": "2024-01-20T11:00:00Z",
+						"type":       "body",
+					},
+				},
+			}, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	result, err := vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Text: "test",
+	}, 0, 25)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	// email-1 boosted score=1.0, email-2 body score=0.2
+	// Final: email-1 = 0.6*1.0 + 0.4*0.0 = 0.60
+	//        email-2 = 0.6*0.2 + 0.4*1.0 = 0.52
+	// email-1 ranks first, proving max-wins kept the subject score.
+	if result.IDs[0] != "email-1" {
+		t.Errorf("IDs[0] = %q, want %q (max-wins dedup should keep subject score)", result.IDs[0], "email-1")
+	}
+}
+
+func TestVectorSearch_BodyFilter_ReceivedAtSort(t *testing.T) {
+	// Body-only queries should still sort by receivedAt descending (no blended ranking)
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return []vectorstore.QueryResult{
+				{
+					Key:      "email-old#0",
+					Distance: 0.05, // very close match
+					Metadata: map[string]any{
+						"emailId":    "email-old",
+						"receivedAt": "2024-01-20T10:00:00Z",
+						"type":       "body",
+					},
+				},
+				{
+					Key:      "email-new#0",
+					Distance: 0.9, // poor match
+					Metadata: map[string]any{
+						"emailId":    "email-new",
+						"receivedAt": "2024-01-20T12:00:00Z",
+						"type":       "body",
+					},
+				},
+			}, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	result, err := vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Body: "test query",
+	}, 0, 25)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	// Body-only: sorted by receivedAt descending regardless of distance
+	if result.IDs[0] != "email-new" {
+		t.Errorf("IDs[0] = %q, want %q (body-only should sort by receivedAt)", result.IDs[0], "email-new")
+	}
+	if result.IDs[1] != "email-old" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-old")
+	}
+}
+
+func TestVectorSearch_SubjectFilter_ReceivedAtSort(t *testing.T) {
+	// Subject-only queries should still sort by receivedAt descending (no blended ranking)
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return []vectorstore.QueryResult{
+				{
+					Key:      "email-old#subj",
+					Distance: 0.05, // very close match
+					Metadata: map[string]any{
+						"emailId":    "email-old",
+						"receivedAt": "2024-01-20T10:00:00Z",
+						"type":       "subject",
+					},
+				},
+				{
+					Key:      "email-new#subj",
+					Distance: 0.9, // poor match
+					Metadata: map[string]any{
+						"emailId":    "email-new",
+						"receivedAt": "2024-01-20T12:00:00Z",
+						"type":       "subject",
+					},
+				},
+			}, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	result, err := vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Subject: "PTO request",
+	}, 0, 25)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	// Subject-only: sorted by receivedAt descending regardless of distance
+	if result.IDs[0] != "email-new" {
+		t.Errorf("IDs[0] = %q, want %q (subject-only should sort by receivedAt)", result.IDs[0], "email-new")
+	}
+	if result.IDs[1] != "email-old" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-old")
+	}
+}
+
+func TestVectorSearch_TextFilter_TopKMultiplier(t *testing.T) {
+	// Text queries (no type filter) should use multiplier of 5
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return nil, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Text: "test",
+	}, 0, 25)
+
+	if len(store.queryCalls) != 1 {
+		t.Fatalf("query calls = %d, want 1", len(store.queryCalls))
+	}
+	// (0 + 25) * 5 = 125
+	if store.queryCalls[0].TopK != 125 {
+		t.Errorf("TopK = %d, want 125 (multiplier 5 for Text queries)", store.queryCalls[0].TopK)
+	}
+}
+
+func TestVectorSearch_BodyFilter_TopKMultiplier(t *testing.T) {
+	// Body queries should use multiplier of 3
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return nil, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Body: "test",
+	}, 0, 25)
+
+	if len(store.queryCalls) != 1 {
+		t.Fatalf("query calls = %d, want 1", len(store.queryCalls))
+	}
+	// (0 + 25) * 3 = 75
+	if store.queryCalls[0].TopK != 75 {
+		t.Errorf("TopK = %d, want 75 (multiplier 3 for Body queries)", store.queryCalls[0].TopK)
+	}
+}
+
+func TestVectorSearch_SubjectFilter_TopKMultiplier(t *testing.T) {
+	// Subject queries should use multiplier of 3
+	store := &mockVectorStore{
+		queryFunc: func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error) {
+			return nil, nil
+		},
+	}
+
+	vs := NewVectorSearcher(&mockEmbedder{}, store)
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+		Subject: "test",
+	}, 0, 25)
+
+	if len(store.queryCalls) != 1 {
+		t.Fatalf("query calls = %d, want 1", len(store.queryCalls))
+	}
+	// (0 + 25) * 3 = 75
+	if store.queryCalls[0].TopK != 75 {
+		t.Errorf("TopK = %d, want 75 (multiplier 3 for Subject queries)", store.queryCalls[0].TopK)
+	}
+}
