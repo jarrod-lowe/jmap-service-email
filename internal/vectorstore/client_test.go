@@ -12,9 +12,10 @@ import (
 
 // mockS3VectorsAPI implements S3VectorsAPI for testing.
 type mockS3VectorsAPI struct {
-	createIndexFunc  func(ctx context.Context, params *s3vectors.CreateIndexInput, optFns ...func(*s3vectors.Options)) (*s3vectors.CreateIndexOutput, error)
-	putVectorsFunc   func(ctx context.Context, params *s3vectors.PutVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.PutVectorsOutput, error)
+	createIndexFunc   func(ctx context.Context, params *s3vectors.CreateIndexInput, optFns ...func(*s3vectors.Options)) (*s3vectors.CreateIndexOutput, error)
+	putVectorsFunc    func(ctx context.Context, params *s3vectors.PutVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.PutVectorsOutput, error)
 	deleteVectorsFunc func(ctx context.Context, params *s3vectors.DeleteVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.DeleteVectorsOutput, error)
+	queryVectorsFunc  func(ctx context.Context, params *s3vectors.QueryVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.QueryVectorsOutput, error)
 }
 
 func (m *mockS3VectorsAPI) CreateIndex(ctx context.Context, params *s3vectors.CreateIndexInput, optFns ...func(*s3vectors.Options)) (*s3vectors.CreateIndexOutput, error) {
@@ -36,6 +37,13 @@ func (m *mockS3VectorsAPI) DeleteVectors(ctx context.Context, params *s3vectors.
 		return m.deleteVectorsFunc(ctx, params, optFns...)
 	}
 	return &s3vectors.DeleteVectorsOutput{}, nil
+}
+
+func (m *mockS3VectorsAPI) QueryVectors(ctx context.Context, params *s3vectors.QueryVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.QueryVectorsOutput, error) {
+	if m.queryVectorsFunc != nil {
+		return m.queryVectorsFunc(ctx, params, optFns...)
+	}
+	return &s3vectors.QueryVectorsOutput{Vectors: []types.QueryOutputVector{}}, nil
 }
 
 func TestS3VectorsClient_EnsureIndex_CreatesNew(t *testing.T) {
@@ -203,5 +211,93 @@ func TestS3VectorsClient_DeleteVectors_Empty(t *testing.T) {
 	}
 	if callCount != 0 {
 		t.Error("DeleteVectors should not be called for empty keys")
+	}
+}
+
+func TestS3VectorsClient_QueryVectors_Success(t *testing.T) {
+	var capturedInput *s3vectors.QueryVectorsInput
+	mock := &mockS3VectorsAPI{
+		queryVectorsFunc: func(ctx context.Context, params *s3vectors.QueryVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.QueryVectorsOutput, error) {
+			capturedInput = params
+			return &s3vectors.QueryVectorsOutput{
+				Vectors: []types.QueryOutputVector{
+					{Key: aws.String("email-1#0"), Distance: aws.Float32(0.1)},
+					{Key: aws.String("email-2#0"), Distance: aws.Float32(0.3)},
+				},
+			}, nil
+		},
+	}
+
+	client := NewS3VectorsClient(mock, "my-vector-bucket", nil)
+	results, err := client.QueryVectors(context.Background(), "user-123", QueryRequest{
+		Vector: []float32{0.1, 0.2, 0.3},
+		TopK:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedInput == nil {
+		t.Fatal("QueryVectors was not called")
+	}
+	if *capturedInput.IndexName != "acct-user-123" {
+		t.Errorf("IndexName = %q, want %q", *capturedInput.IndexName, "acct-user-123")
+	}
+	if *capturedInput.TopK != 10 {
+		t.Errorf("TopK = %d, want 10", *capturedInput.TopK)
+	}
+	if !capturedInput.ReturnMetadata {
+		t.Error("ReturnMetadata should be true")
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("results length = %d, want 2", len(results))
+	}
+	if results[0].Key != "email-1#0" {
+		t.Errorf("results[0].Key = %q, want %q", results[0].Key, "email-1#0")
+	}
+}
+
+func TestS3VectorsClient_QueryVectors_WithFilter(t *testing.T) {
+	var capturedInput *s3vectors.QueryVectorsInput
+	mock := &mockS3VectorsAPI{
+		queryVectorsFunc: func(ctx context.Context, params *s3vectors.QueryVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.QueryVectorsOutput, error) {
+			capturedInput = params
+			return &s3vectors.QueryVectorsOutput{Vectors: []types.QueryOutputVector{}}, nil
+		},
+	}
+
+	client := NewS3VectorsClient(mock, "my-vector-bucket", nil)
+	filter := map[string]any{
+		"type": map[string]any{"$eq": "body"},
+	}
+	_, err := client.QueryVectors(context.Background(), "user-123", QueryRequest{
+		Vector: []float32{0.1, 0.2},
+		TopK:   5,
+		Filter: filter,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedInput.Filter == nil {
+		t.Error("Filter should be set")
+	}
+}
+
+func TestS3VectorsClient_QueryVectors_Error(t *testing.T) {
+	mock := &mockS3VectorsAPI{
+		queryVectorsFunc: func(ctx context.Context, params *s3vectors.QueryVectorsInput, optFns ...func(*s3vectors.Options)) (*s3vectors.QueryVectorsOutput, error) {
+			return nil, errors.New("query failed")
+		},
+	}
+
+	client := NewS3VectorsClient(mock, "my-vector-bucket", nil)
+	_, err := client.QueryVectors(context.Background(), "user-123", QueryRequest{
+		Vector: []float32{0.1},
+		TopK:   5,
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }

@@ -197,6 +197,59 @@ func TestQueryFilter_InMailbox(t *testing.T) {
 	}
 }
 
+func TestQueryFilter_NeedsVectorSearch(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter QueryFilter
+		want   bool
+	}{
+		{"empty filter", QueryFilter{}, false},
+		{"inMailbox only", QueryFilter{InMailbox: "inbox"}, false},
+		{"hasKeyword only", QueryFilter{HasKeyword: "$seen"}, false},
+		{"from only", QueryFilter{From: "alice"}, false},
+		{"text filter", QueryFilter{Text: "hello"}, true},
+		{"body filter", QueryFilter{Body: "hello"}, true},
+		{"subject filter", QueryFilter{Subject: "meeting"}, true},
+		{"text + inMailbox", QueryFilter{Text: "hello", InMailbox: "inbox"}, true},
+		{"subject + from", QueryFilter{Subject: "PTO", From: "alice"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.filter.NeedsVectorSearch()
+			if got != tt.want {
+				t.Errorf("NeedsVectorSearch() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryFilter_HasAddressFilter(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter QueryFilter
+		want   bool
+	}{
+		{"empty filter", QueryFilter{}, false},
+		{"inMailbox only", QueryFilter{InMailbox: "inbox"}, false},
+		{"text only", QueryFilter{Text: "hello"}, false},
+		{"from", QueryFilter{From: "alice"}, true},
+		{"to", QueryFilter{To: "bob"}, true},
+		{"cc", QueryFilter{CC: "carol"}, true},
+		{"bcc", QueryFilter{Bcc: "dave"}, true},
+		{"from + inMailbox", QueryFilter{From: "alice", InMailbox: "inbox"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.filter.HasAddressFilter()
+			if got != tt.want {
+				t.Errorf("HasAddressFilter() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestComparator_Defaults(t *testing.T) {
 	comp := Comparator{Property: "receivedAt"}
 	if comp.IsAscending != false {

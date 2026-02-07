@@ -68,6 +68,12 @@ type VectorStore interface {
 	DeleteVectors(ctx context.Context, accountID string, keys []string) error
 }
 
+// TokenWriter writes and deletes address search tokens.
+type TokenWriter interface {
+	WriteTokens(ctx context.Context, emailItem *email.EmailItem) error
+	DeleteTokens(ctx context.Context, emailItem *email.EmailItem) error
+}
+
 // handler implements the email-index SQS consumer logic.
 type handler struct {
 	emailReader       EmailReader
@@ -75,16 +81,18 @@ type handler struct {
 	blobClientFactory func(baseURL string) BlobStreamer
 	embedder          EmbeddingClient
 	vectorStore       VectorStore
+	tokenWriter       TokenWriter
 }
 
 // newHandler creates a new handler.
-func newHandler(reader EmailReader, updater EmailUpdater, blobClientFactory func(baseURL string) BlobStreamer, embedder EmbeddingClient, store VectorStore) *handler {
+func newHandler(reader EmailReader, updater EmailUpdater, blobClientFactory func(baseURL string) BlobStreamer, embedder EmbeddingClient, store VectorStore, tokenWriter TokenWriter) *handler {
 	return &handler{
 		emailReader:       reader,
 		emailUpdater:      updater,
 		blobClientFactory: blobClientFactory,
 		embedder:          embedder,
 		vectorStore:       store,
+		tokenWriter:       tokenWriter,
 	}
 }
 
@@ -148,7 +156,8 @@ func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQS
 	}, nil
 }
 
-// indexEmail indexes a single email: fetches text parts, chunks, embeds, and stores vectors.
+// indexEmail indexes a single email: fetches text parts, chunks, embeds, stores vectors,
+// writes address tokens, and creates subject vector.
 func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error {
 	// Read email from DynamoDB
 	emailItem, err := h.emailReader.GetEmail(ctx, msg.AccountID, msg.EmailID)
@@ -163,6 +172,13 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 		return fmt.Errorf("get email: %w", err)
 	}
 
+	// Write address tokens to DynamoDB
+	if h.tokenWriter != nil {
+		if err := h.tokenWriter.WriteTokens(ctx, emailItem); err != nil {
+			return fmt.Errorf("write tokens: %w", err)
+		}
+	}
+
 	// Determine which parts to index: prefer textBody, fall back to htmlBody
 	partIDs := emailItem.TextBody
 	isHTML := false
@@ -171,7 +187,7 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 		isHTML = true
 	}
 	if len(partIDs) == 0 {
-		// No text content to index
+		// No text content to index, but tokens were still written
 		logger.InfoContext(ctx, "No text parts to index",
 			slog.String("email_id", msg.EmailID),
 		)
@@ -186,10 +202,10 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 	// Build header prefix
 	headerPrefix := buildHeaderPrefix(emailItem)
 
-	// Build metadata for vectors
-	metadata := buildVectorMetadata(emailItem)
+	// Build metadata for vectors (body type)
+	metadata := buildVectorMetadata(emailItem, "body")
 
-	// Process parts and generate vectors
+	// Process parts and generate body vectors
 	chunkIndex := 0
 	var streamer BlobStreamer
 	if h.blobClientFactory != nil {
@@ -228,6 +244,13 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 		chunkIndex += processed
 	}
 
+	// Create subject vector
+	if emailItem.Subject != "" {
+		if err := h.indexSubjectVector(ctx, msg.AccountID, emailItem); err != nil {
+			return fmt.Errorf("index subject: %w", err)
+		}
+	}
+
 	// Update email record with chunk count
 	if err := h.emailUpdater.UpdateSearchChunks(ctx, msg.AccountID, msg.EmailID, chunkIndex); err != nil {
 		return fmt.Errorf("update search chunks: %w", err)
@@ -238,6 +261,24 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 		slog.Int("chunks", chunkIndex),
 	)
 	return nil
+}
+
+// indexSubjectVector creates a separate subject vector for subject-specific search.
+func (h *handler) indexSubjectVector(ctx context.Context, accountID string, emailItem *email.EmailItem) error {
+	vector, err := h.embedder.GenerateEmbedding(ctx, emailItem.Subject)
+	if err != nil {
+		return fmt.Errorf("generate subject embedding: %w", err)
+	}
+
+	metadata := buildVectorMetadata(emailItem, "subject")
+	metadata["chunkIndex"] = 0
+
+	key := emailItem.EmailID + "#subject"
+	return h.vectorStore.PutVector(ctx, accountID, vectorstore.Vector{
+		Key:      key,
+		Data:     vector,
+		Metadata: metadata,
+	})
 }
 
 // processPartStream reads text from a stream, chunks it, generates embeddings, and stores vectors.
@@ -314,7 +355,7 @@ func (h *handler) processPartStream(ctx context.Context, accountID, emailID, hea
 	return chunkIndex - startChunkIndex, nil
 }
 
-// deleteEmail removes all vectors for an email from the vector store.
+// deleteEmail removes all vectors and tokens for an email.
 func (h *handler) deleteEmail(ctx context.Context, msg searchindex.Message) error {
 	emailItem, err := h.emailReader.GetEmail(ctx, msg.AccountID, msg.EmailID)
 	if err != nil {
@@ -327,20 +368,28 @@ func (h *handler) deleteEmail(ctx context.Context, msg searchindex.Message) erro
 		return fmt.Errorf("get email: %w", err)
 	}
 
-	if emailItem.SearchChunks == 0 {
-		return nil
+	// Delete address tokens
+	if h.tokenWriter != nil {
+		if err := h.tokenWriter.DeleteTokens(ctx, emailItem); err != nil {
+			return fmt.Errorf("delete tokens: %w", err)
+		}
 	}
 
-	keys := make([]string, emailItem.SearchChunks)
-	for i := range keys {
-		keys[i] = fmt.Sprintf("%s#%d", msg.EmailID, i)
+	// Delete vectors (body chunks + subject vector)
+	if emailItem.SearchChunks > 0 {
+		keys := make([]string, 0, emailItem.SearchChunks+1)
+		for i := 0; i < emailItem.SearchChunks; i++ {
+			keys = append(keys, fmt.Sprintf("%s#%d", msg.EmailID, i))
+		}
+		// Also delete subject vector
+		keys = append(keys, msg.EmailID+"#subject")
+
+		if err := h.vectorStore.DeleteVectors(ctx, msg.AccountID, keys); err != nil {
+			return fmt.Errorf("delete vectors: %w", err)
+		}
 	}
 
-	if err := h.vectorStore.DeleteVectors(ctx, msg.AccountID, keys); err != nil {
-		return fmt.Errorf("delete vectors: %w", err)
-	}
-
-	logger.InfoContext(ctx, "Email vectors deleted",
+	logger.InfoContext(ctx, "Email search data deleted",
 		slog.String("email_id", msg.EmailID),
 		slog.Int("chunks", emailItem.SearchChunks),
 	)
@@ -395,8 +444,10 @@ func formatAddresses(addrs []email.EmailAddress) string {
 }
 
 // buildVectorMetadata constructs the metadata stored on each vector.
-func buildVectorMetadata(e *email.EmailItem) map[string]any {
+// vectorType is "body" or "subject".
+func buildVectorMetadata(e *email.EmailItem, vectorType string) map[string]any {
 	meta := map[string]any{
+		"type":          vectorType,
 		"emailId":       e.EmailID,
 		"hasAttachment": e.HasAttachment,
 		"size":          e.Size,
@@ -427,6 +478,21 @@ func buildVectorMetadata(e *email.EmailItem) map[string]any {
 		}
 		meta["keywords"] = keywords
 	}
+
+	// Address token lists for S3 Vectors metadata filtering
+	if tokens := email.TokenizeAddresses(e.From); len(tokens) > 0 {
+		meta["fromTokens"] = tokens
+	}
+	if tokens := email.TokenizeAddresses(e.To); len(tokens) > 0 {
+		meta["toTokens"] = tokens
+	}
+	if tokens := email.TokenizeAddresses(e.CC); len(tokens) > 0 {
+		meta["ccTokens"] = tokens
+	}
+	if tokens := email.TokenizeAddresses(e.Bcc); len(tokens) > 0 {
+		meta["bccTokens"] = tokens
+	}
+
 	return meta
 }
 
@@ -481,6 +547,8 @@ func main() {
 	s3vClient := s3vectors.NewFromConfig(result.Config)
 	store := vectorstore.NewS3VectorsClient(s3vClient, vectorBucketName, resourceTags)
 
-	h := newHandler(repo, repo, blobClientFactory, embedder, store)
+	tokenRepo := email.NewTokenRepository(dynamoClient, tableName)
+
+	h := newHandler(repo, repo, blobClientFactory, embedder, store, tokenRepo)
 	result.Start(h.handle)
 }

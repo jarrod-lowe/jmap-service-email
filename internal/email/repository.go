@@ -62,28 +62,9 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	// Determine query parameters based on filter
 	var queryInput *dynamodb.QueryInput
 	if req.Filter != nil && req.Filter.InMailbox != "" {
-		// Query mailbox membership items
-		skPrefix := PrefixMbox + req.Filter.InMailbox + "#" + PrefixEmail
-		queryInput = &dynamodb.QueryInput{
-			TableName:              aws.String(r.tableName),
-			KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrSK + ", :skPrefix)"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":pk":       &types.AttributeValueMemberS{Value: pk},
-				":skPrefix": &types.AttributeValueMemberS{Value: skPrefix},
-			},
-		}
+		queryInput = r.buildInMailboxQuery(pk, req.Filter)
 	} else {
-		// Query all emails using LSI
-		queryInput = &dynamodb.QueryInput{
-			TableName:              aws.String(r.tableName),
-			IndexName:              aws.String(dynamo.IndexLSI1),
-			KeyConditionExpression: aws.String(dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrLSI1SK + ", :lsiPrefix)"),
-			FilterExpression:       aws.String("attribute_not_exists(" + AttrDeletedAt + ")"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":pk":        &types.AttributeValueMemberS{Value: pk},
-				":lsiPrefix": &types.AttributeValueMemberS{Value: PrefixRcvd},
-			},
-		}
+		queryInput = r.buildLSIQuery(pk, req.Filter)
 	}
 
 	// Set sort order (default descending for receivedAt)
@@ -98,7 +79,13 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	if limit <= 0 {
 		limit = 25
 	}
-	queryInput.Limit = aws.Int32(int32(req.Position + limit))
+
+	// When post-filtering is needed, over-fetch to account for filtered-out results
+	fetchLimit := req.Position + limit
+	if req.Filter != nil && req.Filter.needsPostFilter() {
+		fetchLimit *= 4 // Over-fetch since some results will be filtered out
+	}
+	queryInput.Limit = aws.Int32(int32(fetchLimit))
 
 	// Execute query
 	output, err := r.client.Query(ctx, queryInput)
@@ -110,21 +97,42 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	allIDs := make([]string, 0, len(output.Items))
 	seenThreads := make(map[string]bool)
 
+	// If post-filtering is needed, fetch full records and apply filters
+	needsPostFilter := req.Filter != nil && req.Filter.needsPostFilter()
+
 	for _, item := range output.Items {
 		emailID, ok := item[AttrEmailID].(*types.AttributeValueMemberS)
 		if !ok {
 			continue
 		}
 
-		// If collapsing threads, skip emails from already-seen threads
-		if req.CollapseThreads {
-			if threadID, ok := item[AttrThreadID].(*types.AttributeValueMemberS); ok && threadID.Value != "" {
-				if seenThreads[threadID.Value] {
-					continue // Skip - already have an email from this thread
-				}
-				seenThreads[threadID.Value] = true
+		if needsPostFilter {
+			fullEmail, err := r.GetEmail(ctx, accountID, emailID.Value)
+			if err != nil {
+				continue // Skip emails that can't be fetched
 			}
-			// Emails without ThreadID are not collapsed (legacy data)
+			if !matchesFilter(fullEmail, req.Filter) {
+				continue
+			}
+
+			// Use thread info from full record for collapse
+			if req.CollapseThreads && fullEmail.ThreadID != "" {
+				if seenThreads[fullEmail.ThreadID] {
+					continue
+				}
+				seenThreads[fullEmail.ThreadID] = true
+			}
+		} else {
+			// If collapsing threads, skip emails from already-seen threads
+			if req.CollapseThreads {
+				if threadID, ok := item[AttrThreadID].(*types.AttributeValueMemberS); ok && threadID.Value != "" {
+					if seenThreads[threadID.Value] {
+						continue // Skip - already have an email from this thread
+					}
+					seenThreads[threadID.Value] = true
+				}
+				// Emails without ThreadID are not collapsed (legacy data)
+			}
 		}
 
 		allIDs = append(allIDs, emailID.Value)
@@ -145,6 +153,175 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 		Position:   req.Position,
 		QueryState: "", // TODO: implement state tracking
 	}, nil
+}
+
+// buildInMailboxQuery builds a DynamoDB query for the inMailbox path.
+// Uses MBOX# sort key with optional before/after key range constraints.
+func (r *Repository) buildInMailboxQuery(pk string, filter *QueryFilter) *dynamodb.QueryInput {
+	skBase := PrefixMbox + filter.InMailbox + "#" + PrefixEmail
+	exprValues := map[string]types.AttributeValue{
+		":pk": &types.AttributeValueMemberS{Value: pk},
+	}
+
+	var keyExpr string
+	if filter.After != nil && filter.Before != nil {
+		skAfter := skBase + filter.After.UTC().Format(time.RFC3339)
+		skBefore := skBase + filter.Before.UTC().Format(time.RFC3339)
+		keyExpr = dynamo.AttrPK + " = :pk AND " + dynamo.AttrSK + " BETWEEN :skAfter AND :skBefore"
+		exprValues[":skAfter"] = &types.AttributeValueMemberS{Value: skAfter}
+		exprValues[":skBefore"] = &types.AttributeValueMemberS{Value: skBefore}
+	} else if filter.After != nil {
+		skAfter := skBase + filter.After.UTC().Format(time.RFC3339)
+		keyExpr = dynamo.AttrPK + " = :pk AND " + dynamo.AttrSK + " >= :skAfter"
+		exprValues[":skAfter"] = &types.AttributeValueMemberS{Value: skAfter}
+	} else if filter.Before != nil {
+		skBefore := skBase + filter.Before.UTC().Format(time.RFC3339)
+		keyExpr = dynamo.AttrPK + " = :pk AND " + dynamo.AttrSK + " BETWEEN :skPrefix AND :skBefore"
+		exprValues[":skPrefix"] = &types.AttributeValueMemberS{Value: skBase}
+		exprValues[":skBefore"] = &types.AttributeValueMemberS{Value: skBefore}
+	} else {
+		keyExpr = dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrSK + ", :skPrefix)"
+		exprValues[":skPrefix"] = &types.AttributeValueMemberS{Value: skBase}
+	}
+
+	return &dynamodb.QueryInput{
+		TableName:                 aws.String(r.tableName),
+		KeyConditionExpression:    aws.String(keyExpr),
+		ExpressionAttributeValues: exprValues,
+	}
+}
+
+// buildLSIQuery builds a DynamoDB query for the all-emails LSI path.
+// Uses LSI1 (RCVD# sort key) with optional before/after key range constraints.
+func (r *Repository) buildLSIQuery(pk string, filter *QueryFilter) *dynamodb.QueryInput {
+	exprValues := map[string]types.AttributeValue{
+		":pk": &types.AttributeValueMemberS{Value: pk},
+	}
+
+	var keyExpr string
+	if filter != nil && filter.After != nil && filter.Before != nil {
+		lsiAfter := PrefixRcvd + filter.After.UTC().Format(time.RFC3339)
+		lsiBefore := PrefixRcvd + filter.Before.UTC().Format(time.RFC3339)
+		keyExpr = dynamo.AttrPK + " = :pk AND " + dynamo.AttrLSI1SK + " BETWEEN :lsiAfter AND :lsiBefore"
+		exprValues[":lsiAfter"] = &types.AttributeValueMemberS{Value: lsiAfter}
+		exprValues[":lsiBefore"] = &types.AttributeValueMemberS{Value: lsiBefore}
+	} else if filter != nil && filter.After != nil {
+		lsiAfter := PrefixRcvd + filter.After.UTC().Format(time.RFC3339)
+		keyExpr = dynamo.AttrPK + " = :pk AND " + dynamo.AttrLSI1SK + " >= :lsiAfter"
+		exprValues[":lsiAfter"] = &types.AttributeValueMemberS{Value: lsiAfter}
+	} else if filter != nil && filter.Before != nil {
+		lsiBefore := PrefixRcvd + filter.Before.UTC().Format(time.RFC3339)
+		keyExpr = dynamo.AttrPK + " = :pk AND " + dynamo.AttrLSI1SK + " BETWEEN :lsiPrefix AND :lsiBefore"
+		exprValues[":lsiPrefix"] = &types.AttributeValueMemberS{Value: PrefixRcvd}
+		exprValues[":lsiBefore"] = &types.AttributeValueMemberS{Value: lsiBefore}
+	} else {
+		keyExpr = dynamo.AttrPK + " = :pk AND begins_with(" + dynamo.AttrLSI1SK + ", :lsiPrefix)"
+		exprValues[":lsiPrefix"] = &types.AttributeValueMemberS{Value: PrefixRcvd}
+	}
+
+	return &dynamodb.QueryInput{
+		TableName:                 aws.String(r.tableName),
+		IndexName:                 aws.String(dynamo.IndexLSI1),
+		KeyConditionExpression:    aws.String(keyExpr),
+		FilterExpression:          aws.String("attribute_not_exists(" + AttrDeletedAt + ")"),
+		ExpressionAttributeValues: exprValues,
+	}
+}
+
+// needsPostFilter returns true if the filter requires loading full email records
+// for in-application filtering (structural filters beyond before/after).
+func (f *QueryFilter) needsPostFilter() bool {
+	return f.HasKeyword != "" ||
+		f.NotKeyword != "" ||
+		f.HasAttachment != nil ||
+		f.MinSize != nil ||
+		f.MaxSize != nil ||
+		len(f.InMailboxOtherThan) > 0
+}
+
+// matchesFilter checks if an email item matches all structural filter conditions.
+// Before/After are handled as key conditions and not checked here.
+func matchesFilter(e *EmailItem, f *QueryFilter) bool {
+	if f.HasKeyword != "" {
+		if !e.Keywords[f.HasKeyword] {
+			return false
+		}
+	}
+	if f.NotKeyword != "" {
+		if e.Keywords[f.NotKeyword] {
+			return false
+		}
+	}
+	if f.HasAttachment != nil {
+		if e.HasAttachment != *f.HasAttachment {
+			return false
+		}
+	}
+	if f.MinSize != nil {
+		if e.Size < *f.MinSize {
+			return false
+		}
+	}
+	if f.MaxSize != nil {
+		if e.Size > *f.MaxSize {
+			return false
+		}
+	}
+	if len(f.InMailboxOtherThan) > 0 {
+		for _, excludeID := range f.InMailboxOtherThan {
+			if e.MailboxIDs[excludeID] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// FilterEmailIDs takes a list of candidate email IDs, fetches full records,
+// and returns only those that match the given filter. Order is preserved.
+// If filter is nil, all IDs are returned unchanged.
+func (r *Repository) FilterEmailIDs(ctx context.Context, accountID string, emailIDs []string, filter *QueryFilter) ([]string, error) {
+	if filter == nil || len(emailIDs) == 0 {
+		return emailIDs, nil
+	}
+
+	var result []string
+	for _, emailID := range emailIDs {
+		e, err := r.GetEmail(ctx, accountID, emailID)
+		if err != nil {
+			continue // Skip emails that can't be fetched
+		}
+		if !matchesFilterFull(e, filter) {
+			continue
+		}
+		result = append(result, emailID)
+	}
+	return result, nil
+}
+
+// matchesFilterFull checks if an email matches all filter conditions including
+// inMailbox membership. Used by FilterEmailIDs for the token query join path.
+func matchesFilterFull(e *EmailItem, f *QueryFilter) bool {
+	// Check inMailbox
+	if f.InMailbox != "" {
+		if !e.MailboxIDs[f.InMailbox] {
+			return false
+		}
+	}
+
+	// Check before/after on the full record's receivedAt
+	if f.Before != nil {
+		if !e.ReceivedAt.Before(*f.Before) {
+			return false
+		}
+	}
+	if f.After != nil {
+		if !e.ReceivedAt.After(*f.After) && !e.ReceivedAt.Equal(*f.After) {
+			return false
+		}
+	}
+
+	return matchesFilter(e, f)
 }
 
 // FindByMessageID finds an email by its Message-ID header.

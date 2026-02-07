@@ -2095,3 +2095,397 @@ func TestMarshalMembershipItem_IncludesThreadID(t *testing.T) {
 		t.Errorf("threadId = %q, want %q", threadIDVal, "thread-abc")
 	}
 }
+
+func TestRepository_QueryEmails_InMailbox_BeforeAfter(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"emailId": &types.AttributeValueMemberS{Value: "email-1"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	before := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	after := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{
+			InMailbox: "inbox-id",
+			Before:    &before,
+			After:     &after,
+		},
+		Limit: 25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	if len(result.IDs) != 1 {
+		t.Fatalf("IDs length = %d, want 1", len(result.IDs))
+	}
+
+	// The key condition should use BETWEEN or >= and < to constrain the date range
+	keyExpr := *capturedInput.KeyConditionExpression
+	if keyExpr == "pk = :pk AND begins_with(sk, :skPrefix)" {
+		t.Error("KeyConditionExpression should apply before/after as key range, not just begins_with")
+	}
+
+	// Should have expression attribute values for the date range
+	if capturedInput.ExpressionAttributeValues[":skAfter"] == nil {
+		t.Error("Expected :skAfter expression attribute value")
+	}
+	if capturedInput.ExpressionAttributeValues[":skBefore"] == nil {
+		t.Error("Expected :skBefore expression attribute value")
+	}
+}
+
+func TestRepository_QueryEmails_NoFilter_BeforeAfter(t *testing.T) {
+	var capturedInput *dynamodb.QueryInput
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			capturedInput = input
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"emailId": &types.AttributeValueMemberS{Value: "email-1"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	before := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{
+			Before: &before,
+		},
+		Limit: 25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	if len(result.IDs) != 1 {
+		t.Fatalf("IDs length = %d, want 1", len(result.IDs))
+	}
+
+	// Should use LSI1 with a key range constraint
+	if capturedInput.IndexName == nil || *capturedInput.IndexName != "lsi1" {
+		t.Errorf("Expected IndexName = lsi1, got %v", capturedInput.IndexName)
+	}
+
+	keyExpr := *capturedInput.KeyConditionExpression
+	// Should constrain the key range for before date
+	if keyExpr == "pk = :pk AND begins_with(lsi1sk, :lsiPrefix)" {
+		t.Error("KeyConditionExpression should apply before as key range constraint")
+	}
+}
+
+func TestRepository_QueryEmails_InMailbox_HasKeyword(t *testing.T) {
+	// When hasKeyword is set, we need to fetch full records and filter in application.
+	// The initial MBOX query returns email IDs, then GetItem fetches full records.
+	getItemCalls := 0
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"emailId": &types.AttributeValueMemberS{Value: "email-1"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-2"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-3"}},
+				},
+			}, nil
+		},
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			getItemCalls++
+			sk := input.Key["sk"].(*types.AttributeValueMemberS).Value
+			switch sk {
+			case "EMAIL#email-1":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId": &types.AttributeValueMemberS{Value: "email-1"},
+						"keywords": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+							"$seen": &types.AttributeValueMemberBOOL{Value: true},
+						}},
+					},
+				}, nil
+			case "EMAIL#email-2":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":  &types.AttributeValueMemberS{Value: "email-2"},
+						"keywords": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}},
+					},
+				}, nil
+			case "EMAIL#email-3":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId": &types.AttributeValueMemberS{Value: "email-3"},
+						"keywords": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+							"$seen":    &types.AttributeValueMemberBOOL{Value: true},
+							"$flagged": &types.AttributeValueMemberBOOL{Value: true},
+						}},
+					},
+				}, nil
+			default:
+				return &dynamodb.GetItemOutput{}, nil
+			}
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{
+			InMailbox:  "inbox-id",
+			HasKeyword: "$seen",
+		},
+		Limit: 25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	// Only email-1 and email-3 have $seen keyword
+	if len(result.IDs) != 2 {
+		t.Fatalf("IDs length = %d, want 2", len(result.IDs))
+	}
+	if result.IDs[0] != "email-1" {
+		t.Errorf("IDs[0] = %q, want %q", result.IDs[0], "email-1")
+	}
+	if result.IDs[1] != "email-3" {
+		t.Errorf("IDs[1] = %q, want %q", result.IDs[1], "email-3")
+	}
+
+	// Should have fetched full records
+	if getItemCalls != 3 {
+		t.Errorf("GetItem calls = %d, want 3", getItemCalls)
+	}
+}
+
+func TestRepository_QueryEmails_StructuralFilters(t *testing.T) {
+	// Test multiple structural filters: hasAttachment, minSize, notKeyword
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"emailId": &types.AttributeValueMemberS{Value: "email-1"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-2"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-3"}},
+				},
+			}, nil
+		},
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			sk := input.Key["sk"].(*types.AttributeValueMemberS).Value
+			switch sk {
+			case "EMAIL#email-1":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":       &types.AttributeValueMemberS{Value: "email-1"},
+						"hasAttachment": &types.AttributeValueMemberBOOL{Value: true},
+						"size":          &types.AttributeValueMemberN{Value: "5000"},
+						"keywords":      &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}},
+					},
+				}, nil
+			case "EMAIL#email-2":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":       &types.AttributeValueMemberS{Value: "email-2"},
+						"hasAttachment": &types.AttributeValueMemberBOOL{Value: true},
+						"size":          &types.AttributeValueMemberN{Value: "500"},
+						"keywords":      &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}},
+					},
+				}, nil
+			case "EMAIL#email-3":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":       &types.AttributeValueMemberS{Value: "email-3"},
+						"hasAttachment": &types.AttributeValueMemberBOOL{Value: false},
+						"size":          &types.AttributeValueMemberN{Value: "10000"},
+						"keywords": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+							"$draft": &types.AttributeValueMemberBOOL{Value: true},
+						}},
+					},
+				}, nil
+			default:
+				return &dynamodb.GetItemOutput{}, nil
+			}
+		},
+	}
+
+	hasAttachment := true
+	minSize := int64(1000)
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{
+			InMailbox:     "inbox-id",
+			HasAttachment: &hasAttachment,
+			MinSize:       &minSize,
+			NotKeyword:    "$draft",
+		},
+		Limit: 25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	// email-1: attachment=true, size=5000, no draft -> PASS
+	// email-2: attachment=true, size=500 < 1000 -> FAIL (minSize)
+	// email-3: attachment=false -> FAIL (hasAttachment)
+	if len(result.IDs) != 1 {
+		t.Fatalf("IDs length = %d, want 1", len(result.IDs))
+	}
+	if result.IDs[0] != "email-1" {
+		t.Errorf("IDs[0] = %q, want %q", result.IDs[0], "email-1")
+	}
+}
+
+func TestRepository_FilterEmailIDs(t *testing.T) {
+	mockClient := &mockDynamoDBClient{
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			sk := input.Key["sk"].(*types.AttributeValueMemberS).Value
+			switch sk {
+			case "EMAIL#email-1":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":    &types.AttributeValueMemberS{Value: "email-1"},
+						"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+						"size":       &types.AttributeValueMemberN{Value: "5000"},
+						"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"inbox-id": &types.AttributeValueMemberBOOL{Value: true}}},
+						"keywords":   &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"$seen": &types.AttributeValueMemberBOOL{Value: true}}},
+					},
+				}, nil
+			case "EMAIL#email-2":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":    &types.AttributeValueMemberS{Value: "email-2"},
+						"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+						"size":       &types.AttributeValueMemberN{Value: "200"},
+						"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"inbox-id": &types.AttributeValueMemberBOOL{Value: true}}},
+						"keywords":   &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}},
+					},
+				}, nil
+			case "EMAIL#email-3":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":    &types.AttributeValueMemberS{Value: "email-3"},
+						"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+						"size":       &types.AttributeValueMemberN{Value: "8000"},
+						"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"sent-id": &types.AttributeValueMemberBOOL{Value: true}}},
+						"keywords":   &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"$seen": &types.AttributeValueMemberBOOL{Value: true}}},
+					},
+				}, nil
+			default:
+				return &dynamodb.GetItemOutput{}, nil
+			}
+		},
+	}
+
+	minSize := int64(1000)
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.FilterEmailIDs(context.Background(), "user-123",
+		[]string{"email-1", "email-2", "email-3"},
+		&QueryFilter{
+			InMailbox:  "inbox-id",
+			HasKeyword: "$seen",
+			MinSize:    &minSize,
+		},
+	)
+	if err != nil {
+		t.Fatalf("FilterEmailIDs failed: %v", err)
+	}
+
+	// email-1: inbox=yes, $seen=yes, size=5000>=1000 -> PASS
+	// email-2: inbox=yes, $seen=no -> FAIL
+	// email-3: inbox=no (sent, not inbox) -> FAIL
+	if len(result) != 1 {
+		t.Fatalf("result length = %d, want 1", len(result))
+	}
+	if result[0] != "email-1" {
+		t.Errorf("result[0] = %q, want %q", result[0], "email-1")
+	}
+}
+
+func TestRepository_QueryEmails_InMailboxOtherThan(t *testing.T) {
+	// inMailboxOtherThan requires fetching full records to check mailbox membership
+	mockClient := &mockDynamoDBClient{
+		queryFunc: func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"emailId": &types.AttributeValueMemberS{Value: "email-1"}},
+					{"emailId": &types.AttributeValueMemberS{Value: "email-2"}},
+				},
+			}, nil
+		},
+		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			sk := input.Key["sk"].(*types.AttributeValueMemberS).Value
+			switch sk {
+			case "EMAIL#email-1":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":    &types.AttributeValueMemberS{Value: "email-1"},
+						"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+						"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"inbox-id": &types.AttributeValueMemberBOOL{Value: true}, "trash-id": &types.AttributeValueMemberBOOL{Value: true}}},
+					},
+				}, nil
+			case "EMAIL#email-2":
+				return &dynamodb.GetItemOutput{
+					Item: map[string]types.AttributeValue{
+						"emailId":    &types.AttributeValueMemberS{Value: "email-2"},
+						"accountId":  &types.AttributeValueMemberS{Value: "user-123"},
+						"mailboxIds": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"inbox-id": &types.AttributeValueMemberBOOL{Value: true}}},
+					},
+				}, nil
+			default:
+				return &dynamodb.GetItemOutput{}, nil
+			}
+		},
+	}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.QueryEmails(context.Background(), "user-123", &QueryRequest{
+		Filter: &QueryFilter{
+			InMailbox:          "inbox-id",
+			InMailboxOtherThan: []string{"trash-id"},
+		},
+		Limit: 25,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmails failed: %v", err)
+	}
+
+	// email-1 is in trash-id -> excluded by InMailboxOtherThan
+	// email-2 is only in inbox-id -> passes
+	if len(result.IDs) != 1 {
+		t.Fatalf("IDs length = %d, want 1", len(result.IDs))
+	}
+	if result.IDs[0] != "email-2" {
+		t.Errorf("IDs[0] = %q, want %q", result.IDs[0], "email-2")
+	}
+}
+
+func TestRepository_FilterEmailIDs_NilFilter(t *testing.T) {
+	mockClient := &mockDynamoDBClient{}
+
+	repo := NewRepository(mockClient, "test-table")
+	result, err := repo.FilterEmailIDs(context.Background(), "user-123",
+		[]string{"email-1", "email-2"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("FilterEmailIDs failed: %v", err)
+	}
+
+	// No filter means all pass through
+	if len(result) != 2 {
+		t.Fatalf("result length = %d, want 2", len(result))
+	}
+}

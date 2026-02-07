@@ -107,8 +107,39 @@ type QueryRequest struct {
 }
 
 // QueryFilter represents filter conditions for Email/query.
+// All specified conditions must match (AND semantics).
 type QueryFilter struct {
-	InMailbox string
+	// Structural filters (DynamoDB key conditions + filter expressions)
+	InMailbox        string
+	InMailboxOtherThan []string
+	Before           *time.Time
+	After            *time.Time
+	MinSize          *int64
+	MaxSize          *int64
+	HasAttachment    *bool
+	HasKeyword       string
+	NotKeyword       string
+
+	// Address filters (DynamoDB TOK# entries or S3 Vectors metadata)
+	From string
+	To   string
+	CC   string
+	Bcc  string
+
+	// Content filters (S3 Vectors semantic search)
+	Text    string
+	Body    string
+	Subject string
+}
+
+// NeedsVectorSearch returns true if the filter requires S3 Vectors semantic search.
+func (f *QueryFilter) NeedsVectorSearch() bool {
+	return f.Text != "" || f.Body != "" || f.Subject != ""
+}
+
+// HasAddressFilter returns true if any address filter is set.
+func (f *QueryFilter) HasAddressFilter() bool {
+	return f.From != "" || f.To != "" || f.CC != "" || f.Bcc != ""
 }
 
 // Comparator represents a sort condition for Email/query.

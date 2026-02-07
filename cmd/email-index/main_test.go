@@ -92,6 +92,30 @@ func (m *mockVectorStore) DeleteVectors(ctx context.Context, accountID string, k
 	return nil
 }
 
+// mockTokenWriter implements TokenWriter for testing.
+type mockTokenWriter struct {
+	writeFunc  func(ctx context.Context, emailItem *email.EmailItem) error
+	deleteFunc func(ctx context.Context, emailItem *email.EmailItem) error
+	writeCalls []*email.EmailItem
+	deleteCalls []*email.EmailItem
+}
+
+func (m *mockTokenWriter) WriteTokens(ctx context.Context, emailItem *email.EmailItem) error {
+	m.writeCalls = append(m.writeCalls, emailItem)
+	if m.writeFunc != nil {
+		return m.writeFunc(ctx, emailItem)
+	}
+	return nil
+}
+
+func (m *mockTokenWriter) DeleteTokens(ctx context.Context, emailItem *email.EmailItem) error {
+	m.deleteCalls = append(m.deleteCalls, emailItem)
+	if m.deleteFunc != nil {
+		return m.deleteFunc(ctx, emailItem)
+	}
+	return nil
+}
+
 func makeSQSEvent(msgs ...searchindex.Message) events.SQSEvent {
 	var records []events.SQSMessage
 	for i, msg := range msgs {
@@ -144,7 +168,8 @@ func TestHandler_IndexEmail_Success(t *testing.T) {
 	embedder := &mockEmbeddingClient{}
 	store := &mockVectorStore{}
 
-	h := newHandler(reader, updater, nil, embedder, store)
+	tokenWriter := &mockTokenWriter{}
+	h := newHandler(reader, updater, nil, embedder, store, tokenWriter)
 	h.blobClientFactory = func(baseURL string) BlobStreamer {
 		return streamer
 	}
@@ -184,6 +209,29 @@ func TestHandler_IndexEmail_Success(t *testing.T) {
 	if streamedBlobIDs[0] != "blob-part-1" {
 		t.Errorf("streamed blobID = %q, want %q", streamedBlobIDs[0], "blob-part-1")
 	}
+
+	// Should have written address tokens
+	if len(tokenWriter.writeCalls) != 1 {
+		t.Fatalf("expected 1 WriteTokens call, got %d", len(tokenWriter.writeCalls))
+	}
+	if tokenWriter.writeCalls[0].EmailID != "email-456" {
+		t.Errorf("WriteTokens emailID = %q, want %q", tokenWriter.writeCalls[0].EmailID, "email-456")
+	}
+
+	// Should have created a subject vector (body chunk + subject = 2 putCalls)
+	if len(store.putCalls) != 2 {
+		t.Fatalf("expected 2 vectors (1 body + 1 subject), got %d", len(store.putCalls))
+	}
+	if store.putCalls[1].Key != "email-456#subject" {
+		t.Errorf("subject vector key = %q, want %q", store.putCalls[1].Key, "email-456#subject")
+	}
+	if store.putCalls[1].Metadata["type"] != "subject" {
+		t.Errorf("subject vector type = %v, want %q", store.putCalls[1].Metadata["type"], "subject")
+	}
+	// Body vector should have type "body"
+	if store.putCalls[0].Metadata["type"] != "body" {
+		t.Errorf("body vector type = %v, want %q", store.putCalls[0].Metadata["type"], "body")
+	}
 }
 
 func TestHandler_IndexEmail_HTMLBody(t *testing.T) {
@@ -221,7 +269,7 @@ func TestHandler_IndexEmail_HTMLBody(t *testing.T) {
 
 	store := &mockVectorStore{}
 
-	h := newHandler(reader, &mockEmailUpdater{}, nil, embedder, store)
+	h := newHandler(reader, &mockEmailUpdater{}, nil, embedder, store, &mockTokenWriter{})
 	h.blobClientFactory = func(baseURL string) BlobStreamer {
 		return streamer
 	}
@@ -271,7 +319,8 @@ func TestHandler_DeleteEmail_Success(t *testing.T) {
 		},
 	}
 
-	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store)
+	tokenWriter := &mockTokenWriter{}
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store, tokenWriter)
 
 	event := makeSQSEvent(searchindex.Message{
 		AccountID: "user-123",
@@ -288,11 +337,22 @@ func TestHandler_DeleteEmail_Success(t *testing.T) {
 		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
 	}
 
-	if len(deletedKeys) != 3 {
-		t.Fatalf("expected 3 deleted keys, got %d", len(deletedKeys))
+	if len(deletedKeys) != 4 {
+		t.Fatalf("expected 4 deleted keys, got %d", len(deletedKeys))
 	}
 	if deletedKeys[0] != "email-456#0" || deletedKeys[1] != "email-456#1" || deletedKeys[2] != "email-456#2" {
-		t.Errorf("unexpected keys: %v", deletedKeys)
+		t.Errorf("unexpected body chunk keys: %v", deletedKeys[:3])
+	}
+	if deletedKeys[3] != "email-456#subject" {
+		t.Errorf("unexpected subject key: %v", deletedKeys[3])
+	}
+
+	// Should have deleted address tokens
+	if len(tokenWriter.deleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteTokens call, got %d", len(tokenWriter.deleteCalls))
+	}
+	if tokenWriter.deleteCalls[0].EmailID != "email-456" {
+		t.Errorf("DeleteTokens emailID = %q, want %q", tokenWriter.deleteCalls[0].EmailID, "email-456")
 	}
 }
 
@@ -303,7 +363,7 @@ func TestHandler_InvalidJSON(t *testing.T) {
 		},
 	}
 
-	h := newHandler(&mockEmailReader{}, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, &mockVectorStore{})
+	h := newHandler(&mockEmailReader{}, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, &mockVectorStore{}, &mockTokenWriter{})
 	resp, err := h.handle(context.Background(), event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -320,7 +380,7 @@ func TestHandler_EmailNotFound(t *testing.T) {
 		},
 	}
 
-	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, &mockVectorStore{})
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, &mockVectorStore{}, &mockTokenWriter{})
 
 	event := makeSQSEvent(searchindex.Message{
 		AccountID: "user-123",
@@ -367,7 +427,7 @@ func TestHandler_VectorMetadata(t *testing.T) {
 	}
 
 	store := &mockVectorStore{}
-	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store)
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store, &mockTokenWriter{})
 	h.blobClientFactory = func(baseURL string) BlobStreamer {
 		return streamer
 	}
@@ -394,5 +454,37 @@ func TestHandler_VectorMetadata(t *testing.T) {
 	}
 	if meta["hasAttachment"] != true {
 		t.Errorf("metadata hasAttachment = %v, want true", meta["hasAttachment"])
+	}
+	if meta["type"] != "body" {
+		t.Errorf("metadata type = %v, want body", meta["type"])
+	}
+
+	// Check address token lists
+	fromTokens, ok := meta["fromTokens"].([]string)
+	if !ok {
+		t.Fatalf("metadata fromTokens not []string, got %T", meta["fromTokens"])
+	}
+	foundAlice := false
+	for _, tok := range fromTokens {
+		if tok == "alice@example.com" {
+			foundAlice = true
+		}
+	}
+	if !foundAlice {
+		t.Errorf("fromTokens %v should contain alice@example.com", fromTokens)
+	}
+
+	toTokens, ok := meta["toTokens"].([]string)
+	if !ok {
+		t.Fatalf("metadata toTokens not []string, got %T", meta["toTokens"])
+	}
+	foundBob := false
+	for _, tok := range toTokens {
+		if tok == "bob@example.com" {
+			foundBob = true
+		}
+	}
+	if !foundBob {
+		t.Errorf("toTokens %v should contain bob@example.com", toTokens)
 	}
 }
