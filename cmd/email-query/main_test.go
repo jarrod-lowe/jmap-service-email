@@ -858,6 +858,190 @@ func TestHandler_FromFilter_UsesTokenQuery(t *testing.T) {
 	}
 }
 
+func TestHandler_ANDFilterOperator(t *testing.T) {
+	var capturedReq *email.QueryRequest
+	mockEmail := &mockEmailRepository{
+		queryFunc: func(ctx context.Context, accountID string, req *email.QueryRequest) (*email.QueryResult, error) {
+			capturedReq = req
+			return &email.QueryResult{IDs: []string{"email-1"}, Position: 0}, nil
+		},
+	}
+	mockMailbox := &mockMailboxRepository{
+		existsFunc: func(ctx context.Context, accountID, mailboxID string) (bool, error) {
+			return true, nil
+		},
+	}
+
+	h := newHandler(mockEmail, mockMailbox, nil, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"filter": map[string]any{
+				"operator": "AND",
+				"conditions": []any{
+					map[string]any{"inMailbox": "inbox-id"},
+					map[string]any{"hasKeyword": "$seen"},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/query" {
+		t.Fatalf("Name = %q, want %q", response.MethodResponse.Name, "Email/query")
+	}
+
+	f := capturedReq.Filter
+	if f == nil {
+		t.Fatal("Filter should not be nil")
+	}
+	if f.InMailbox != "inbox-id" {
+		t.Errorf("InMailbox = %q, want %q", f.InMailbox, "inbox-id")
+	}
+	if f.HasKeyword != "$seen" {
+		t.Errorf("HasKeyword = %q, want %q", f.HasKeyword, "$seen")
+	}
+}
+
+func TestHandler_AercCompoundFilter(t *testing.T) {
+	var capturedReq *email.QueryRequest
+	mockEmail := &mockEmailRepository{
+		queryFunc: func(ctx context.Context, accountID string, req *email.QueryRequest) (*email.QueryResult, error) {
+			capturedReq = req
+			return &email.QueryResult{IDs: []string{}, Position: 0}, nil
+		},
+	}
+	mockMailbox := &mockMailboxRepository{}
+
+	tokenQuerier := &mockTokenQuerier{
+		queryFunc: func(ctx context.Context, accountID string, field email.TokenField, tokenPrefix string, limit int32, scanForward bool) ([]email.TokenQueryResult, error) {
+			return []email.TokenQueryResult{}, nil
+		},
+	}
+
+	h := newHandler(mockEmail, mockMailbox, nil, tokenQuerier, nil)
+
+	// Exact aerc filter: AND(inMailboxOtherThan:[junk,trash], OR(to:jmap-test))
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"filter": map[string]any{
+				"operator": "AND",
+				"conditions": []any{
+					map[string]any{"inMailboxOtherThan": []any{"junk", "trash"}},
+					map[string]any{
+						"operator": "OR",
+						"conditions": []any{
+							map[string]any{"to": "jmap-test"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/query" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/query")
+	}
+
+	// capturedReq won't be set since address filter path doesn't use emailRepo,
+	// but the handler should not return an error
+	_ = capturedReq
+}
+
+func TestHandler_ORMultipleConditions_UnsupportedFilter(t *testing.T) {
+	mockEmail := &mockEmailRepository{}
+	mockMailbox := &mockMailboxRepository{}
+
+	h := newHandler(mockEmail, mockMailbox, nil, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"filter": map[string]any{
+				"operator": "OR",
+				"conditions": []any{
+					map[string]any{"from": "alice"},
+					map[string]any{"from": "bob"},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "unsupportedFilter" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "unsupportedFilter")
+	}
+}
+
+func TestHandler_NOTOperator_UnsupportedFilter(t *testing.T) {
+	mockEmail := &mockEmailRepository{}
+	mockMailbox := &mockMailboxRepository{}
+
+	h := newHandler(mockEmail, mockMailbox, nil, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"filter": map[string]any{
+				"operator": "NOT",
+				"conditions": []any{
+					map[string]any{"from": "alice"},
+				},
+			},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "error" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "error")
+	}
+
+	errorType, ok := response.MethodResponse.Args["type"].(string)
+	if !ok || errorType != "unsupportedFilter" {
+		t.Errorf("error type = %v, want %q", response.MethodResponse.Args["type"], "unsupportedFilter")
+	}
+}
+
 func TestHandler_StructuralFilter_UsesDynamoDB(t *testing.T) {
 	var queryCallCount int
 	mockEmail := &mockEmailRepository{

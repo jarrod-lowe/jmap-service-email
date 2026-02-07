@@ -18,6 +18,7 @@ terraform/environments/*/terraform.tfvars
 
 # OS
 .DS_Store
+__pycache__
 
 # Go dependencies
 go.sum

@@ -13,6 +13,7 @@ import (
 	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
+	"github.com/jarrod-lowe/jmap-service-email/internal/filter"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/search"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
@@ -268,6 +269,14 @@ var unsupportedFilterKeys = map[string]string{
 // parseFilter populates a QueryFilter from the filter args.
 // Returns a *jmaperror.MethodError on validation failure.
 func (h *handler) parseFilter(ctx context.Context, accountID string, filterArg plugincontract.Args, f *email.QueryFilter) error {
+	if filter.IsFilterOperator(filterArg) {
+		flattened, err := filter.FlattenFilter(filterArg)
+		if err != nil {
+			return err
+		}
+		filterArg = flattened
+	}
+
 	for key := range filterArg {
 		if !supportedFilterKeys[key] {
 			if msg, unsupported := unsupportedFilterKeys[key]; unsupported {

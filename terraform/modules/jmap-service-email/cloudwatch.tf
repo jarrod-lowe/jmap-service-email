@@ -147,6 +147,11 @@ resource "aws_cloudwatch_log_group" "email_index" {
   retention_in_days = var.log_retention_days
 }
 
+resource "aws_cloudwatch_log_group" "searchsnippet_get" {
+  name              = "/aws/lambda/${local.name_prefix}-searchsnippet-get"
+  retention_in_days = var.log_retention_days
+}
+
 # CloudWatch alarm for search-index DLQ depth
 resource "aws_cloudwatch_metric_alarm" "search_index_dlq" {
   alarm_name          = "${local.name_prefix}-search-index-dlq-depth"

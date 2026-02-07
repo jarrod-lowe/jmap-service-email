@@ -430,6 +430,19 @@ def cmd_query(args):
 
 def invoke_query(account_id, query_filter):
     """Invoke Email/query Lambda and return (ids, response_args) or None on error."""
+    result = invoke_query_raw(account_id, query_filter)
+    if result is None:
+        return None
+    name, resp_args = result
+    if name == "error":
+        print(f"JMAP error: type={resp_args.get('type')}, description={resp_args.get('description')}")
+        return None
+    ids = resp_args.get("ids", [])
+    return ids, resp_args
+
+
+def invoke_query_raw(account_id, query_filter):
+    """Invoke Email/query Lambda and return (name, response_args) or None on Lambda error."""
     session = get_session()
     lambda_client = session.client("lambda")
 
@@ -459,12 +472,7 @@ def invoke_query(account_id, query_filter):
     name = method_resp.get("name", "")
     resp_args = method_resp.get("args", {})
 
-    if name == "error":
-        print(f"JMAP error: type={resp_args.get('type')}, description={resp_args.get('description')}")
-        return None
-
-    ids = resp_args.get("ids", [])
-    return ids, resp_args
+    return name, resp_args
 
 
 def cmd_query_print(args):
@@ -582,6 +590,30 @@ def cmd_run_tests(args):
         print(line)
         results.append(passed)
 
+    def run_query_error_test(num, desc, query_filter, expected_error):
+        """Run an Email/query Lambda test and check that it returns the expected error type."""
+        try:
+            result = invoke_query_raw(account_id, query_filter)
+            if result is None:
+                passed = False
+            else:
+                name, resp_args = result
+                error_type = resp_args.get("type", "")
+                passed = name == "error" and error_type == expected_error
+                if not passed:
+                    suffix = f" (got name={name}, type={error_type})"
+        except Exception as e:
+            passed = False
+            suffix = f" (error: {e})"
+
+        if passed:
+            suffix = ""
+        filter_str = json.dumps(query_filter, separators=(",", ":"))
+        status = "PASS" if passed else "FAIL"
+        line = f"[{status}] {num:>2}. query error={expected_error}: {filter_str}{suffix}"
+        print(line)
+        results.append(passed)
+
     # A. Vector search
     print("--- A. Vector search (S3 Vectors) ---")
     run_search_test(1, "text search", subject_words)
@@ -649,6 +681,60 @@ def cmd_run_tests(args):
     else:
         print(f"[SKIP] 14. hasKeyword (no keywords)")
         results.append(True)
+    print()
+
+    # E. Email/query — FilterOperator support
+    print("--- E. Email/query — FilterOperator ---")
+    if first_mailbox and first_keyword:
+        run_query_test(15, "AND(inMailbox, hasKeyword)", {
+            "operator": "AND",
+            "conditions": [
+                {"inMailbox": first_mailbox},
+                {"hasKeyword": first_keyword},
+            ],
+        })
+    else:
+        print(f"[SKIP] 15. AND(inMailbox, hasKeyword) (need mailbox and keyword)")
+        results.append(True)
+
+    # OR with single condition — should flatten to just the inner condition
+    run_query_test(16, "OR(text) single-condition flatten", {
+        "operator": "OR",
+        "conditions": [
+            {"text": subject_words},
+        ],
+    })
+
+    # aerc-style nested filter: AND(inMailboxOtherThan, OR(text))
+    run_query_test(17, "AND(hasKeyword, OR(text)) aerc-style", {
+        "operator": "AND",
+        "conditions": [
+            {"hasKeyword": first_keyword} if first_keyword else {},
+            {
+                "operator": "OR",
+                "conditions": [
+                    {"text": subject_words},
+                ],
+            },
+        ],
+    })
+
+    # OR with multiple conditions — must return unsupportedFilter
+    run_query_error_test(18, "OR multi → unsupportedFilter", {
+        "operator": "OR",
+        "conditions": [
+            {"from": "alice@example.com"},
+            {"from": "bob@example.com"},
+        ],
+    }, "unsupportedFilter")
+
+    # NOT — must return unsupportedFilter
+    run_query_error_test(19, "NOT → unsupportedFilter", {
+        "operator": "NOT",
+        "conditions": [
+            {"from": "alice@example.com"},
+        ],
+    }, "unsupportedFilter")
     print()
 
     # Summary

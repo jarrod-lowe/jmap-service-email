@@ -88,6 +88,12 @@ resource "aws_dynamodb_table_item" "plugin_registration" {
             invokeTarget   = { S = aws_lambda_function.thread_changes.arn }
           }
         }
+        "SearchSnippet/get" = {
+          M = {
+            invocationType = { S = "lambda-invoke" }
+            invokeTarget   = { S = aws_lambda_function.searchsnippet_get.arn }
+          }
+        }
       }
     }
     events = {
