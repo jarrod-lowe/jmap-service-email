@@ -1,4 +1,4 @@
-.PHONY: help deps build build-all package package-all test lint init plan show-plan apply plan-destroy destroy clean clean-all fmt validate outputs restore-tfvars help-tfvars
+.PHONY: help deps build build-all package package-all test lint init plan show-plan apply plan-destroy destroy clean clean-all fmt validate outputs restore-tfvars help-tfvars reset reset-dry-run
 
 # Environment selection (test or prod)
 ENV ?= test
@@ -57,6 +57,10 @@ help:
 	@echo "  make fmt                     - Format Terraform files"
 	@echo "  make validate ENV=<env>      - Validate Terraform configuration"
 	@echo "  make outputs ENV=<env>       - Show Terraform outputs"
+	@echo ""
+	@echo "Environment Management:"
+	@echo "  make reset ENV=<env>         - Reset environment (clear all data, re-init accounts)"
+	@echo "  make reset-dry-run ENV=<env> - Preview reset actions without executing"
 	@echo ""
 	@echo "Cleanup Commands:"
 	@echo "  make clean ENV=<env>         - Clean Terraform files only"
@@ -249,3 +253,10 @@ restore-tfvars:
 		echo "  Either the file doesn't exist yet, or you need to run 'make init apply' first"; \
 		exit 1; \
 	fi
+
+# Environment reset
+reset:
+	@AWS_PROFILE=ses-mail scripts/reset-environment.sh $(ENV)
+
+reset-dry-run:
+	@AWS_PROFILE=ses-mail scripts/reset-environment.sh $(ENV) --dry-run
