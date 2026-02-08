@@ -1723,24 +1723,26 @@ SGVsbG8gV29ybGQ=
 
 // mockSearchIndexPublisher implements SearchIndexPublisher for testing.
 type mockSearchIndexPublisher struct {
-	publishFunc func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+	publishFunc func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error
 	calls       []struct {
-		accountID string
-		emailID   string
-		action    searchindex.Action
-		apiURL    string
+		accountID      string
+		emailID        string
+		action         searchindex.Action
+		apiURL         string
+		deleteMetadata *searchindex.DeleteMetadata
 	}
 }
 
-func (m *mockSearchIndexPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+func (m *mockSearchIndexPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error {
 	m.calls = append(m.calls, struct {
-		accountID string
-		emailID   string
-		action    searchindex.Action
-		apiURL    string
-	}{accountID, emailID, action, apiURL})
+		accountID      string
+		emailID        string
+		action         searchindex.Action
+		apiURL         string
+		deleteMetadata *searchindex.DeleteMetadata
+	}{accountID, emailID, action, apiURL, deleteMetadata})
 	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, emailID, action, apiURL)
+		return m.publishFunc(ctx, accountID, emailID, action, apiURL, deleteMetadata)
 	}
 	return nil
 }
@@ -1803,7 +1805,7 @@ func TestHandler_ImportSearchIndexPublishError_NonFatal(t *testing.T) {
 	mockUploader := &mockBlobUploader{}
 	mockMailboxRepo := &mockMailboxRepository{}
 	searchPub := &mockSearchIndexPublisher{
-		publishFunc: func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+		publishFunc: func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error {
 			return errors.New("SQS publish failed")
 		},
 	}

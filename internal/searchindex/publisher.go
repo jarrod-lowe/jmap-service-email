@@ -9,7 +9,7 @@ import (
 
 // Publisher publishes search index requests to an async queue.
 type Publisher interface {
-	PublishIndexRequest(ctx context.Context, accountID, emailID string, action Action, apiURL string) error
+	PublishIndexRequest(ctx context.Context, accountID, emailID string, action Action, apiURL string, deleteMetadata *DeleteMetadata) error
 }
 
 // SQSSender abstracts SQS send operations for dependency inversion.
@@ -32,12 +32,13 @@ func NewSQSPublisher(client SQSSender, queueURL string) *SQSPublisher {
 }
 
 // PublishIndexRequest sends a search index message to SQS.
-func (p *SQSPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action Action, apiURL string) error {
+func (p *SQSPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action Action, apiURL string, deleteMetadata *DeleteMetadata) error {
 	msg := Message{
-		AccountID: accountID,
-		EmailID:   emailID,
-		Action:    action,
-		APIURL:    apiURL,
+		AccountID:      accountID,
+		EmailID:        emailID,
+		Action:         action,
+		APIURL:         apiURL,
+		DeleteMetadata: deleteMetadata,
 	}
 
 	body, err := json.Marshal(msg)

@@ -482,17 +482,36 @@ func (h *handler) processPartStream(ctx context.Context, accountID, emailID, hea
 	return chunkIndex - startChunkIndex, nil
 }
 
-// deleteEmail removes all vectors and tokens for an email.
-func (h *handler) deleteEmail(ctx context.Context, msg searchindex.Message) error {
-	emailItem, err := h.emailReader.GetEmail(ctx, msg.AccountID, msg.EmailID)
-	if err != nil {
-		if errors.Is(err, email.ErrEmailNotFound) {
-			logger.InfoContext(ctx, "Email not found for deletion, skipping",
-				slog.String("email_id", msg.EmailID),
-			)
-			return nil
+// convertFromSearchIndexAddresses converts searchindex.EmailAddress to email.EmailAddress.
+func convertFromSearchIndexAddresses(addrs []searchindex.EmailAddress) []email.EmailAddress {
+	result := make([]email.EmailAddress, len(addrs))
+	for i, addr := range addrs {
+		result[i] = email.EmailAddress{
+			Name:  addr.Name,
+			Email: addr.Email,
 		}
-		return fmt.Errorf("get email: %w", err)
+	}
+	return result
+}
+
+// deleteEmail removes all vectors and tokens for an email using metadata from the message.
+// This avoids fetching the email record, which eliminates the race condition with email-cleanup.
+func (h *handler) deleteEmail(ctx context.Context, msg searchindex.Message) error {
+	if msg.DeleteMetadata == nil {
+		return fmt.Errorf("deleteMetadata is required for ActionDelete")
+	}
+
+	// Construct minimal EmailItem from metadata (no fetch needed)
+	emailItem := &email.EmailItem{
+		AccountID:    msg.AccountID,
+		EmailID:      msg.EmailID,
+		SearchChunks: msg.DeleteMetadata.SearchChunks,
+		Summary:      msg.DeleteMetadata.Summary,
+		From:         convertFromSearchIndexAddresses(msg.DeleteMetadata.From),
+		To:           convertFromSearchIndexAddresses(msg.DeleteMetadata.To),
+		CC:           convertFromSearchIndexAddresses(msg.DeleteMetadata.CC),
+		Bcc:          convertFromSearchIndexAddresses(msg.DeleteMetadata.Bcc),
+		ReceivedAt:   msg.DeleteMetadata.ReceivedAt,
 	}
 
 	// Delete address tokens
@@ -508,7 +527,6 @@ func (h *handler) deleteEmail(ctx context.Context, msg searchindex.Message) erro
 		for i := 0; i < emailItem.SearchChunks; i++ {
 			keys = append(keys, fmt.Sprintf("%s#%d", msg.EmailID, i))
 		}
-		// Also delete subject and summary vectors
 		keys = append(keys, msg.EmailID+"#subject")
 		keys = append(keys, msg.EmailID+"#summary")
 

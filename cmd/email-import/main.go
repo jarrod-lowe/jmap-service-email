@@ -75,7 +75,7 @@ type BlobDeletePublisher interface {
 
 // SearchIndexPublisher publishes search index requests to an async queue.
 type SearchIndexPublisher interface {
-	PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+	PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error
 }
 
 // TransactWriter defines the interface for DynamoDB transactional writes.
@@ -384,7 +384,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 
 	// Publish search index request (best-effort)
 	if h.searchIndexPublisher != nil {
-		if err := h.searchIndexPublisher.PublishIndexRequest(ctx, accountID, emailID, searchindex.ActionIndex, apiURL); err != nil {
+		if err := h.searchIndexPublisher.PublishIndexRequest(ctx, accountID, emailID, searchindex.ActionIndex, apiURL, nil); err != nil {
 			logger.ErrorContext(ctx, "Failed to publish search index request",
 				slog.String("account_id", accountID),
 				slog.String("email_id", emailID),

@@ -63,7 +63,7 @@ type TransactWriter interface {
 
 // SearchIndexPublisher publishes search index requests.
 type SearchIndexPublisher interface {
-	PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+	PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error
 }
 
 // handler implements the Email/set logic.
@@ -211,7 +211,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	// Handle destroy
 	if destroyIDs, ok := request.Args.StringSlice("destroy"); ok {
 		for _, emailID := range destroyIDs {
-			destroyNewState, destroyErr := h.destroyEmail(ctx, accountID, emailID, request.APIURL, affectedMailboxes)
+			emailItem, destroyNewState, destroyErr := h.destroyEmail(ctx, accountID, emailID, request.APIURL, affectedMailboxes)
 			if destroyErr != nil {
 				notDestroyed[emailID] = destroyErr
 			} else {
@@ -222,7 +222,18 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 				// Publish search index delete request (best-effort)
 				if h.searchIndexPublisher != nil {
-					if pubErr := h.searchIndexPublisher.PublishIndexRequest(ctx, accountID, emailID, searchindex.ActionDelete, request.APIURL); pubErr != nil {
+					// Build deletion metadata so email-index doesn't need to fetch the email record
+					deleteMetadata := &searchindex.DeleteMetadata{
+						SearchChunks: emailItem.SearchChunks,
+						Summary:      emailItem.Summary,
+						From:         convertToSearchIndexAddresses(emailItem.From),
+						To:           convertToSearchIndexAddresses(emailItem.To),
+						CC:           convertToSearchIndexAddresses(emailItem.CC),
+						Bcc:          convertToSearchIndexAddresses(emailItem.Bcc),
+						ReceivedAt:   emailItem.ReceivedAt,
+					}
+
+					if pubErr := h.searchIndexPublisher.PublishIndexRequest(ctx, accountID, emailID, searchindex.ActionDelete, request.APIURL, deleteMetadata); pubErr != nil {
 						logger.ErrorContext(ctx, "Failed to publish search index delete request",
 							slog.String("account_id", accountID),
 							slog.String("email_id", emailID),
@@ -646,23 +657,35 @@ func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[s
 // maxDestroyRetries is the number of times to retry destroy on transaction conflict.
 const maxDestroyRetries = 3
 
+// convertToSearchIndexAddresses converts email.EmailAddress to searchindex.EmailAddress.
+func convertToSearchIndexAddresses(addrs []email.EmailAddress) []searchindex.EmailAddress {
+	result := make([]searchindex.EmailAddress, len(addrs))
+	for i, addr := range addrs {
+		result[i] = searchindex.EmailAddress{
+			Name:  addr.Name,
+			Email: addr.Email,
+		}
+	}
+	return result
+}
+
 // destroyEmail soft-deletes an email by setting deletedAt, updating state, and decrementing mailbox counters.
 // A DynamoDB Streams handler performs actual record deletion and blob cleanup.
-// Returns the new email state, or a JMAP error map.
-func (h *handler) destroyEmail(ctx context.Context, accountID, emailID, apiURL string, affectedMailboxes map[string]bool) (int64, map[string]any) {
+// Returns the email item (for metadata extraction), new email state, or a JMAP error map.
+func (h *handler) destroyEmail(ctx context.Context, accountID, emailID, apiURL string, affectedMailboxes map[string]bool) (*email.EmailItem, int64, map[string]any) {
 	for attempt := 0; attempt < maxDestroyRetries; attempt++ {
 		// 1. Fetch email
 		emailItem, err := h.emailRepo.GetEmail(ctx, accountID, emailID)
 		if err != nil {
 			if errors.Is(err, email.ErrEmailNotFound) {
-				return 0, jmaperror.NotFound("email not found").ToMap()
+				return nil, 0, jmaperror.NotFound("email not found").ToMap()
 			}
-			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
+			return nil, 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
 		// Treat already soft-deleted emails as not found
 		if emailItem.DeletedAt != nil {
-			return 0, jmaperror.NotFound("email not found").ToMap()
+			return nil, 0, jmaperror.NotFound("email not found").ToMap()
 		}
 
 		// 2. Read current states
@@ -671,15 +694,15 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID, apiURL s
 		if h.stateRepo != nil {
 			emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
 			if err != nil {
-				return 0, jmaperror.SetServerFail(err.Error()).ToMap()
+				return nil, 0, jmaperror.SetServerFail(err.Error()).ToMap()
 			}
 			threadState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeThread)
 			if err != nil {
-				return 0, jmaperror.SetServerFail(err.Error()).ToMap()
+				return nil, 0, jmaperror.SetServerFail(err.Error()).ToMap()
 			}
 			mailboxState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeMailbox)
 			if err != nil {
-				return 0, jmaperror.SetServerFail(err.Error()).ToMap()
+				return nil, 0, jmaperror.SetServerFail(err.Error()).ToMap()
 			}
 		}
 
@@ -738,14 +761,14 @@ func (h *handler) destroyEmail(ctx context.Context, accountID, emailID, apiURL s
 				slog.String("email_id", emailID),
 				slog.String("error", err.Error()),
 			)
-			return 0, jmaperror.SetServerFail(err.Error()).ToMap()
+			return nil, 0, jmaperror.SetServerFail(err.Error()).ToMap()
 		}
 
-		return newEmailState, nil
+		return emailItem, newEmailState, nil
 	}
 
 	// All retries exhausted
-	return 0, jmaperror.SetServerFail("concurrent update conflict, please retry").ToMap()
+	return nil, 0, jmaperror.SetServerFail("concurrent update conflict, please retry").ToMap()
 }
 
 // errorResponse creates a method-level error response from a jmaperror.MethodError.

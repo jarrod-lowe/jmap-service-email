@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
@@ -351,15 +352,10 @@ func TestHandler_IndexEmail_HTMLBody(t *testing.T) {
 }
 
 func TestHandler_DeleteEmail_Success(t *testing.T) {
-	emailItem := &email.EmailItem{
-		AccountID:    "user-123",
-		EmailID:      "email-456",
-		SearchChunks: 3,
-	}
-
 	reader := &mockEmailReader{
 		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
-			return emailItem, nil
+			t.Fatal("GetEmail should not be called when metadata is provided")
+			return nil, nil
 		},
 	}
 
@@ -379,6 +375,14 @@ func TestHandler_DeleteEmail_Success(t *testing.T) {
 		EmailID:   "email-456",
 		Action:    searchindex.ActionDelete,
 		APIURL:    "https://api.example.com",
+		DeleteMetadata: &searchindex.DeleteMetadata{
+			SearchChunks: 3,
+			From:         []searchindex.EmailAddress{},
+			To:           []searchindex.EmailAddress{},
+			CC:           []searchindex.EmailAddress{},
+			Bcc:          []searchindex.EmailAddress{},
+			ReceivedAt:   time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		},
 	})
 
 	resp, err := h.handle(context.Background(), event)
@@ -759,16 +763,10 @@ func TestHandler_IndexEmail_OverwritePreview(t *testing.T) {
 }
 
 func TestHandler_DeleteEmail_WithSummaryVector(t *testing.T) {
-	emailItem := &email.EmailItem{
-		AccountID:    "user-123",
-		EmailID:      "email-456",
-		SearchChunks: 2,
-		Summary:      "Test summary",
-	}
-
 	reader := &mockEmailReader{
 		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
-			return emailItem, nil
+			t.Fatal("GetEmail should not be called when metadata is provided")
+			return nil, nil
 		},
 	}
 
@@ -787,6 +785,15 @@ func TestHandler_DeleteEmail_WithSummaryVector(t *testing.T) {
 		EmailID:   "email-456",
 		Action:    searchindex.ActionDelete,
 		APIURL:    "https://api.example.com",
+		DeleteMetadata: &searchindex.DeleteMetadata{
+			SearchChunks: 2,
+			Summary:      "Test summary",
+			From:         []searchindex.EmailAddress{},
+			To:           []searchindex.EmailAddress{},
+			CC:           []searchindex.EmailAddress{},
+			Bcc:          []searchindex.EmailAddress{},
+			ReceivedAt:   time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		},
 	})
 
 	resp, err := h.handle(context.Background(), event)
@@ -809,5 +816,158 @@ func TestHandler_DeleteEmail_WithSummaryVector(t *testing.T) {
 	}
 	if deletedKeys[3] != "email-456#summary" {
 		t.Errorf("unexpected summary key: %v", deletedKeys[3])
+	}
+}
+
+// TestHandler_DeleteEmail_WithMetadata tests deletion using metadata (no email fetch).
+func TestHandler_DeleteEmail_WithMetadata(t *testing.T) {
+	// email-index should NOT fetch email when metadata is provided
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			t.Fatal("GetEmail should not be called when metadata is provided")
+			return nil, nil
+		},
+	}
+
+	var deletedKeys []string
+	store := &mockVectorStore{
+		deleteFunc: func(ctx context.Context, accountID string, keys []string) error {
+			deletedKeys = keys
+			return nil
+		},
+	}
+
+	tokenWriter := &mockTokenWriter{}
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store, tokenWriter)
+
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Action:    searchindex.ActionDelete,
+		APIURL:    "https://api.example.com",
+		DeleteMetadata: &searchindex.DeleteMetadata{
+			SearchChunks: 2,
+			Summary:      "Test summary",
+			From:         []searchindex.EmailAddress{{Email: "alice@example.com", Name: "Alice"}},
+			To:           []searchindex.EmailAddress{{Email: "bob@example.com"}},
+			CC:           []searchindex.EmailAddress{{Email: "charlie@example.com"}},
+			Bcc:          []searchindex.EmailAddress{},
+			ReceivedAt:   time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		},
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	// Verify vectors deleted
+	if len(deletedKeys) != 4 {
+		t.Fatalf("expected 4 deleted keys, got %d: %v", len(deletedKeys), deletedKeys)
+	}
+	if deletedKeys[0] != "email-456#0" || deletedKeys[1] != "email-456#1" {
+		t.Errorf("unexpected body chunk keys: %v", deletedKeys[:2])
+	}
+	if deletedKeys[2] != "email-456#subject" {
+		t.Errorf("unexpected subject key: %v", deletedKeys[2])
+	}
+	if deletedKeys[3] != "email-456#summary" {
+		t.Errorf("unexpected summary key: %v", deletedKeys[3])
+	}
+
+	// Verify tokens deleted
+	if len(tokenWriter.deleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteTokens call, got %d", len(tokenWriter.deleteCalls))
+	}
+	deletedItem := tokenWriter.deleteCalls[0]
+	if deletedItem.EmailID != "email-456" {
+		t.Errorf("DeleteTokens emailID = %q, want %q", deletedItem.EmailID, "email-456")
+	}
+	if len(deletedItem.From) != 1 || deletedItem.From[0].Email != "alice@example.com" {
+		t.Errorf("DeleteTokens From = %v, want alice@example.com", deletedItem.From)
+	}
+}
+
+// TestHandler_DeleteEmail_MissingMetadata tests that missing metadata returns error.
+func TestHandler_DeleteEmail_MissingMetadata(t *testing.T) {
+	// When metadata is nil, should return error
+	reader := &mockEmailReader{}
+	store := &mockVectorStore{}
+	tokenWriter := &mockTokenWriter{}
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store, tokenWriter)
+
+	// Message without DeleteMetadata
+	event := makeSQSEvent(searchindex.Message{
+		AccountID:      "user-123",
+		EmailID:        "email-456",
+		Action:         searchindex.ActionDelete,
+		APIURL:         "https://api.example.com",
+		DeleteMetadata: nil,
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have a batch item failure for the missing metadata
+	if len(resp.BatchItemFailures) != 1 {
+		t.Errorf("expected 1 failure for missing metadata, got %d", len(resp.BatchItemFailures))
+	}
+}
+
+// TestHandler_DeleteEmail_EmailAlreadyDeleted_WithMetadata tests race condition scenario.
+func TestHandler_DeleteEmail_EmailAlreadyDeleted_WithMetadata(t *testing.T) {
+	// Simulate race: email-cleanup already deleted the record,
+	// but email-index has metadata so it can still clean up tokens/vectors
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			// This should NOT be called when metadata is provided
+			t.Fatal("GetEmail should not be called when metadata is provided")
+			return nil, email.ErrEmailNotFound
+		},
+	}
+
+	var deletedKeys []string
+	store := &mockVectorStore{
+		deleteFunc: func(ctx context.Context, accountID string, keys []string) error {
+			deletedKeys = keys
+			return nil
+		},
+	}
+
+	tokenWriter := &mockTokenWriter{}
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store, tokenWriter)
+
+	// Message with metadata (new format) - cleanup succeeds even if email gone
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Action:    searchindex.ActionDelete,
+		APIURL:    "https://api.example.com",
+		DeleteMetadata: &searchindex.DeleteMetadata{
+			SearchChunks: 1,
+			From:         []searchindex.EmailAddress{{Email: "alice@example.com"}},
+			ReceivedAt:   time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		},
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	// Verify cleanup still happened despite email being deleted
+	if len(deletedKeys) != 3 { // 1 chunk + subject + summary
+		t.Errorf("expected 3 deleted keys, got %d", len(deletedKeys))
+	}
+	if len(tokenWriter.deleteCalls) != 1 {
+		t.Errorf("expected 1 DeleteTokens call, got %d", len(tokenWriter.deleteCalls))
 	}
 }

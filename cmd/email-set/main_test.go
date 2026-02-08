@@ -1757,26 +1757,130 @@ func TestUpdateEmail_MailboxIDs_TransactionalStateUpdate(t *testing.T) {
 }
 
 type mockSearchIndexPublisher struct {
-	publishFunc func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error
+	publishFunc func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error
 	calls       []struct {
-		accountID string
-		emailID   string
-		action    searchindex.Action
-		apiURL    string
+		accountID      string
+		emailID        string
+		action         searchindex.Action
+		apiURL         string
+		deleteMetadata *searchindex.DeleteMetadata
 	}
 }
 
-func (m *mockSearchIndexPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+func (m *mockSearchIndexPublisher) PublishIndexRequest(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error {
 	m.calls = append(m.calls, struct {
-		accountID string
-		emailID   string
-		action    searchindex.Action
-		apiURL    string
-	}{accountID, emailID, action, apiURL})
+		accountID      string
+		emailID        string
+		action         searchindex.Action
+		apiURL         string
+		deleteMetadata *searchindex.DeleteMetadata
+	}{accountID, emailID, action, apiURL, deleteMetadata})
 	if m.publishFunc != nil {
-		return m.publishFunc(ctx, accountID, emailID, action, apiURL)
+		return m.publishFunc(ctx, accountID, emailID, action, apiURL, deleteMetadata)
 	}
 	return nil
+}
+
+// Test: Destroy publishes search index delete request with metadata
+func TestHandler_DestroyPublishesSearchIndexWithMetadata(t *testing.T) {
+	receivedAt := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	mockEmailRepo := &mockEmailRepository{
+		getEmailFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return &email.EmailItem{
+				EmailID:      "email-456",
+				AccountID:    accountID,
+				BlobID:       "blob-root",
+				ThreadID:     "thread-1",
+				ReceivedAt:   receivedAt,
+				MailboxIDs:   map[string]bool{"inbox-id": true},
+				Keywords:     map[string]bool{"$seen": true},
+				Version:      1,
+				SearchChunks: 3,
+				Summary:      "Test email summary",
+				From: []email.EmailAddress{
+					{Name: "Alice", Email: "alice@example.com"},
+				},
+				To: []email.EmailAddress{
+					{Email: "bob@example.com"},
+				},
+				CC: []email.EmailAddress{
+					{Email: "charlie@example.com"},
+				},
+				Bcc: []email.EmailAddress{},
+			}, nil
+		},
+	}
+
+	mockStateRepo := &mockStateRepository{
+		getCurrentStateFunc: func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error) {
+			return 10, nil
+		},
+	}
+
+	mockTransactor := &mockTransactWriter{}
+	searchPub := &mockSearchIndexPublisher{}
+
+	h := newHandler(mockEmailRepo, &mockMailboxRepository{}, mockStateRepo, nil, mockTransactor, searchPub)
+	_, err := h.handle(context.Background(), plugincontract.PluginInvocationRequest{
+		AccountID: "user-123",
+		Method:    "Email/set",
+		Args: map[string]any{
+			"destroy": []any{"email-456"},
+		},
+		ClientID: "c0",
+		APIURL:   "https://api.example.com",
+	})
+
+	if err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+
+	if len(searchPub.calls) != 1 {
+		t.Fatalf("expected 1 search index publish call, got %d", len(searchPub.calls))
+	}
+	call := searchPub.calls[0]
+	if call.accountID != "user-123" {
+		t.Errorf("accountID = %q, want %q", call.accountID, "user-123")
+	}
+	if call.emailID != "email-456" {
+		t.Errorf("emailID = %q, want %q", call.emailID, "email-456")
+	}
+	if call.action != searchindex.ActionDelete {
+		t.Errorf("action = %q, want %q", call.action, searchindex.ActionDelete)
+	}
+	if call.apiURL != "https://api.example.com" {
+		t.Errorf("apiURL = %q, want %q", call.apiURL, "https://api.example.com")
+	}
+
+	// Verify deleteMetadata is populated
+	if call.deleteMetadata == nil {
+		t.Fatal("deleteMetadata is nil, expected it to be populated")
+	}
+	if call.deleteMetadata.SearchChunks != 3 {
+		t.Errorf("deleteMetadata.SearchChunks = %d, want 3", call.deleteMetadata.SearchChunks)
+	}
+	if call.deleteMetadata.Summary != "Test email summary" {
+		t.Errorf("deleteMetadata.Summary = %q, want %q", call.deleteMetadata.Summary, "Test email summary")
+	}
+	if len(call.deleteMetadata.From) != 1 {
+		t.Fatalf("deleteMetadata.From length = %d, want 1", len(call.deleteMetadata.From))
+	}
+	if call.deleteMetadata.From[0].Name != "Alice" {
+		t.Errorf("deleteMetadata.From[0].Name = %q, want %q", call.deleteMetadata.From[0].Name, "Alice")
+	}
+	if call.deleteMetadata.From[0].Email != "alice@example.com" {
+		t.Errorf("deleteMetadata.From[0].Email = %q, want %q", call.deleteMetadata.From[0].Email, "alice@example.com")
+	}
+	if len(call.deleteMetadata.To) != 1 {
+		t.Fatalf("deleteMetadata.To length = %d, want 1", len(call.deleteMetadata.To))
+	}
+	if call.deleteMetadata.To[0].Email != "bob@example.com" {
+		t.Errorf("deleteMetadata.To[0].Email = %q, want %q", call.deleteMetadata.To[0].Email, "bob@example.com")
+	}
+	if !call.deleteMetadata.ReceivedAt.Equal(receivedAt) {
+		t.Errorf("deleteMetadata.ReceivedAt = %v, want %v", call.deleteMetadata.ReceivedAt, receivedAt)
+	}
 }
 
 // Test: Destroy publishes search index delete request
@@ -1867,7 +1971,7 @@ func TestHandler_DestroySearchIndexPublishError_NonFatal(t *testing.T) {
 
 	mockTransactor := &mockTransactWriter{}
 	searchPub := &mockSearchIndexPublisher{
-		publishFunc: func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string) error {
+		publishFunc: func(ctx context.Context, accountID, emailID string, action searchindex.Action, apiURL string, deleteMetadata *searchindex.DeleteMetadata) error {
 			return errors.New("sqs publish failed")
 		},
 	}
