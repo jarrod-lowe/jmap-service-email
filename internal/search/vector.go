@@ -125,6 +125,9 @@ func (vs *VectorSearcher) Search(ctx context.Context, accountID string, filter *
 // extractSearchParams determines the search text and optional vector type filter
 // from the query filter.
 func extractSearchParams(filter *email.QueryFilter) (searchText string, typeFilter string) {
+	if filter.Summary != "" {
+		return filter.Summary, "summary"
+	}
 	if filter.Subject != "" {
 		return filter.Subject, "subject"
 	}

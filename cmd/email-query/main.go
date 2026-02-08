@@ -256,6 +256,7 @@ var supportedFilterKeys = map[string]bool{
 	"text":             true,
 	"body":             true,
 	"subject":          true,
+	"summary":          true,
 }
 
 // unsupportedFilterKeys are filter properties that we explicitly reject.
@@ -360,6 +361,9 @@ func (h *handler) parseFilter(ctx context.Context, accountID string, filterArg p
 	}
 	if subject, ok := filterArg.String("subject"); ok {
 		f.Subject = subject
+	}
+	if summaryVal, ok := filterArg.String("summary"); ok {
+		f.Summary = summaryVal
 	}
 
 	return nil

@@ -2683,3 +2683,64 @@ func TestResolveBodyPartRefs_DefaultBodyProperties(t *testing.T) {
 		}
 	}
 }
+
+func TestHandler_SummaryProperty(t *testing.T) {
+	testEmail := testEmailItem("user-123", "email-1")
+	testEmail.Summary = "Ad: 50% off furniture"
+
+	mockRepo := &mockEmailRepository{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*emailItem, error) {
+			return testEmail, nil
+		},
+	}
+
+	h := newHandler(mockRepo, &mockStateRepository{}, nil, 256*1024)
+
+	// Test that summary is returned in full response
+	request := plugincontract.PluginInvocationRequest{
+		Method:    "Email/get",
+		AccountID: "user-123",
+		ClientID:  "c0",
+		Args:      plugincontract.Args{"ids": []any{"email-1"}},
+	}
+
+	resp, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	list := resp.MethodResponse.Args["list"].([]any)
+	emailMap := list[0].(map[string]any)
+
+	if emailMap["summary"] != "Ad: 50% off furniture" {
+		t.Errorf("summary = %v, want %q", emailMap["summary"], "Ad: 50% off furniture")
+	}
+
+	// Test that summary is returned when requested as a property
+	request2 := plugincontract.PluginInvocationRequest{
+		Method:    "Email/get",
+		AccountID: "user-123",
+		ClientID:  "c0",
+		Args:      plugincontract.Args{"ids": []any{"email-1"}, "properties": []any{"summary"}},
+	}
+
+	resp2, err := h.handle(context.Background(), request2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	list2 := resp2.MethodResponse.Args["list"].([]any)
+	emailMap2 := list2[0].(map[string]any)
+
+	if emailMap2["summary"] != "Ad: 50% off furniture" {
+		t.Errorf("summary = %v, want %q", emailMap2["summary"], "Ad: 50% off furniture")
+	}
+	// id is always included
+	if emailMap2["id"] != "email-1" {
+		t.Errorf("id = %v, want %q", emailMap2["id"], "email-1")
+	}
+	// preview should NOT be included since only summary was requested
+	if _, ok := emailMap2["preview"]; ok {
+		t.Error("preview should not be in filtered response when only summary was requested")
+	}
+}

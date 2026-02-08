@@ -1092,3 +1092,57 @@ func TestHandler_StructuralFilter_UsesDynamoDB(t *testing.T) {
 		t.Errorf("tokenQuerier should not have been called, got %d", tokenQuerier.queryCalls)
 	}
 }
+
+func TestHandler_SummaryFilter_UsesVectorSearch(t *testing.T) {
+	var capturedFilter *email.QueryFilter
+	vectorSearcher := &mockVectorSearcher{
+		searchFunc: func(ctx context.Context, accountID string, filter *email.QueryFilter, position, limit int) (*search.SearchResult, error) {
+			capturedFilter = filter
+			return &search.SearchResult{
+				IDs:      []string{"email-1"},
+				Position: 0,
+			}, nil
+		},
+	}
+
+	mockEmail := &mockEmailRepository{}
+	mockMailbox := &mockMailboxRepository{}
+
+	h := newHandler(mockEmail, mockMailbox, vectorSearcher, nil, nil)
+
+	request := plugincontract.PluginInvocationRequest{
+		RequestID: "req-123",
+		AccountID: "user-123",
+		Method:    "Email/query",
+		ClientID:  "c0",
+		Args: map[string]any{
+			"accountId": "user-123",
+			"filter":    map[string]any{"summary": "spam emails"},
+		},
+	}
+
+	response, err := h.handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("handle failed: %v", err)
+	}
+
+	if response.MethodResponse.Name != "Email/query" {
+		t.Errorf("Name = %q, want %q", response.MethodResponse.Name, "Email/query")
+	}
+
+	// Vector searcher should have been called with the summary filter
+	if vectorSearcher.searchCalls != 1 {
+		t.Fatalf("vectorSearcher.searchCalls = %d, want 1", vectorSearcher.searchCalls)
+	}
+	if capturedFilter == nil || capturedFilter.Summary != "spam emails" {
+		t.Errorf("filter.Summary = %q, want %q", capturedFilter.Summary, "spam emails")
+	}
+
+	ids, ok := response.MethodResponse.Args["ids"].([]string)
+	if !ok {
+		t.Fatalf("ids should be []string, got %T", response.MethodResponse.Args["ids"])
+	}
+	if len(ids) != 1 {
+		t.Errorf("ids length = %d, want 1", len(ids))
+	}
+}

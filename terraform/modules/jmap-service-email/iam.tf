@@ -205,7 +205,23 @@ resource "aws_iam_role_policy_attachment" "dynamodb_stream_email_data" {
   policy_arn = aws_iam_policy.dynamodb_stream_email_data.arn
 }
 
-# Policy for Bedrock Titan Embeddings v2
+# Application inference profile for email summary model
+resource "aws_bedrock_inference_profile" "summary" {
+  name        = "${local.name_prefix}-summary"
+  description = "Email summary generation"
+
+  model_source {
+    copy_from = "arn:aws:bedrock:${data.aws_region.current.id}::inference-profile/${var.summary_model_id}"
+  }
+
+  tags = {
+    Environment = var.environment
+    Service     = "jmap-service-email"
+    Purpose     = "email-summary"
+  }
+}
+
+# Policy for Bedrock Titan Embeddings v2 and summary model
 data "aws_iam_policy_document" "bedrock_embeddings" {
   statement {
     effect = "Allow"
@@ -213,7 +229,10 @@ data "aws_iam_policy_document" "bedrock_embeddings" {
       "bedrock:InvokeModel"
     ]
     resources = [
-      "arn:aws:bedrock:${data.aws_region.current.id}::foundation-model/amazon.titan-embed-text-v2:0"
+      "arn:aws:bedrock:${data.aws_region.current.id}::foundation-model/amazon.titan-embed-text-v2:0",
+      aws_bedrock_inference_profile.summary.arn,
+      "arn:aws:bedrock:${data.aws_region.current.id}::inference-profile/${var.summary_model_id}",
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
     ]
   }
 }

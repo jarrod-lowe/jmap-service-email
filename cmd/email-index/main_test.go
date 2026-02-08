@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-email/internal/vectorstore"
 )
 
@@ -28,7 +29,16 @@ func (m *mockEmailReader) GetEmail(ctx context.Context, accountID, emailID strin
 
 // mockEmailUpdater implements EmailUpdater for testing.
 type mockEmailUpdater struct {
-	updateFunc func(ctx context.Context, accountID, emailID string, searchChunks int) error
+	updateFunc        func(ctx context.Context, accountID, emailID string, searchChunks int) error
+	updateSummaryFunc func(ctx context.Context, accountID, emailID, summary string, overwritePreview bool) error
+	summaryUpdates    []summaryUpdate
+}
+
+type summaryUpdate struct {
+	accountID        string
+	emailID          string
+	summary          string
+	overwritePreview bool
 }
 
 func (m *mockEmailUpdater) UpdateSearchChunks(ctx context.Context, accountID, emailID string, searchChunks int) error {
@@ -36,6 +46,48 @@ func (m *mockEmailUpdater) UpdateSearchChunks(ctx context.Context, accountID, em
 		return m.updateFunc(ctx, accountID, emailID, searchChunks)
 	}
 	return nil
+}
+
+func (m *mockEmailUpdater) UpdateSummary(ctx context.Context, accountID, emailID, summary string, overwritePreview bool) error {
+	m.summaryUpdates = append(m.summaryUpdates, summaryUpdate{accountID, emailID, summary, overwritePreview})
+	if m.updateSummaryFunc != nil {
+		return m.updateSummaryFunc(ctx, accountID, emailID, summary, overwritePreview)
+	}
+	return nil
+}
+
+// mockSummarizer implements Summarizer for testing.
+type mockSummarizer struct {
+	summarizeFunc func(ctx context.Context, subject, from, bodyText string) (string, error)
+	calls         []summarizerCall
+}
+
+type summarizerCall struct {
+	subject  string
+	from     string
+	bodyText string
+}
+
+func (m *mockSummarizer) Summarize(ctx context.Context, subject, from, bodyText string) (string, error) {
+	m.calls = append(m.calls, summarizerCall{subject, from, bodyText})
+	if m.summarizeFunc != nil {
+		return m.summarizeFunc(ctx, subject, from, bodyText)
+	}
+	return "Test summary", nil
+}
+
+// mockStateChanger implements StateChanger for testing.
+type mockStateChanger struct {
+	incrementFunc func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	calls         int
+}
+
+func (m *mockStateChanger) IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error) {
+	m.calls++
+	if m.incrementFunc != nil {
+		return m.incrementFunc(ctx, accountID, objectType, objectID, changeType)
+	}
+	return int64(m.calls), nil
 }
 
 // mockBlobStreamer implements BlobStreamer for testing.
@@ -337,14 +389,17 @@ func TestHandler_DeleteEmail_Success(t *testing.T) {
 		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
 	}
 
-	if len(deletedKeys) != 4 {
-		t.Fatalf("expected 4 deleted keys, got %d", len(deletedKeys))
+	if len(deletedKeys) != 5 {
+		t.Fatalf("expected 5 deleted keys (3 body + subject + summary), got %d", len(deletedKeys))
 	}
 	if deletedKeys[0] != "email-456#0" || deletedKeys[1] != "email-456#1" || deletedKeys[2] != "email-456#2" {
 		t.Errorf("unexpected body chunk keys: %v", deletedKeys[:3])
 	}
 	if deletedKeys[3] != "email-456#subject" {
 		t.Errorf("unexpected subject key: %v", deletedKeys[3])
+	}
+	if deletedKeys[4] != "email-456#summary" {
+		t.Errorf("unexpected summary key: %v", deletedKeys[4])
 	}
 
 	// Should have deleted address tokens
@@ -486,5 +541,273 @@ func TestHandler_VectorMetadata(t *testing.T) {
 	}
 	if !foundBob {
 		t.Errorf("toTokens %v should contain bob@example.com", toTokens)
+	}
+}
+
+func TestHandler_IndexEmail_WithSummarizer(t *testing.T) {
+	emailItem := &email.EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Subject:   "50% Off Furniture",
+		From:      []email.EmailAddress{{Email: "deals@furniture.com"}},
+		TextBody:  []string{"1"},
+		BodyStructure: email.BodyPart{
+			PartID: "1",
+			Type:   "text/plain",
+			BlobID: "blob-part-1",
+		},
+	}
+
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return emailItem, nil
+		},
+	}
+
+	streamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("Everything is 50% off this weekend only!")), nil
+		},
+	}
+
+	updater := &mockEmailUpdater{}
+	embedder := &mockEmbeddingClient{}
+	store := &mockVectorStore{}
+	tokenWriter := &mockTokenWriter{}
+	summarizer := &mockSummarizer{
+		summarizeFunc: func(ctx context.Context, subject, from, bodyText string) (string, error) {
+			if subject != "50% Off Furniture" {
+				t.Errorf("summarizer subject = %q, want %q", subject, "50% Off Furniture")
+			}
+			if from != "deals@furniture.com" {
+				t.Errorf("summarizer from = %q, want %q", from, "deals@furniture.com")
+			}
+			if bodyText != "Everything is 50% off this weekend only!" {
+				t.Errorf("summarizer bodyText = %q, want body text", bodyText)
+			}
+			return "Ad: 50% off furniture this weekend", nil
+		},
+	}
+	stateChanger := &mockStateChanger{}
+
+	h := newHandler(reader, updater, nil, embedder, store, tokenWriter)
+	h.blobClientFactory = func(baseURL string) BlobStreamer { return streamer }
+	h.summarizer = summarizer
+	h.stateChanger = stateChanger
+
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Action:    searchindex.ActionIndex,
+		APIURL:    "https://api.example.com",
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	// Summarizer should have been called
+	if len(summarizer.calls) != 1 {
+		t.Fatalf("expected 1 summarizer call, got %d", len(summarizer.calls))
+	}
+
+	// Summary should have been persisted
+	if len(updater.summaryUpdates) != 1 {
+		t.Fatalf("expected 1 summary update, got %d", len(updater.summaryUpdates))
+	}
+	if updater.summaryUpdates[0].summary != "Ad: 50% off furniture this weekend" {
+		t.Errorf("summary = %q, want %q", updater.summaryUpdates[0].summary, "Ad: 50% off furniture this weekend")
+	}
+
+	// State change should have been logged
+	if stateChanger.calls != 1 {
+		t.Errorf("expected 1 state change call, got %d", stateChanger.calls)
+	}
+
+	// Should have a summary vector (body + subject + summary = 3 vectors)
+	if len(store.putCalls) != 3 {
+		t.Fatalf("expected 3 vectors (body + subject + summary), got %d", len(store.putCalls))
+	}
+	summaryVec := store.putCalls[2]
+	if summaryVec.Key != "email-456#summary" {
+		t.Errorf("summary vector key = %q, want %q", summaryVec.Key, "email-456#summary")
+	}
+	if summaryVec.Metadata["type"] != "summary" {
+		t.Errorf("summary vector type = %v, want %q", summaryVec.Metadata["type"], "summary")
+	}
+	if summaryVec.Metadata["summary"] != "Ad: 50% off furniture this weekend" {
+		t.Errorf("summary metadata = %v, want summary text", summaryVec.Metadata["summary"])
+	}
+}
+
+func TestHandler_IndexEmail_SummarizerFailure_ContinuesIndexing(t *testing.T) {
+	emailItem := &email.EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Subject:   "Test",
+		TextBody:  []string{"1"},
+		BodyStructure: email.BodyPart{
+			PartID: "1",
+			Type:   "text/plain",
+			BlobID: "blob-1",
+		},
+	}
+
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return emailItem, nil
+		},
+	}
+
+	streamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("body text")), nil
+		},
+	}
+
+	updater := &mockEmailUpdater{}
+	store := &mockVectorStore{}
+	summarizer := &mockSummarizer{
+		summarizeFunc: func(ctx context.Context, subject, from, bodyText string) (string, error) {
+			return "", errors.New("bedrock error")
+		},
+	}
+
+	h := newHandler(reader, updater, nil, &mockEmbeddingClient{}, store, &mockTokenWriter{})
+	h.blobClientFactory = func(baseURL string) BlobStreamer { return streamer }
+	h.summarizer = summarizer
+
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Action:    searchindex.ActionIndex,
+		APIURL:    "https://api.example.com",
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Indexing should succeed even when summarizer fails
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	// No summary update should have been made
+	if len(updater.summaryUpdates) != 0 {
+		t.Errorf("expected 0 summary updates, got %d", len(updater.summaryUpdates))
+	}
+
+	// Body + subject vectors should still exist (no summary vector)
+	if len(store.putCalls) != 2 {
+		t.Errorf("expected 2 vectors (body + subject), got %d", len(store.putCalls))
+	}
+}
+
+func TestHandler_IndexEmail_OverwritePreview(t *testing.T) {
+	emailItem := &email.EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Subject:   "Test",
+		Preview:   "Original preview text",
+		TextBody:  []string{"1"},
+		BodyStructure: email.BodyPart{
+			PartID: "1",
+			Type:   "text/plain",
+			BlobID: "blob-1",
+		},
+	}
+
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return emailItem, nil
+		},
+	}
+
+	streamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("body text")), nil
+		},
+	}
+
+	updater := &mockEmailUpdater{}
+
+	h := newHandler(reader, updater, nil, &mockEmbeddingClient{}, &mockVectorStore{}, &mockTokenWriter{})
+	h.blobClientFactory = func(baseURL string) BlobStreamer { return streamer }
+	h.summarizer = &mockSummarizer{}
+	h.overwritePreview = true
+
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Action:    searchindex.ActionIndex,
+		APIURL:    "https://api.example.com",
+	})
+
+	_, _ = h.handle(context.Background(), event)
+
+	if len(updater.summaryUpdates) != 1 {
+		t.Fatalf("expected 1 summary update, got %d", len(updater.summaryUpdates))
+	}
+	if !updater.summaryUpdates[0].overwritePreview {
+		t.Error("expected overwritePreview to be true")
+	}
+}
+
+func TestHandler_DeleteEmail_WithSummaryVector(t *testing.T) {
+	emailItem := &email.EmailItem{
+		AccountID:    "user-123",
+		EmailID:      "email-456",
+		SearchChunks: 2,
+		Summary:      "Test summary",
+	}
+
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return emailItem, nil
+		},
+	}
+
+	var deletedKeys []string
+	store := &mockVectorStore{
+		deleteFunc: func(ctx context.Context, accountID string, keys []string) error {
+			deletedKeys = keys
+			return nil
+		},
+	}
+
+	h := newHandler(reader, &mockEmailUpdater{}, nil, &mockEmbeddingClient{}, store, &mockTokenWriter{})
+
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-456",
+		Action:    searchindex.ActionDelete,
+		APIURL:    "https://api.example.com",
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	// Should delete body chunks + subject + summary vectors
+	if len(deletedKeys) != 4 {
+		t.Fatalf("expected 4 deleted keys, got %d: %v", len(deletedKeys), deletedKeys)
+	}
+	if deletedKeys[0] != "email-456#0" || deletedKeys[1] != "email-456#1" {
+		t.Errorf("unexpected body chunk keys: %v", deletedKeys[:2])
+	}
+	if deletedKeys[2] != "email-456#subject" {
+		t.Errorf("unexpected subject key: %v", deletedKeys[2])
+	}
+	if deletedKeys[3] != "email-456#summary" {
+		t.Errorf("unexpected summary key: %v", deletedKeys[3])
 	}
 }

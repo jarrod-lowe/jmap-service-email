@@ -152,6 +152,32 @@ resource "aws_cloudwatch_log_group" "searchsnippet_get" {
   retention_in_days = var.log_retention_days
 }
 
+# Log metric filter + alarm for summary generation failures
+resource "aws_cloudwatch_log_metric_filter" "summary_generation_failures" {
+  name           = "${local.name_prefix}-summary-generation-failures"
+  log_group_name = aws_cloudwatch_log_group.email_index.name
+  pattern        = "\"Failed to generate summary\""
+
+  metric_transformation {
+    name      = "SummaryGenerationFailures"
+    namespace = local.name_prefix
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "summary_generation_failures" {
+  alarm_name          = "${local.name_prefix}-summary-generation-failures"
+  alarm_description   = "Email summary generation is failing - check Bedrock access/permissions"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "SummaryGenerationFailures"
+  namespace           = local.name_prefix
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+}
+
 # CloudWatch alarm for search-index DLQ depth
 resource "aws_cloudwatch_metric_alarm" "search_index_dlq" {
   alarm_name          = "${local.name_prefix}-search-index-dlq-depth"

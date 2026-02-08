@@ -794,6 +794,9 @@ resource "aws_lambda_function" "email_index" {
       AWS_LAMBDA_EXEC_WRAPPER             = "/opt/bootstrap"
       EMAIL_TABLE_NAME                    = aws_dynamodb_table.email_data.name
       VECTOR_BUCKET_NAME                  = aws_s3vectors_vector_bucket.search_vectors.vector_bucket_name
+      SUMMARY_MODEL_ID                    = aws_bedrock_inference_profile.summary.arn
+      SUMMARY_MAX_LENGTH                  = tostring(var.summary_max_length)
+      SUMMARY_OVERWRITES_PREVIEW          = tostring(var.summary_overwrites_preview)
       RESOURCE_TAGS = jsonencode({
         Project     = "jmap-service-email"
         ManagedBy   = "terraform"

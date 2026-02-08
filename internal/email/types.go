@@ -50,6 +50,7 @@ type EmailItem struct {
 	InReplyTo     []string        `json:"inReplyTo"`
 	References    []string        `json:"references"`
 	Preview       string          `json:"preview"`
+	Summary       string          `json:"summary,omitempty"`
 	BodyStructure BodyPart        `json:"bodyStructure"`
 	TextBody      []string        `json:"textBody"`
 	HTMLBody      []string        `json:"htmlBody"`
@@ -130,11 +131,12 @@ type QueryFilter struct {
 	Text    string
 	Body    string
 	Subject string
+	Summary string
 }
 
 // NeedsVectorSearch returns true if the filter requires S3 Vectors semantic search.
 func (f *QueryFilter) NeedsVectorSearch() bool {
-	return f.Text != "" || f.Body != "" || f.Subject != ""
+	return f.Text != "" || f.Body != "" || f.Subject != "" || f.Summary != ""
 }
 
 // HasAddressFilter returns true if any address filter is set.

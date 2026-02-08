@@ -49,3 +49,21 @@ variable "thread_query_concurrency" {
   type        = number
   default     = 5
 }
+
+variable "summary_model_id" {
+  description = "Bedrock inference profile ID for AI email summarization"
+  type        = string
+  default     = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
+variable "summary_max_length" {
+  description = "Maximum length in characters for AI-generated email summaries"
+  type        = number
+  default     = 256
+}
+
+variable "summary_overwrites_preview" {
+  description = "Whether AI-generated summary should overwrite the text-extracted preview"
+  type        = bool
+  default     = true
+}

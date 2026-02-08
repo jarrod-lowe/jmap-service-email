@@ -442,6 +442,36 @@ func (r *Repository) UpdateSearchChunks(ctx context.Context, accountID, emailID 
 	return nil
 }
 
+// UpdateSummary updates the summary field on an email record,
+// optionally also overwriting the preview field.
+func (r *Repository) UpdateSummary(ctx context.Context, accountID, emailID, summary string, overwritePreview bool) error {
+	e := &EmailItem{AccountID: accountID, EmailID: emailID}
+
+	updateExpr := "SET " + AttrSummary + " = :summary"
+	exprValues := map[string]types.AttributeValue{
+		":summary": &types.AttributeValueMemberS{Value: summary},
+	}
+
+	if overwritePreview {
+		updateExpr += ", " + AttrPreview + " = :preview"
+		exprValues[":preview"] = &types.AttributeValueMemberS{Value: summary}
+	}
+
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			dynamo.AttrPK: &types.AttributeValueMemberS{Value: e.PK()},
+			dynamo.AttrSK: &types.AttributeValueMemberS{Value: e.SK()},
+		},
+		UpdateExpression:          aws.String(updateExpr),
+		ExpressionAttributeValues: exprValues,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update summary: %w", err)
+	}
+	return nil
+}
+
 // marshalEmailItem converts an EmailItem to DynamoDB attribute values.
 func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.AttributeValue {
 	item := map[string]types.AttributeValue{
@@ -457,6 +487,11 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 		AttrSize:          &types.AttributeValueMemberN{Value: strconv.FormatInt(email.Size, 10)},
 		AttrHasAttachment: &types.AttributeValueMemberBOOL{Value: email.HasAttachment},
 		AttrPreview:       &types.AttributeValueMemberS{Value: email.Preview},
+	}
+
+	// Summary
+	if email.Summary != "" {
+		item[AttrSummary] = &types.AttributeValueMemberS{Value: email.Summary}
 	}
 
 	// LSI2 key for Message-ID lookup (only if Message-ID is present)
@@ -631,6 +666,9 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 	}
 	if v, ok := item[AttrPreview].(*types.AttributeValueMemberS); ok {
 		email.Preview = v.Value
+	}
+	if v, ok := item[AttrSummary].(*types.AttributeValueMemberS); ok {
+		email.Summary = v.Value
 	}
 
 	// MailboxIDs

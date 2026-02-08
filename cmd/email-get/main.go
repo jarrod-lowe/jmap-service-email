@@ -384,6 +384,7 @@ func (h *handler) transformEmail(ctx context.Context, accountID string, e *email
 		"sentAt":        formatTime(e.SentAt),
 		"hasAttachment": e.HasAttachment,
 		"preview":       e.Preview,
+		"summary":       e.Summary,
 		"bodyStructure": transformBodyPart(e.BodyStructure),
 		"textBody":      resolveBodyPartRefs(e.TextBody, e.BodyStructure, bodyProperties),
 		"htmlBody":      resolveBodyPartRefs(e.HTMLBody, e.BodyStructure, bodyProperties),

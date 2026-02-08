@@ -342,3 +342,33 @@ func TestSortByReceivedAtDescending(t *testing.T) {
 		t.Errorf("items[2] = %q, want email-1", items[2].emailID)
 	}
 }
+
+func TestExtractSearchParams_Summary(t *testing.T) {
+	filter := &email.QueryFilter{Summary: "spam emails"}
+	text, typeFilter := extractSearchParams(filter)
+	if text != "spam emails" {
+		t.Errorf("searchText = %q, want %q", text, "spam emails")
+	}
+	if typeFilter != "summary" {
+		t.Errorf("typeFilter = %q, want %q", typeFilter, "summary")
+	}
+}
+
+func TestExtractSearchParams_SummaryPrecedence(t *testing.T) {
+	// Summary should take precedence over subject/body/text
+	filter := &email.QueryFilter{Summary: "summary query", Subject: "subject query", Body: "body query"}
+	text, typeFilter := extractSearchParams(filter)
+	if text != "summary query" {
+		t.Errorf("searchText = %q, want %q", text, "summary query")
+	}
+	if typeFilter != "summary" {
+		t.Errorf("typeFilter = %q, want %q", typeFilter, "summary")
+	}
+}
+
+func TestNeedsVectorSearch_IncludesSummary(t *testing.T) {
+	filter := &email.QueryFilter{Summary: "test"}
+	if !filter.NeedsVectorSearch() {
+		t.Error("NeedsVectorSearch() = false, want true when Summary is set")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/htmlstrip"
 	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
+	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-email/internal/summary"
 	"github.com/jarrod-lowe/jmap-service-email/internal/vectorstore"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
@@ -49,6 +52,17 @@ type EmailReader interface {
 // EmailUpdater updates email records in DynamoDB.
 type EmailUpdater interface {
 	UpdateSearchChunks(ctx context.Context, accountID, emailID string, searchChunks int) error
+	UpdateSummary(ctx context.Context, accountID, emailID, summary string, overwritePreview bool) error
+}
+
+// Summarizer generates a short summary of an email.
+type Summarizer interface {
+	Summarize(ctx context.Context, subject, from, bodyText string) (string, error)
+}
+
+// StateChanger records state changes for Email/changes tracking.
+type StateChanger interface {
+	IncrementStateAndLogChange(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
 }
 
 // BlobStreamer streams blob data.
@@ -82,6 +96,9 @@ type handler struct {
 	embedder          EmbeddingClient
 	vectorStore       VectorStore
 	tokenWriter       TokenWriter
+	summarizer        Summarizer
+	stateChanger      StateChanger
+	overwritePreview  bool
 }
 
 // newHandler creates a new handler.
@@ -156,8 +173,37 @@ func (h *handler) handle(ctx context.Context, event events.SQSEvent) (events.SQS
 	}, nil
 }
 
+// maxSummaryInput is the maximum body text chars captured for the summarizer.
+const maxSummaryInput = 4000
+
+// captureWriter captures the first maxBytes of data written through it.
+type captureWriter struct {
+	buf      []byte
+	maxBytes int
+}
+
+func newCaptureWriter(maxBytes int) *captureWriter {
+	return &captureWriter{maxBytes: maxBytes}
+}
+
+func (cw *captureWriter) Write(p []byte) (int, error) {
+	remaining := cw.maxBytes - len(cw.buf)
+	if remaining > 0 {
+		n := len(p)
+		if n > remaining {
+			n = remaining
+		}
+		cw.buf = append(cw.buf, p[:n]...)
+	}
+	return len(p), nil
+}
+
+func (cw *captureWriter) String() string {
+	return string(cw.buf)
+}
+
 // indexEmail indexes a single email: fetches text parts, chunks, embeds, stores vectors,
-// writes address tokens, and creates subject vector.
+// writes address tokens, generates summary, and creates subject/summary vectors.
 func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error {
 	// Read email from DynamoDB
 	emailItem, err := h.emailReader.GetEmail(ctx, msg.AccountID, msg.EmailID)
@@ -205,12 +251,14 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 	// Build metadata for vectors (body type)
 	metadata := buildVectorMetadata(emailItem, "body")
 
-	// Process parts and generate body vectors
+	// Process parts and generate body vectors, capturing text for summarization
 	chunkIndex := 0
 	var streamer BlobStreamer
 	if h.blobClientFactory != nil {
 		streamer = h.blobClientFactory(msg.APIURL)
 	}
+
+	capture := newCaptureWriter(maxSummaryInput)
 
 	for _, partID := range partIDs {
 		if streamer == nil {
@@ -236,6 +284,9 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 			textReader = htmlstrip.NewReader(stream)
 		}
 
+		// Tee the stream to capture text for summarization
+		textReader = io.TeeReader(textReader, capture)
+
 		processed, err := h.processPartStream(ctx, msg.AccountID, msg.EmailID, headerPrefix, metadata, textReader, chunkIndex)
 		stream.Close()
 		if err != nil {
@@ -244,10 +295,20 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 		chunkIndex += processed
 	}
 
+	// Generate AI summary (best-effort)
+	h.generateSummary(ctx, msg.AccountID, msg.EmailID, emailItem, capture.String())
+
 	// Create subject vector
 	if emailItem.Subject != "" {
 		if err := h.indexSubjectVector(ctx, msg.AccountID, emailItem); err != nil {
 			return fmt.Errorf("index subject: %w", err)
+		}
+	}
+
+	// Create summary vector
+	if emailItem.Summary != "" {
+		if err := h.indexSummaryVector(ctx, msg.AccountID, emailItem); err != nil {
+			return fmt.Errorf("index summary: %w", err)
 		}
 	}
 
@@ -259,8 +320,56 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 	logger.InfoContext(ctx, "Email indexed successfully",
 		slog.String("email_id", msg.EmailID),
 		slog.Int("chunks", chunkIndex),
+		slog.String("summary", emailItem.Summary),
 	)
 	return nil
+}
+
+// generateSummary calls the summarizer and persists the result. Failures are logged and ignored.
+func (h *handler) generateSummary(ctx context.Context, accountID, emailID string, emailItem *email.EmailItem, bodyText string) {
+	if h.summarizer == nil || bodyText == "" {
+		return
+	}
+
+	fromAddr := ""
+	if len(emailItem.From) > 0 {
+		fromAddr = emailItem.From[0].Email
+	}
+
+	summaryText, err := h.summarizer.Summarize(ctx, emailItem.Subject, fromAddr, bodyText)
+	if err != nil {
+		logger.WarnContext(ctx, "Failed to generate summary, continuing without it",
+			slog.String("email_id", emailID),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	if summaryText == "" {
+		return
+	}
+
+	// Store summary on the emailItem so it's available for vector metadata
+	emailItem.Summary = summaryText
+
+	// Persist summary to DynamoDB
+	if err := h.emailUpdater.UpdateSummary(ctx, accountID, emailID, summaryText, h.overwritePreview); err != nil {
+		logger.WarnContext(ctx, "Failed to persist summary",
+			slog.String("email_id", emailID),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	// Log state change so clients see the update via Email/changes
+	if h.stateChanger != nil {
+		if _, err := h.stateChanger.IncrementStateAndLogChange(ctx, accountID, state.ObjectTypeEmail, emailID, state.ChangeTypeUpdated); err != nil {
+			logger.WarnContext(ctx, "Failed to log summary state change",
+				slog.String("email_id", emailID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
 }
 
 // indexSubjectVector creates a separate subject vector for subject-specific search.
@@ -274,6 +383,24 @@ func (h *handler) indexSubjectVector(ctx context.Context, accountID string, emai
 	metadata["chunkIndex"] = 0
 
 	key := emailItem.EmailID + "#subject"
+	return h.vectorStore.PutVector(ctx, accountID, vectorstore.Vector{
+		Key:      key,
+		Data:     vector,
+		Metadata: metadata,
+	})
+}
+
+// indexSummaryVector creates a separate summary vector for summary-specific search.
+func (h *handler) indexSummaryVector(ctx context.Context, accountID string, emailItem *email.EmailItem) error {
+	vector, err := h.embedder.GenerateEmbedding(ctx, emailItem.Summary)
+	if err != nil {
+		return fmt.Errorf("generate summary embedding: %w", err)
+	}
+
+	metadata := buildVectorMetadata(emailItem, "summary")
+	metadata["chunkIndex"] = 0
+
+	key := emailItem.EmailID + "#summary"
 	return h.vectorStore.PutVector(ctx, accountID, vectorstore.Vector{
 		Key:      key,
 		Data:     vector,
@@ -375,14 +502,15 @@ func (h *handler) deleteEmail(ctx context.Context, msg searchindex.Message) erro
 		}
 	}
 
-	// Delete vectors (body chunks + subject vector)
-	if emailItem.SearchChunks > 0 {
-		keys := make([]string, 0, emailItem.SearchChunks+1)
+	// Delete vectors (body chunks + subject vector + summary vector)
+	if emailItem.SearchChunks > 0 || emailItem.Summary != "" {
+		keys := make([]string, 0, emailItem.SearchChunks+2)
 		for i := 0; i < emailItem.SearchChunks; i++ {
 			keys = append(keys, fmt.Sprintf("%s#%d", msg.EmailID, i))
 		}
-		// Also delete subject vector
+		// Also delete subject and summary vectors
 		keys = append(keys, msg.EmailID+"#subject")
+		keys = append(keys, msg.EmailID+"#summary")
 
 		if err := h.vectorStore.DeleteVectors(ctx, msg.AccountID, keys); err != nil {
 			return fmt.Errorf("delete vectors: %w", err)
@@ -424,6 +552,11 @@ func buildHeaderPrefix(e *email.EmailItem) string {
 		sb.WriteString(formatAddresses(e.Bcc))
 		sb.WriteByte('\n')
 	}
+	if e.Summary != "" {
+		sb.WriteString("Summary: ")
+		sb.WriteString(e.Summary)
+		sb.WriteByte('\n')
+	}
 	if sb.Len() > 0 {
 		sb.WriteByte('\n')
 	}
@@ -444,7 +577,7 @@ func formatAddresses(addrs []email.EmailAddress) string {
 }
 
 // buildVectorMetadata constructs the metadata stored on each vector.
-// vectorType is "body" or "subject".
+// vectorType is "body", "subject", or "summary".
 func buildVectorMetadata(e *email.EmailItem, vectorType string) map[string]any {
 	meta := map[string]any{
 		"type":          vectorType,
@@ -454,6 +587,9 @@ func buildVectorMetadata(e *email.EmailItem, vectorType string) map[string]any {
 	}
 	if e.Subject != "" {
 		meta["subject"] = e.Subject
+	}
+	if e.Summary != "" {
+		meta["summary"] = e.Summary
 	}
 	if len(e.From) > 0 {
 		meta["from"] = e.From[0].Email
@@ -550,5 +686,24 @@ func main() {
 	tokenRepo := email.NewTokenRepository(dynamoClient, tableName)
 
 	h := newHandler(repo, repo, blobClientFactory, embedder, store, tokenRepo)
+
+	// Summarizer (optional — controlled by SUMMARY_MODEL_ID env var)
+	if modelID := os.Getenv("SUMMARY_MODEL_ID"); modelID != "" {
+		maxLength := summary.DefaultMaxLength
+		if maxLenStr := os.Getenv("SUMMARY_MAX_LENGTH"); maxLenStr != "" {
+			if parsed, err := strconv.Atoi(maxLenStr); err == nil && parsed > 0 {
+				maxLength = parsed
+			}
+		}
+		h.summarizer = summary.NewBedrockSummarizer(bedrockClient, summary.Config{
+			ModelID:   modelID,
+			MaxLength: maxLength,
+		})
+		h.overwritePreview = os.Getenv("SUMMARY_OVERWRITES_PREVIEW") == "true"
+
+		stateRepo := state.NewRepository(dynamoClient, tableName, 7)
+		h.stateChanger = stateRepo
+	}
+
 	result.Start(h.handle)
 }
