@@ -20,7 +20,4 @@ terraform/environments/*/terraform.tfvars
 .DS_Store
 __pycache__
 
-# Go dependencies
-go.sum
-
 test-user.yaml
