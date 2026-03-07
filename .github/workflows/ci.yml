@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  fmt-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Run fmt-check
+        run: make fmt-check
+
+  mod-check:
+    name: Go Mod Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Run mod-check
+        run: make mod-check
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Run tests
+        run: make test
+
+  test-race:
+    name: Tests (Race Detector)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Run tests with race detector
+        run: make test-race
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  vulncheck:
+    name: Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run vulncheck
+        run: make vulncheck
+
+  license-check:
+    name: License Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@latest
+      - name: Run license-check
+        run: make license-check
+
+  apidiff:
+    name: API Diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+      - name: Install apidiff
+        run: go install golang.org/x/exp/cmd/apidiff@latest
+      - name: Run apidiff
+        run: make apidiff
+
+  tag:
+    name: Auto-tag on main
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [fmt-check, mod-check, test, test-race, lint, vulncheck, license-check, apidiff]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Calculate next version
+        id: version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          BASE=$(echo $LATEST_TAG | cut -d. -f1-2)
+          NEXT_PATCH=$(echo $LATEST_TAG | cut -d. -f3 | sed 's/v//')
+          NEW_VERSION="${BASE}.$((NEXT_PATCH + 1))"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+      - name: Create tag
+        run: |
+          git tag -a ${{ steps.version.outputs.version }} -m "Auto-tag for run ${{ github.run_number }}"
+          git push origin ${{ steps.version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

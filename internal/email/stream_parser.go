@@ -22,7 +22,7 @@ const (
 
 // Sentinel errors for part bomb detection.
 var (
-	ErrTooManyParts  = errors.New("too many MIME parts")
+	ErrTooManyParts   = errors.New("too many MIME parts")
 	ErrNestingTooDeep = errors.New("MIME nesting too deep")
 )
 

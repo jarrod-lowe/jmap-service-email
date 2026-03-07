@@ -111,15 +111,15 @@ type QueryRequest struct {
 // All specified conditions must match (AND semantics).
 type QueryFilter struct {
 	// Structural filters (DynamoDB key conditions + filter expressions)
-	InMailbox        string
+	InMailbox          string
 	InMailboxOtherThan []string
-	Before           *time.Time
-	After            *time.Time
-	MinSize          *int64
-	MaxSize          *int64
-	HasAttachment    *bool
-	HasKeyword       string
-	NotKeyword       string
+	Before             *time.Time
+	After              *time.Time
+	MinSize            *int64
+	MaxSize            *int64
+	HasAttachment      *bool
+	HasKeyword         string
+	NotKeyword         string
 
 	// Address filters (DynamoDB TOK# entries or S3 Vectors metadata)
 	From string

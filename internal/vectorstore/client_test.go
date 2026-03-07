@@ -141,9 +141,9 @@ func TestS3VectorsClient_PutVector_Success(t *testing.T) {
 
 	client := NewS3VectorsClient(mock, "my-vector-bucket", nil)
 	v := Vector{
-		Key:       "email-1#0",
-		Data:      []float32{0.1, 0.2, 0.3},
-		Metadata:  map[string]any{"emailId": "email-1"},
+		Key:      "email-1#0",
+		Data:     []float32{0.1, 0.2, 0.3},
+		Metadata: map[string]any{"emailId": "email-1"},
 	}
 	err := client.PutVector(context.Background(), "user-123", v)
 	if err != nil {

@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 // mockEmailRepository implements EmailRepository for testing.
@@ -1174,7 +1174,7 @@ func TestHandler_DestroyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 		AccountID: "user-123",
 		Method:    "Mailbox/set",
 		Args: map[string]any{
-			"destroy":                []any{"test-mailbox"},
+			"destroy":               []any{"test-mailbox"},
 			"onDestroyRemoveEmails": true,
 		},
 		ClientID: "c0",
@@ -1249,7 +1249,7 @@ func TestHandler_DestroyEmptyMailboxWithOnDestroyRemoveEmails(t *testing.T) {
 		AccountID: "user-123",
 		Method:    "Mailbox/set",
 		Args: map[string]any{
-			"destroy":                []any{"test-mailbox"},
+			"destroy":               []any{"test-mailbox"},
 			"onDestroyRemoveEmails": true,
 		},
 		ClientID: "c0",
@@ -1319,7 +1319,7 @@ func TestHandler_DestroyMailboxAPIURLPassedToSoftDelete(t *testing.T) {
 		Method:    "Mailbox/set",
 		APIURL:    "https://api.example.com/stage",
 		Args: map[string]any{
-			"destroy":                []any{"test-mailbox"},
+			"destroy":               []any{"test-mailbox"},
 			"onDestroyRemoveEmails": true,
 		},
 		ClientID: "c0",

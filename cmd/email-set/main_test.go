@@ -9,10 +9,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 type mockEmailRepository struct {
@@ -1631,8 +1631,8 @@ func TestUpdateEmail_MailboxIDs_TransactionalStateUpdate(t *testing.T) {
 			buildUpdateEmailMailboxesCalled = true
 			// Return added and removed mailboxes
 			return []string{"archive-id"}, []string{"drafts-id"}, []types.TransactWriteItem{
-				{Put: &types.Put{}}, // email update
-				{Put: &types.Put{}}, // membership add
+				{Put: &types.Put{}},       // email update
+				{Put: &types.Put{}},       // membership add
 				{Delete: &types.Delete{}}, // membership delete
 			}
 		},
@@ -2002,4 +2002,3 @@ func TestHandler_DestroySearchIndexPublishError_NonFatal(t *testing.T) {
 }
 
 func stringPtr(s string) *string { return &s }
-

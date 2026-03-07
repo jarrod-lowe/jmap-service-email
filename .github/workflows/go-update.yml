@@ -1,0 +1,52 @@
+name: Go Version Update
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # Weekly on Monday at midnight UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  go-update:
+    name: Update Go Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get latest Go version
+        id: go-version
+        run: |
+          LATEST=$(curl -s https://go.dev/VERSION?m=text | cut -d' ' -f1 | sed 's/go//')
+          echo "version=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest Go version: $LATEST"
+      - name: Check current version in go.mod
+        id: current-version
+        run: |
+          CURRENT=$(grep "^go " go.mod | awk '{print $2}')
+          echo "version=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Current Go version: $CURRENT"
+      - name: Create PR if newer version available
+        if: steps.go-version.outputs.version != steps.current-version.outputs.version
+        run: |
+          PR_TITLE="Bump Go version to ${{ steps.go-version.outputs.version }}"
+          PR_BODY="Automated Go version update from ${{ steps.current-version.outputs.version }} to ${{ steps.go-version.outputs.version }}"
+
+          # Check if PR already exists
+          if gh pr list --state open --head "go-update-${{ steps.go-version.outputs.version }}" | grep -q .; then
+            echo "PR already exists"
+            exit 0
+          fi
+
+          gh pr create \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --base main \
+            --head "go-update-${{ steps.go-version.outputs.version }}" \
+            --label "dependencies"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: No update needed
+        if: steps.go-version.outputs.version == steps.current-version.outputs.version
+        run: echo "Go version is up to date"

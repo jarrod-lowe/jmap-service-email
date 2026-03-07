@@ -1,0 +1,38 @@
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - gosec
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false  # Type assertions panic on failure, not error-returning
+    check-blank: false
+    disable-all: false
+    exclude-functions:
+      - (*github.com/stretchr/testify/mock.Mock).AssertExpectations
+  gosec:
+    excludes:
+      - G104  # Errors unhandled
+      - G101  # Potential hardcoded credentials (test data only)
+      - G115  # Integer overflow conversion (known safe conversions)
+  govet:
+    enable-all: true
+    disable:
+      - shadow       # Often produces false positives
+      - fieldalignment # Memory optimization, not correctness
+
+issues:
+  exclude-use-default: false
+  # Exclude linter rules for test files
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unusedwrite
+    - text: "unusedwrite"
+      linters:
+        - govet

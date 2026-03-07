@@ -65,14 +65,14 @@ func TestValidateKeyword_ForbiddenCharacters(t *testing.T) {
 
 func TestValidateKeyword_NonASCII(t *testing.T) {
 	nonASCII := []string{
-		"tëst",        // non-ASCII letter
-		"test\x00",    // null byte
-		"test\x1f",    // control char below 0x21
-		"test\x7f",    // DEL character (0x7f)
-		"日本語",         // unicode
-		"test\t",      // tab (0x09)
-		"test ",       // space (0x20)
-		" test",       // leading space
+		"tëst",     // non-ASCII letter
+		"test\x00", // null byte
+		"test\x1f", // control char below 0x21
+		"test\x7f", // DEL character (0x7f)
+		"日本語",      // unicode
+		"test\t",   // tab (0x09)
+		"test ",    // space (0x20)
+		" test",    // leading space
 	}
 
 	for _, kw := range nonASCII {

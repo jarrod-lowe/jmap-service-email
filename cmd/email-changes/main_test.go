@@ -5,14 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 // mockStateRepository implements the StateRepository interface for testing.
 type mockStateRepository struct {
-	getCurrentStateFunc       func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
-	queryChangesFunc          func(ctx context.Context, accountID string, objectType state.ObjectType, sinceState int64, maxChanges int) ([]state.ChangeRecord, error)
+	getCurrentStateFunc         func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	queryChangesFunc            func(ctx context.Context, accountID string, objectType state.ObjectType, sinceState int64, maxChanges int) ([]state.ChangeRecord, error)
 	getOldestAvailableStateFunc func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 }
 

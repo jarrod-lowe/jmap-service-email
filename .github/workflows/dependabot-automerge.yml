@@ -1,0 +1,26 @@
+name: Dependabot Auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot-automerge:
+    name: Auto-merge Dependabot PRs
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Check CI status
+        run: |
+          gh pr view ${{ github.event.pull_request.number }} --json statusCheckRollup -q '.statusCheckRollup[] | select(.conclusion == "FAILURE")' && exit 1 || echo "All checks passed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Auto-merge PR
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --merge --delete-branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

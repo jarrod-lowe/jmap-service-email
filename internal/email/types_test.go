@@ -118,13 +118,13 @@ func TestEmailItem_FullStruct(t *testing.T) {
 		To: []EmailAddress{
 			{Name: "Bob", Email: "bob@example.com"},
 		},
-		CC:        []EmailAddress{},
-		ReplyTo:   []EmailAddress{},
-		SentAt:    sentAt,
-		MessageID: []string{"<msg-123@example.com>"},
-		InReplyTo: []string{},
+		CC:         []EmailAddress{},
+		ReplyTo:    []EmailAddress{},
+		SentAt:     sentAt,
+		MessageID:  []string{"<msg-123@example.com>"},
+		InReplyTo:  []string{},
 		References: []string{},
-		Preview:   "This is a preview of the email body...",
+		Preview:    "This is a preview of the email body...",
 		BodyStructure: BodyPart{
 			PartID: "1",
 			Type:   "text/plain",
@@ -322,9 +322,9 @@ func TestMailboxMembershipItem_SortKeyOrdering(t *testing.T) {
 
 func TestEmailItem_LSI2SK(t *testing.T) {
 	tests := []struct {
-		name      string
-		email     EmailItem
-		expected  string
+		name     string
+		email    EmailItem
+		expected string
 	}{
 		{
 			name: "single message ID",

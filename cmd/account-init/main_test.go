@@ -36,7 +36,7 @@ func (m *mockMailboxRepository) GetMailbox(ctx context.Context, accountID, mailb
 
 // mockStateRepository implements StateRepository for testing.
 type mockStateRepository struct {
-	getCurrentStateFunc          func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	getCurrentStateFunc            func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
 	buildStateChangeItemsMultiFunc func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 

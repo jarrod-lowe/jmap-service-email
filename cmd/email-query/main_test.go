@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/search"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 // mockEmailRepository implements the EmailRepository interface for testing.
@@ -716,7 +716,7 @@ func TestHandler_MultipleFilters(t *testing.T) {
 
 // mockVectorSearcher implements VectorSearcher for testing.
 type mockVectorSearcher struct {
-	searchFunc func(ctx context.Context, accountID string, filter *email.QueryFilter, position, limit int) (*search.SearchResult, error)
+	searchFunc  func(ctx context.Context, accountID string, filter *email.QueryFilter, position, limit int) (*search.SearchResult, error)
 	searchCalls int
 }
 

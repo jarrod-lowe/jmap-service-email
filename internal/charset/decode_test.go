@@ -217,7 +217,7 @@ func TestDecodeReader_QuotedPrintableCharset(t *testing.T) {
 		input    []byte
 		expected string
 	}{
-		{"latin1", []byte{0xE9}, "é"},     // Latin1 alias for ISO-8859-1
+		{"latin1", []byte{0xE9}, "é"},       // Latin1 alias for ISO-8859-1
 		{"ascii", []byte("Hello"), "Hello"}, // ASCII alias for US-ASCII
 	}
 

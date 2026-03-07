@@ -1,4 +1,4 @@
-.PHONY: help deps build build-all package package-all test lint init plan show-plan apply plan-destroy destroy clean clean-all fmt validate outputs restore-tfvars help-tfvars reset reset-dry-run
+.PHONY: help deps build build-all package package-all test test-race lint init plan show-plan apply plan-destroy destroy clean clean-all fmt fmt-go fmt-check validate outputs restore-tfvars help-tfvars reset reset-dry-run mod-check vulncheck license-check apidiff all-tests clean-go
 
 # Environment selection (test or prod)
 ENV ?= test
@@ -45,7 +45,17 @@ help:
 	@echo "  make build                   - Compile all Go lambdas (linux/arm64)"
 	@echo "  make package                 - Create all Lambda deployment packages (zip)"
 	@echo "  make test                    - Run Go unit tests"
+	@echo "  make test-race               - Run tests with race detector"
 	@echo "  make lint                    - Run golangci-lint (required)"
+	@echo ""
+	@echo "Validation Commands:"
+	@echo "  make fmt-check               - Check Go code formatting"
+	@echo "  make fmt-go                  - Format Go code"
+	@echo "  make mod-check               - Verify go.mod and go.sum are tidy"
+	@echo "  make vulncheck               - Scan dependencies for known CVEs"
+	@echo "  make license-check           - Check dependency license compatibility"
+	@echo "  make apidiff                 - Detect breaking API changes vs last tag"
+	@echo "  make all-tests               - Run all validation checks (pre-commit suite)"
 	@echo ""
 	@echo "Terraform Commands:"
 	@echo "  make init ENV=<env>          - Initialize Terraform (creates state bucket)"
@@ -64,6 +74,7 @@ help:
 	@echo ""
 	@echo "Cleanup Commands:"
 	@echo "  make clean ENV=<env>         - Clean Terraform files only"
+	@echo "  make clean-go                - Remove Go build artifacts only"
 	@echo "  make clean-all ENV=<env>     - Clean Terraform + Go build artifacts"
 	@echo ""
 	@echo "Configured lambdas: $(LAMBDAS)"
@@ -132,6 +143,102 @@ lint:
 	fi; \
 	echo "Running golangci-lint..."; \
 	golangci-lint run ./...
+
+# Format Go code
+fmt-go:
+	@echo "Formatting Go code..."
+	go fmt ./...
+
+# Check formatting (fails if code is not gofmt'd)
+fmt-check: fmt-go
+	@echo "Checking formatting..."
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "ERROR: The following files are not formatted:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi; \
+	echo "All files are formatted."
+
+# Run tests with race detector
+test-race:
+	@echo "Running tests with race detector..."
+	go test -race -p 4 ./...
+
+# Scan dependencies for known CVEs
+vulncheck:
+	@PATH="$(HOME)/go/bin:$$PATH"; \
+	if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "ERROR: govulncheck is not installed"; \
+		echo "Install it with: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+		exit 1; \
+	fi; \
+	echo "Scanning for known vulnerabilities..."; \
+	govulncheck ./...
+
+# Verify go.mod and go.sum are tidy
+mod-check:
+	@echo "Checking go.mod and go.sum are tidy..."
+	go mod tidy
+	@if ! git diff --exit-code go.mod go.sum; then \
+		echo "ERROR: go.mod or go.sum are not tidy. Run 'go mod tidy' and commit the changes."; \
+		exit 1; \
+	fi
+	@echo "go.mod and go.sum are tidy."
+
+# Check dependency license compatibility
+license-check:
+	@PATH="$(HOME)/go/bin:$$PATH"; \
+	if ! command -v go-licenses >/dev/null 2>&1; then \
+		echo "ERROR: go-licenses is not installed"; \
+		echo "Install it with: go install github.com/google/go-licenses@latest"; \
+		exit 1; \
+	fi; \
+	echo "Checking dependency licenses..."; \
+	GOTOOLCHAIN=local go-licenses check --ignore github.com/jarrod-lowe/jmap-service-email ./... 2>&1
+
+# Detect breaking API changes vs last tag
+apidiff:
+	@PATH="$(HOME)/go/bin:$$PATH"; \
+	if ! command -v apidiff >/dev/null 2>&1; then \
+		echo "ERROR: apidiff is not installed"; \
+		echo "Install it with: go install golang.org/x/exp/cmd/apidiff@latest"; \
+		exit 1; \
+	fi; \
+	LATEST_TAG=$$(git describe --tags --abbrev=0 2>/dev/null); \
+	if [ -z "$$LATEST_TAG" ]; then \
+		echo "No previous tags found, skipping apidiff."; \
+		exit 0; \
+	fi; \
+	echo "Comparing API against $$LATEST_TAG..."; \
+	MODULE=$$(go list -m); \
+	INCOMPATIBLE=0; \
+	for pkg in $$(go list ./...); do \
+		SUFFIX=$${pkg#$$MODULE}; \
+		OLD="$$MODULE$$SUFFIX@$$LATEST_TAG"; \
+		echo "Checking $$pkg vs $$OLD..."; \
+		RESULT=$$(apidiff "$$OLD" "$$pkg" 2>&1) || true; \
+		if echo "$$RESULT" | grep -q "Incompatible changes:"; then \
+			echo "$$RESULT"; \
+			INCOMPATIBLE=1; \
+		fi; \
+	done; \
+	if [ "$$INCOMPATIBLE" -eq 1 ]; then \
+		echo "ERROR: Incompatible API changes detected."; \
+		exit 1; \
+	fi; \
+	echo "No incompatible API changes detected."
+
+# Run all validation checks (pre-commit suite)
+all-tests: test test-race lint mod-check vulncheck license-check apidiff fmt-check
+	@echo "All validation checks passed!"
+
+# Clean Go build artifacts only
+clean-go:
+	@echo "Removing Go build artifacts..."
+	rm -rf $(BUILD_DIR)
+	rm -f go.sum
+	@echo "Go clean finished."
 
 # Format Terraform files - depends on actual .tf files
 terraform/.fmt: $(TF_FILES)
@@ -215,10 +322,7 @@ clean:
 	@echo "Cleaned. Build artifacts preserved - use 'make clean-all' to remove builds."
 
 # Full clean - removes everything
-clean-all: clean
-	@echo "Removing Go build artifacts..."
-	rm -rf $(BUILD_DIR)
-	rm -f go.sum
+clean-all: clean clean-go
 	@echo "Complete clean finished."
 
 # tfvars Management

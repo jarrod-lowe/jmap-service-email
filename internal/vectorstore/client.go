@@ -175,7 +175,7 @@ func (c *S3VectorsClient) QueryVectors(ctx context.Context, accountID string, re
 		QueryVector:      &types.VectorDataMemberFloat32{Value: req.Vector},
 		TopK:             &req.TopK,
 		ReturnMetadata:   true,
-		ReturnDistance:    true,
+		ReturnDistance:   true,
 	}
 
 	if req.Filter != nil {

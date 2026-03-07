@@ -25,7 +25,7 @@ func (m *mockEmbedder) GenerateEmbedding(ctx context.Context, text string) ([]fl
 
 // mockVectorStore implements VectorQuerier for testing.
 type mockVectorStore struct {
-	queryFunc func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error)
+	queryFunc  func(ctx context.Context, accountID string, req vectorstore.QueryRequest) ([]vectorstore.QueryResult, error)
 	queryCalls []vectorstore.QueryRequest
 }
 

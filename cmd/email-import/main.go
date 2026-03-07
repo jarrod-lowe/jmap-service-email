@@ -16,17 +16,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
-	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
-	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -85,13 +85,13 @@ type TransactWriter interface {
 
 // handler implements the Email/import logic.
 type handler struct {
-	repo                  EmailRepository
-	blobClientFactory     func(baseURL string) (BlobStreamer, BlobUploader)
-	mailboxRepo           MailboxRepository
-	stateRepo             StateRepository
-	blobDeletePublisher   BlobDeletePublisher
-	searchIndexPublisher  SearchIndexPublisher
-	transactor            TransactWriter
+	repo                 EmailRepository
+	blobClientFactory    func(baseURL string) (BlobStreamer, BlobUploader)
+	mailboxRepo          MailboxRepository
+	stateRepo            StateRepository
+	blobDeletePublisher  BlobDeletePublisher
+	searchIndexPublisher SearchIndexPublisher
+	transactor           TransactWriter
 }
 
 // newHandler creates a new handler.

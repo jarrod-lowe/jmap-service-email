@@ -1,0 +1,25 @@
+name: Claude
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  claude:
+    name: Claude
+    runs-on: ubuntu-latest
+    if: contains(github.event.comment.body, '@claude') || contains(github.event.issue.body, '@claude') || contains(github.event.pull_request.body, '@claude')
+    steps:
+      - name: Respond to @claude mention
+        run: |
+          echo "This repository has Claude Code integration enabled."
+          echo "Please use the Claude Code CLI for assistance."

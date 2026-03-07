@@ -55,10 +55,10 @@ func TestParseText(t *testing.T) {
 
 func TestParseAddresses(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantAddrs  []EmailAddress
-		wantErr    bool
+		name      string
+		input     string
+		wantAddrs []EmailAddress
+		wantErr   bool
 	}{
 		{
 			name:  "single address",
