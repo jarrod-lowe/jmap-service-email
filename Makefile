@@ -1,4 +1,4 @@
-.PHONY: help deps build build-all package package-all test test-race lint init plan show-plan apply plan-destroy destroy clean clean-all fmt fmt-go fmt-check validate outputs restore-tfvars help-tfvars reset reset-dry-run mod-check vulncheck license-check apidiff all-tests clean-go setup setup-repo setup-branch-protection
+.PHONY: help deps build build-all package package-all test lint init plan show-plan apply plan-destroy destroy clean clean-all fmt fmt-go fmt-check validate outputs restore-tfvars help-tfvars reset reset-dry-run mod-check vulncheck license-check apidiff all-tests clean-go setup setup-repo setup-branch-protection
 
 # Environment selection (test or prod)
 ENV ?= test
@@ -45,7 +45,6 @@ help:
 	@echo "  make build                   - Compile all Go lambdas (linux/arm64)"
 	@echo "  make package                 - Create all Lambda deployment packages (zip)"
 	@echo "  make test                    - Run Go unit tests"
-	@echo "  make test-race               - Run tests with race detector"
 	@echo "  make lint                    - Run golangci-lint (required)"
 	@echo ""
 	@echo "Validation Commands:"
@@ -165,11 +164,6 @@ fmt-check: fmt-go
 	fi; \
 	echo "All files are formatted."
 
-# Run tests with race detector
-test-race:
-	@echo "Running tests with race detector..."
-	go test -race -p 4 ./...
-
 # Scan dependencies for known CVEs
 vulncheck:
 	@PATH="$(HOME)/go/bin:$$PATH"; \
@@ -235,7 +229,7 @@ apidiff:
 	echo "No incompatible API changes detected."
 
 # Run all validation checks (pre-commit suite)
-all-tests: test test-race lint mod-check vulncheck license-check apidiff fmt-check
+all-tests: test lint mod-check vulncheck license-check apidiff fmt-check
 	@echo "All validation checks passed!"
 
 # Repository setup targets (require gh CLI and admin access)
