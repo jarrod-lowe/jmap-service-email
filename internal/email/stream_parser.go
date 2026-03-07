@@ -133,7 +133,7 @@ func ParseRFC5322Stream(
 	}
 
 	// Drain any remaining bytes to get accurate total size
-	_, _ = io.Copy(io.Discard, bodyReader)
+	_, _ = io.Copy(io.Discard, bodyReader) //nolint:errcheck // Discarding intentionally
 	parsed.Size = cr.BytesRead()
 	parsed.Preview = previewCapture.Preview()
 
@@ -361,10 +361,11 @@ func parseMultipartStreaming(
 		// Check for disposition
 		disposition := p.Header.Get("Content-Disposition")
 		if disposition != "" {
-			dispType, dispParams, _ := mime.ParseMediaType(disposition)
-			subPart.Disposition = dispType
-			if filename, ok := dispParams["filename"]; ok {
-				subPart.Name = filename
+			if dispType, dispParams, err := mime.ParseMediaType(disposition); err == nil {
+				subPart.Disposition = dispType
+				if filename, ok := dispParams["filename"]; ok {
+					subPart.Name = filename
+				}
 			}
 		}
 		if subPart.Name == "" {

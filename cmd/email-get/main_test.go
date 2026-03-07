@@ -2709,8 +2709,8 @@ func TestHandler_SummaryProperty(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	list := resp.MethodResponse.Args["list"].([]any)
-	emailMap := list[0].(map[string]any)
+	list := resp.MethodResponse.Args["list"].([]any) //nolint:errcheck // Test only
+	emailMap := list[0].(map[string]any) //nolint:errcheck // Test only
 
 	if emailMap["summary"] != "Ad: 50% off furniture" {
 		t.Errorf("summary = %v, want %q", emailMap["summary"], "Ad: 50% off furniture")
@@ -2729,8 +2729,8 @@ func TestHandler_SummaryProperty(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	list2 := resp2.MethodResponse.Args["list"].([]any)
-	emailMap2 := list2[0].(map[string]any)
+	list2 := resp2.MethodResponse.Args["list"].([]any) //nolint:errcheck // Test only
+	emailMap2 := list2[0].(map[string]any) //nolint:errcheck // Test only
 
 	if emailMap2["summary"] != "Ad: 50% off furniture" {
 		t.Errorf("summary = %v, want %q", emailMap2["summary"], "Ad: 50% off furniture")

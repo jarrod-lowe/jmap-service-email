@@ -40,7 +40,7 @@ func allocateMultipartSuccessResponse(blobID string, partURLs []string) string {
 			},
 		},
 	}
-	b, _ := json.Marshal(resp)
+	b, _ := json.Marshal(resp) //nolint:errcheck // Test only
 	return string(b)
 }
 
@@ -57,7 +57,7 @@ func completeSuccessResponse() string {
 			},
 		},
 	}
-	b, _ := json.Marshal(resp)
+	b, _ := json.Marshal(resp) //nolint:errcheck // Test only
 	return string(b)
 }
 
@@ -95,7 +95,7 @@ func newMultipartMocks(blobID string, numParts int) (signed *fakeHTTPDoer, plain
 
 	plain = &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only //nolint:errcheck // Test only
 			resp := &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"etag-default"`}},
@@ -113,7 +113,7 @@ func TestPresignedUpload_AllocateRequestIncludesMultipartTrue(t *testing.T) {
 
 	signedClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			capturedBody, _ = io.ReadAll(req.Body)
+			capturedBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewReader([]byte(allocateMultipartSuccessResponse("blob-new", makePartURLs(100))))),
@@ -122,7 +122,7 @@ func TestPresignedUpload_AllocateRequestIncludesMultipartTrue(t *testing.T) {
 	}
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"etag-1"`}},
@@ -146,7 +146,7 @@ func TestPresignedUpload_AllocateRequestIncludesMultipartTrue(t *testing.T) {
 	}
 
 	client := NewPresignedUploadClient("https://api.example.com", signedClient, plainClient)
-	_, _, _ = client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("hello")))
+	_, _, _ = client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("hello"))) //nolint:errcheck // Test only
 
 	// Parse the JMAP request body
 	var jmapReq map[string]any
@@ -158,10 +158,10 @@ func TestPresignedUpload_AllocateRequestIncludesMultipartTrue(t *testing.T) {
 	if !ok || len(calls) == 0 {
 		t.Fatal("missing 'methodCalls' in JMAP request")
 	}
-	call := calls[0].([]any)
-	args := call[1].(map[string]any)
-	create := args["create"].(map[string]any)
-	c0 := create["c0"].(map[string]any)
+	call := calls[0].([]any) //nolint:errcheck // Test only
+	args := call[1].(map[string]any) //nolint:errcheck // Test only
+	create := args["create"].(map[string]any) //nolint:errcheck // Test only
+	c0 := create["c0"].(map[string]any) //nolint:errcheck // Test only
 
 	multipart, ok := c0["multipart"].(bool)
 	if !ok || !multipart {
@@ -180,14 +180,14 @@ func TestPresignedUpload_ConstructsCorrectAllocateRequest(t *testing.T) {
 		wrapCallCount++
 		if wrapCallCount == 1 {
 			capturedReq = req
-			capturedBody, _ = io.ReadAll(req.Body)
+			capturedBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			req.Body = io.NopCloser(bytes.NewReader(capturedBody))
 		}
 		return origFunc(req)
 	}
 
 	client := NewPresignedUploadClient("https://api.example.com", signed, plain)
-	_, _, _ = client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("hello")))
+	_, _, _ = client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("hello"))) //nolint:errcheck // Test only
 
 	if capturedReq == nil {
 		t.Fatal("signedClient was not called")
@@ -235,11 +235,11 @@ func TestPresignedUpload_ConstructsCorrectAllocateRequest(t *testing.T) {
 	if !ok || len(calls) == 0 {
 		t.Fatal("missing 'methodCalls' in JMAP request")
 	}
-	call := calls[0].([]any)
+	call := calls[0].([]any) //nolint:errcheck // Test only
 	if call[0] != "Blob/allocate" {
 		t.Errorf("method = %v, want Blob/allocate", call[0])
 	}
-	args := call[1].(map[string]any)
+	args := call[1].(map[string]any) //nolint:errcheck // Test only
 	if args["accountId"] != "user-123" {
 		t.Errorf("accountId = %v, want user-123", args["accountId"])
 	}
@@ -267,7 +267,7 @@ func TestPresignedUpload_SmallBody_UploadsSinglePart(t *testing.T) {
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
 			capturedPutReq = req
-			capturedPutBody, _ = io.ReadAll(req.Body)
+			capturedPutBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"etag-1"`}},
@@ -321,7 +321,7 @@ func TestPresignedUpload_SmallBody_CallsCompleteWithCorrectParts(t *testing.T) {
 					Body:       io.NopCloser(bytes.NewReader([]byte(allocateMultipartSuccessResponse("blob-new", makePartURLs(100))))),
 				}, nil
 			}
-			capturedCompleteBody, _ = io.ReadAll(req.Body)
+			capturedCompleteBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewReader([]byte(completeSuccessResponse()))),
@@ -330,7 +330,7 @@ func TestPresignedUpload_SmallBody_CallsCompleteWithCorrectParts(t *testing.T) {
 	}
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"etag-abc"`}},
@@ -355,24 +355,24 @@ func TestPresignedUpload_SmallBody_CallsCompleteWithCorrectParts(t *testing.T) {
 		t.Fatalf("Failed to parse complete request: %v", err)
 	}
 
-	calls := jmapReq["methodCalls"].([]any)
-	call := calls[0].([]any)
+	calls := jmapReq["methodCalls"].([]any) //nolint:errcheck // Test only
+	call := calls[0].([]any) //nolint:errcheck // Test only
 	if call[0] != "Blob/complete" {
 		t.Errorf("method = %v, want Blob/complete", call[0])
 	}
-	args := call[1].(map[string]any)
+	args := call[1].(map[string]any) //nolint:errcheck // Test only
 	if args["id"] != "blob-new" {
 		t.Errorf("id = %v, want blob-new", args["id"])
 	}
-	parts := args["parts"].([]any)
+	parts := args["parts"].([]any) //nolint:errcheck // Test only
 	if len(parts) != 1 {
 		t.Fatalf("parts count = %d, want 1", len(parts))
 	}
-	part := parts[0].(map[string]any)
-	if pn := part["partNumber"].(float64); pn != 1 {
+	part := parts[0].(map[string]any) //nolint:errcheck // Test only
+	if pn := part["partNumber"].(float64); pn != 1 { //nolint:errcheck // Test only
 		t.Errorf("partNumber = %v, want 1", pn)
 	}
-	if etag := part["etag"].(string); etag != `"etag-abc"` {
+	if etag := part["etag"].(string); etag != `"etag-abc"` { //nolint:errcheck // Test only
 		t.Errorf("etag = %v, want \"etag-abc\"", etag)
 	}
 }
@@ -403,7 +403,7 @@ func TestPresignedUpload_LargeBody_UploadsMultipleParts(t *testing.T) {
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
 			putURLs = append(putURLs, req.URL.String())
-			body, _ := io.ReadAll(req.Body)
+			body, _ := io.ReadAll(req.Body) //nolint:errcheck // Test only
 			putSizes = append(putSizes, len(body))
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -461,7 +461,7 @@ func TestPresignedUpload_LargeBody_CallsCompleteWithAllParts(t *testing.T) {
 					Body:       io.NopCloser(bytes.NewReader([]byte(allocateMultipartSuccessResponse("blob-large", makePartURLs(100))))),
 				}, nil
 			}
-			capturedCompleteBody, _ = io.ReadAll(req.Body)
+			capturedCompleteBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewReader([]byte(completeSuccessResponse()))),
@@ -472,7 +472,7 @@ func TestPresignedUpload_LargeBody_CallsCompleteWithAllParts(t *testing.T) {
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
 			partPutCount++
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{fmt.Sprintf(`"etag-%d"`, partPutCount)}},
@@ -493,21 +493,21 @@ func TestPresignedUpload_LargeBody_CallsCompleteWithAllParts(t *testing.T) {
 		t.Fatalf("Failed to parse complete request: %v", err)
 	}
 
-	calls := jmapReq["methodCalls"].([]any)
+	calls := jmapReq["methodCalls"].([]any) //nolint:errcheck // Test only
 	args := calls[0].([]any)[1].(map[string]any)
-	parts := args["parts"].([]any)
+	parts := args["parts"].([]any) //nolint:errcheck // Test only
 	if len(parts) != 3 {
 		t.Fatalf("parts count = %d, want 3", len(parts))
 	}
 
 	for i, p := range parts {
-		part := p.(map[string]any)
+		part := p.(map[string]any) //nolint:errcheck // Test only
 		expectedPN := float64(i + 1)
-		if part["partNumber"].(float64) != expectedPN {
+		if part["partNumber"].(float64) != expectedPN { //nolint:errcheck // Test only
 			t.Errorf("part[%d] partNumber = %v, want %v", i, part["partNumber"], expectedPN)
 		}
 		expectedETag := fmt.Sprintf(`"etag-%d"`, i+1)
-		if part["etag"].(string) != expectedETag {
+		if part["etag"].(string) != expectedETag { //nolint:errcheck // Test only
 			t.Errorf("part[%d] etag = %v, want %v", i, part["etag"], expectedETag)
 		}
 	}
@@ -519,7 +519,7 @@ func TestPresignedUpload_ExactPartSize_TwoParts(t *testing.T) {
 	var putSizes []int
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			body, _ := io.ReadAll(req.Body)
+			body, _ := io.ReadAll(req.Body) //nolint:errcheck // Test only
 			putSizes = append(putSizes, len(body))
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -561,7 +561,7 @@ func TestPresignedUpload_CapturesETagFromResponse(t *testing.T) {
 					Body:       io.NopCloser(bytes.NewReader([]byte(allocateMultipartSuccessResponse("blob-etag", makePartURLs(100))))),
 				}, nil
 			}
-			capturedCompleteBody, _ = io.ReadAll(req.Body)
+			capturedCompleteBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewReader([]byte(completeSuccessResponse()))),
@@ -570,7 +570,7 @@ func TestPresignedUpload_CapturesETagFromResponse(t *testing.T) {
 	}
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"specific-etag-value"`}},
@@ -590,10 +590,10 @@ func TestPresignedUpload_CapturesETagFromResponse(t *testing.T) {
 		t.Fatalf("Failed to parse complete request: %v", err)
 	}
 
-	calls := jmapReq["methodCalls"].([]any)
+	calls := jmapReq["methodCalls"].([]any) //nolint:errcheck // Test only
 	args := calls[0].([]any)[1].(map[string]any)
-	parts := args["parts"].([]any)
-	part := parts[0].(map[string]any)
+	parts := args["parts"].([]any) //nolint:errcheck // Test only
+	part := parts[0].(map[string]any) //nolint:errcheck // Test only
 	if etag := part["etag"].(string); etag != `"specific-etag-value"` {
 		t.Errorf("etag = %q, want %q", etag, `"specific-etag-value"`)
 	}
@@ -604,7 +604,7 @@ func TestPresignedUpload_PartPutFailure_ReturnsError(t *testing.T) {
 
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusForbidden,
 				Body:       io.NopCloser(bytes.NewReader([]byte("Access Denied"))),
@@ -627,7 +627,7 @@ func TestPresignedUpload_PartPutMissingETag_ReturnsError(t *testing.T) {
 
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       http.NoBody,
@@ -665,7 +665,7 @@ func TestPresignedUpload_CompleteFailure_ReturnsError(t *testing.T) {
 	}
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"etag-1"`}},
@@ -704,7 +704,7 @@ func TestPresignedUpload_CompleteJMAPError_ReturnsError(t *testing.T) {
 	}
 	plainClient := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			_, _ = io.ReadAll(req.Body)
+			_, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Etag": []string{`"etag-1"`}},

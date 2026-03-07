@@ -102,7 +102,7 @@ func TestSQSPublisher_CorrectQueueURL(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/my-queue")
-	_ = pub.PublishIndexRequest(context.Background(), "user-123", "email-456", ActionIndex, "https://api.example.com", nil)
+	_ = pub.PublishIndexRequest(context.Background(), "user-123", "email-456", ActionIndex, "https://api.example.com", nil) //nolint:errcheck // Test only
 
 	if capturedQueueURL != "https://sqs.example.com/my-queue" {
 		t.Errorf("QueueUrl = %q, want %q", capturedQueueURL, "https://sqs.example.com/my-queue")

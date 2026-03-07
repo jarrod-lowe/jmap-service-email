@@ -184,8 +184,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 					slog.String("error", err.Error()),
 				)
 			} else {
-				rawHeaders, _ = textproto.NewReader(bufio.NewReader(headerReader)).ReadMIMEHeader()
-				_ = headerReader.Close()
+				rawHeaders, _ = textproto.NewReader(bufio.NewReader(headerReader)).ReadMIMEHeader() //nolint:errcheck // Best-effort header parsing
+				_ = headerReader.Close() //nolint:errcheck // Cleanup
 			}
 		}
 
@@ -308,7 +308,7 @@ func fetchBodyValue(ctx context.Context, blobStreamer BlobStreamer, accountID st
 		)
 		return "", false, true
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = reader.Close() }() //nolint:errcheck // Defer cleanup
 
 	// Decode charset
 	decodedReader, encodingProblem, err := charset.DecodeReader(reader, part.Charset)
@@ -463,7 +463,7 @@ func getHeaderValue(rawHeaders textproto.MIMEHeader, hp *headers.HeaderProperty)
 	if hp.All {
 		results := make([]any, len(values))
 		for i, v := range values {
-			result, _ := headers.ApplyForm(v, hp.Form)
+			result, _ := headers.ApplyForm(v, hp.Form) //nolint:errcheck // Header form is validated earlier
 			results[i] = result
 		}
 		return results
@@ -471,7 +471,7 @@ func getHeaderValue(rawHeaders textproto.MIMEHeader, hp *headers.HeaderProperty)
 
 	// Otherwise, return last value (per RFC 8621)
 	lastValue := values[len(values)-1]
-	result, _ := headers.ApplyForm(lastValue, hp.Form)
+	result, _ := headers.ApplyForm(lastValue, hp.Form) //nolint:errcheck // Header form is validated earlier
 	return result
 }
 
@@ -638,7 +638,7 @@ func main() {
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request
 	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{ //nolint:errcheck // Best-effort warmup
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},

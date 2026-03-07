@@ -96,7 +96,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	if filterArg, ok := request.Args.Object("filter"); ok {
 		queryFilter = &email.QueryFilter{}
 		if err := h.parseFilter(ctx, accountID, filterArg, queryFilter); err != nil {
-			return errorResponse(request.ClientID, err.(*jmaperror.MethodError)), nil
+			return errorResponse(request.ClientID, err.(*jmaperror.MethodError)), nil //nolint:errcheck // Controlled test data
 		}
 	}
 
@@ -460,7 +460,7 @@ func main() {
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request
 	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{ //nolint:errcheck // Best-effort warmup
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},

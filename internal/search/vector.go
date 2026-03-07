@@ -87,12 +87,12 @@ func (vs *VectorSearcher) Search(ctx context.Context, accountID string, filter *
 	seen := make(map[string]bool)
 	var items []searchResult
 	for _, r := range results {
-		emailID, _ := r.Metadata["emailId"].(string)
+		emailID, _ := r.Metadata["emailId"].(string) //nolint:errcheck // Empty string handled below
 		if emailID == "" || seen[emailID] {
 			continue
 		}
 		seen[emailID] = true
-		receivedAt, _ := r.Metadata["receivedAt"].(string)
+		receivedAt, _ := r.Metadata["receivedAt"].(string) //nolint:errcheck // Missing metadata skipped by empty comparison
 		items = append(items, searchResult{
 			emailID:    emailID,
 			receivedAt: receivedAt,

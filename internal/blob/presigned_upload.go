@@ -140,7 +140,7 @@ func (c *PresignedUploadClient) allocate(ctx context.Context, accountID, content
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: %v", ErrServerFail, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // Defer cleanup
 
 	if resp.StatusCode >= 500 {
 		return "", nil, fmt.Errorf("%w: allocate returned status %d", ErrServerFail, resp.StatusCode)
@@ -217,7 +217,7 @@ func (c *PresignedUploadClient) putPart(ctx context.Context, url, contentType st
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrServerFail, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // Defer cleanup
 
 	if resp.StatusCode >= 300 {
 		return "", fmt.Errorf("%w: part PUT returned status %d", ErrServerFail, resp.StatusCode)
@@ -262,7 +262,7 @@ func (c *PresignedUploadClient) uploadParts(ctx context.Context, parts []partURL
 
 	// Verify body is exhausted
 	extra := make([]byte, 1)
-	if n, _ := body.Read(extra); n > 0 {
+	if n, _ := body.Read(extra); n > 0 { //nolint:errcheck // Checking length, not error
 		return nil, fmt.Errorf("%w: body exceeds maximum upload size (%d parts)", ErrInvalidArguments, len(parts))
 	}
 
@@ -302,7 +302,7 @@ func (c *PresignedUploadClient) complete(ctx context.Context, accountID, blobID 
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrServerFail, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // Defer cleanup
 
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("%w: complete returned status %d", ErrServerFail, resp.StatusCode)

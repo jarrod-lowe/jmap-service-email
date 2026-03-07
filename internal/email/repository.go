@@ -586,7 +586,7 @@ func (r *Repository) marshalEmailItem(email *EmailItem) map[string]types.Attribu
 
 	// BodyStructure - serialize as JSON string for simplicity
 	if email.BodyStructure.PartID != "" {
-		bodyStructureJSON, _ := json.Marshal(email.BodyStructure)
+		bodyStructureJSON, _ := json.Marshal(email.BodyStructure) //nolint:errcheck // Optional field
 		item[AttrBodyStructure] = &types.AttributeValueMemberS{Value: string(bodyStructureJSON)}
 	}
 
@@ -757,7 +757,7 @@ func (r *Repository) unmarshalEmailItem(item map[string]types.AttributeValue) (*
 
 	// BodyStructure - deserialize from JSON string
 	if v, ok := item[AttrBodyStructure].(*types.AttributeValueMemberS); ok {
-		_ = json.Unmarshal([]byte(v.Value), &email.BodyStructure)
+		_ = json.Unmarshal([]byte(v.Value), &email.BodyStructure) //nolint:errcheck // Optional field, ignore errors
 	}
 
 	// Version

@@ -1156,7 +1156,7 @@ func TestHandler_UpdateKeywords_InvalidNestedPath(t *testing.T) {
 	if item["type"] != "invalidPatch" {
 		t.Errorf("type = %v, want %q", item["type"], "invalidPatch")
 	}
-	desc, _ := item["description"].(string)
+	desc, _ := item["description"].(string) //nolint:errcheck // Test only //nolint:errcheck // Test only
 	if !strings.Contains(desc, "keywords/nested/deep") {
 		t.Errorf("description = %q, want it to contain the invalid path", desc)
 	}
@@ -1208,7 +1208,7 @@ func TestHandler_UpdateMailboxIds_InvalidNestedPath(t *testing.T) {
 	if item["type"] != "invalidPatch" {
 		t.Errorf("type = %v, want %q", item["type"], "invalidPatch")
 	}
-	desc, _ := item["description"].(string)
+	desc, _ := item["description"].(string) //nolint:errcheck // Test only
 	if !strings.Contains(desc, "mailboxIds/folder/subfolder") {
 		t.Errorf("description = %q, want it to contain the invalid path", desc)
 	}
@@ -1705,7 +1705,7 @@ func TestUpdateEmail_MailboxIDs_TransactionalStateUpdate(t *testing.T) {
 	}
 
 	// Check for notUpdated
-	notUpdated, _ := resp.MethodResponse.Args["notUpdated"].(map[string]any)
+	notUpdated, _ := resp.MethodResponse.Args["notUpdated"].(map[string]any) //nolint:errcheck // Test only
 	if len(notUpdated) > 0 {
 		t.Fatalf("Update failed with notUpdated: %+v", notUpdated)
 	}
@@ -1750,7 +1750,7 @@ func TestUpdateEmail_MailboxIDs_TransactionalStateUpdate(t *testing.T) {
 	}
 
 	// Verify newState was incremented
-	newState := resp.MethodResponse.Args["newState"].(string)
+	newState := resp.MethodResponse.Args["newState"].(string) //nolint:errcheck // Test only
 	if newState != "11" {
 		t.Errorf("newState = %q, want %q", newState, "11")
 	}

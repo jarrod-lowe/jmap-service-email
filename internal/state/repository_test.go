@@ -66,8 +66,8 @@ func TestRepository_GetCurrentState(t *testing.T) {
 	mockClient := &mockDynamoDBClient{
 		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			// Verify the query is correct
-			pk := input.Key["pk"].(*types.AttributeValueMemberS).Value
-			sk := input.Key["sk"].(*types.AttributeValueMemberS).Value
+			pk := input.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Controlled test data
+			sk := input.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Controlled test data
 			if pk != "ACCOUNT#user-123" {
 				t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 			}
@@ -169,8 +169,8 @@ func TestRepository_IncrementStateAndLogChange(t *testing.T) {
 	}
 
 	// Verify PK/SK in state update
-	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -185,17 +185,17 @@ func TestRepository_IncrementStateAndLogChange(t *testing.T) {
 	}
 
 	// Verify change log entry has correct attributes
-	changeSK := changePut.Item["sk"].(*types.AttributeValueMemberS).Value
+	changeSK := changePut.Item["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only //nolint:errcheck // Controlled test data
 	if changeSK != "CHANGE#Email#0000000001" {
 		t.Errorf("change sk = %q, want CHANGE#Email#0000000001", changeSK)
 	}
 
-	objectID := changePut.Item["objectId"].(*types.AttributeValueMemberS).Value
+	objectID := changePut.Item["objectId"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if objectID != "email-456" {
 		t.Errorf("objectId = %q, want %q", objectID, "email-456")
 	}
 
-	changeType := changePut.Item["changeType"].(*types.AttributeValueMemberS).Value
+	changeType := changePut.Item["changeType"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if changeType != "created" {
 		t.Errorf("changeType = %q, want %q", changeType, "created")
 	}
@@ -449,7 +449,7 @@ func TestRepository_IncrementStateAndLogChange_TTL(t *testing.T) {
 	if !ok {
 		t.Fatal("change log entry missing ttl field")
 	}
-	ttlAttr := ttlAttrVal.(*types.AttributeValueMemberN).Value
+	ttlAttr := ttlAttrVal.(*types.AttributeValueMemberN).Value //nolint:errcheck // Test only
 
 	// Parse TTL
 	var ttl int64
@@ -489,8 +489,8 @@ func TestRepository_BuildStateChangeItems_ReturnsCorrectItems(t *testing.T) {
 	if *stateUpdate.TableName != "test-table" {
 		t.Errorf("TableName = %q, want %q", *stateUpdate.TableName, "test-table")
 	}
-	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -503,15 +503,15 @@ func TestRepository_BuildStateChangeItems_ReturnsCorrectItems(t *testing.T) {
 	if changePut == nil {
 		t.Fatal("Second item should be a Put")
 	}
-	changeSK := changePut.Item["sk"].(*types.AttributeValueMemberS).Value
+	changeSK := changePut.Item["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if changeSK != "CHANGE#Email#0000000006" {
 		t.Errorf("change sk = %q, want CHANGE#Email#0000000006", changeSK)
 	}
-	objectID := changePut.Item["objectId"].(*types.AttributeValueMemberS).Value
+	objectID := changePut.Item["objectId"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if objectID != "email-456" {
 		t.Errorf("objectId = %q, want %q", objectID, "email-456")
 	}
-	changeType := changePut.Item["changeType"].(*types.AttributeValueMemberS).Value
+	changeType := changePut.Item["changeType"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if changeType != "destroyed" {
 		t.Errorf("changeType = %q, want %q", changeType, "destroyed")
 	}
@@ -551,8 +551,8 @@ func TestRepository_BuildStateChangeItemsMulti_MultipleObjects(t *testing.T) {
 	if stateUpdate == nil {
 		t.Fatal("First item should be an Update")
 	}
-	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := stateUpdate.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := stateUpdate.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -565,7 +565,7 @@ func TestRepository_BuildStateChangeItemsMulti_MultipleObjects(t *testing.T) {
 	if updateExpr == "" {
 		t.Fatal("UpdateExpression is empty")
 	}
-	incrementVal := stateUpdate.ExpressionAttributeValues[":n"].(*types.AttributeValueMemberN).Value
+	incrementVal := stateUpdate.ExpressionAttributeValues[":n"].(*types.AttributeValueMemberN).Value //nolint:errcheck // Test only
 	if incrementVal != "3" {
 		t.Errorf("increment value = %q, want %q", incrementVal, "3")
 	}
@@ -583,15 +583,15 @@ func TestRepository_BuildStateChangeItemsMulti_MultipleObjects(t *testing.T) {
 		if put == nil {
 			t.Fatalf("items[%d] should be a Put", i+1)
 		}
-		changeSK := put.Item["sk"].(*types.AttributeValueMemberS).Value
+		changeSK := put.Item["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 		if changeSK != expectedSKs[i] {
 			t.Errorf("items[%d] sk = %q, want %q", i+1, changeSK, expectedSKs[i])
 		}
-		objectID := put.Item["objectId"].(*types.AttributeValueMemberS).Value
+		objectID := put.Item["objectId"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 		if objectID != expectedObjectIDs[i] {
 			t.Errorf("items[%d] objectId = %q, want %q", i+1, objectID, expectedObjectIDs[i])
 		}
-		changeType := put.Item["changeType"].(*types.AttributeValueMemberS).Value
+		changeType := put.Item["changeType"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 		if changeType != "updated" {
 			t.Errorf("items[%d] changeType = %q, want %q", i+1, changeType, "updated")
 		}

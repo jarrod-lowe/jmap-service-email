@@ -44,7 +44,7 @@ func TestFetchBlob_ConstructsCorrectURL(t *testing.T) {
 		httpClient: fake,
 	}
 
-	_, _ = client.FetchBlob(context.Background(), "user-123", "blob-456")
+	_, _ = client.FetchBlob(context.Background(), "user-123", "blob-456") //nolint:errcheck // Test only
 
 	expected := "https://api.example.com/download-iam/user-123/blob-456"
 	if capturedURL != expected {
@@ -308,7 +308,7 @@ func TestFetchBlob_ExponentialBackoff(t *testing.T) {
 		},
 	}
 
-	_, _ = client.FetchBlob(context.Background(), "user-123", "blob-456")
+	_, _ = client.FetchBlob(context.Background(), "user-123", "blob-456") //nolint:errcheck // Test only
 
 	// Should have 2 delays (before 2nd and 3rd attempts)
 	if len(delays) != 2 {
@@ -414,7 +414,7 @@ func TestStream_ConstructsCorrectURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error = %v, want nil", err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { _ = rc.Close() }() //nolint:errcheck // Test only
 
 	expected := "https://api.example.com/download-iam/user-123/blob-456"
 	if capturedURL != expected {
@@ -442,7 +442,7 @@ func TestStream_ReturnsReadCloserOn200(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error = %v, want nil", err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { _ = rc.Close() }() //nolint:errcheck // Test only
 
 	content, err := io.ReadAll(rc)
 	if err != nil {
@@ -587,7 +587,7 @@ func TestUpload_StreamsBodyDirectly(t *testing.T) {
 	var capturedBody []byte
 	fake := &fakeHTTPDoer{
 		doFunc: func(req *http.Request) (*http.Response, error) {
-			capturedBody, _ = io.ReadAll(req.Body)
+			capturedBody, _ = io.ReadAll(req.Body) //nolint:errcheck // Test only
 			return &http.Response{
 				StatusCode: http.StatusCreated,
 				Body:       io.NopCloser(bytes.NewReader([]byte(`{"blobId":"new-blob-123","size":7}`))),
@@ -871,7 +871,7 @@ func TestStream_CreatesSpanWithAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error = %v, want nil", err)
 	}
-	_ = rc.Close()
+	_ = rc.Close() //nolint:errcheck // Test only
 
 	span := findSpan(recorder, "blob.Stream")
 	if span == nil {

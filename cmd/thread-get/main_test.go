@@ -404,8 +404,8 @@ func TestHandler_SoftDeletedEmailsExcludedFromThread(t *testing.T) {
 	if !ok || len(list) != 1 {
 		t.Fatalf("expected 1 thread in list, got %v", list)
 	}
-	thread := list[0].(map[string]any)
-	emailIds := thread["emailIds"].([]string)
+	thread := list[0].(map[string]any) //nolint:errcheck // Test only
+	emailIds := thread["emailIds"].([]string) //nolint:errcheck // Test only
 	if len(emailIds) != 1 || emailIds[0] != "email-1" {
 		t.Errorf("emailIds = %v, want [email-1]", emailIds)
 	}

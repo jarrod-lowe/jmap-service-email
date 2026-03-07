@@ -43,7 +43,7 @@ func TestSummarize_Success(t *testing.T) {
 			resp := claudeResponse{
 				Content: []contentBlock{{Type: "text", Text: "Ad: 50% off furniture this weekend"}},
 			}
-			body, _ := json.Marshal(resp)
+			body, _ := json.Marshal(resp) //nolint:errcheck // Test only //nolint:errcheck // Test only
 			return &bedrockruntime.InvokeModelOutput{Body: body}, nil
 		},
 	}
@@ -66,7 +66,7 @@ func TestSummarize_TruncatesLongOutput(t *testing.T) {
 			resp := claudeResponse{
 				Content: []contentBlock{{Type: "text", Text: longSummary}},
 			}
-			body, _ := json.Marshal(resp)
+			body, _ := json.Marshal(resp) //nolint:errcheck // Test only //nolint:errcheck // Test only
 			return &bedrockruntime.InvokeModelOutput{Body: body}, nil
 		},
 	}
@@ -103,7 +103,7 @@ func TestSummarize_TruncatesBodyInput(t *testing.T) {
 			resp := claudeResponse{
 				Content: []contentBlock{{Type: "text", Text: "Test summary"}},
 			}
-			body, _ := json.Marshal(resp)
+			body, _ := json.Marshal(resp) //nolint:errcheck // Test only //nolint:errcheck // Test only
 			return &bedrockruntime.InvokeModelOutput{Body: body}, nil
 		},
 	}
@@ -132,7 +132,7 @@ func TestSummarize_CustomModelID(t *testing.T) {
 			resp := claudeResponse{
 				Content: []contentBlock{{Type: "text", Text: "Summary"}},
 			}
-			body, _ := json.Marshal(resp)
+			body, _ := json.Marshal(resp) //nolint:errcheck // Test only
 			return &bedrockruntime.InvokeModelOutput{Body: body}, nil
 		},
 	}
@@ -150,7 +150,7 @@ func TestSummarize_EmptyResponse(t *testing.T) {
 			resp := claudeResponse{
 				Content: []contentBlock{},
 			}
-			body, _ := json.Marshal(resp)
+			body, _ := json.Marshal(resp) //nolint:errcheck // Test only
 			return &bedrockruntime.InvokeModelOutput{Body: body}, nil
 		},
 	}

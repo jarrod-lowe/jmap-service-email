@@ -47,7 +47,7 @@ func TestSigV4Transport_AddsAuthorizationHeader(t *testing.T) {
 
 	transport := NewSigV4Transport(fakeRT, &fakeCredentialsProvider{}, "us-east-1")
 
-	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/download-iam/user-123/blob-456", nil)
+	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/download-iam/user-123/blob-456", nil) //nolint:errcheck // Test only
 	_, err := transport.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip error = %v, want nil", err)
@@ -82,7 +82,7 @@ func TestSigV4Transport_HashesRequestBody(t *testing.T) {
 
 		transport := NewSigV4Transport(fakeRT, &fakeCredentialsProvider{}, "us-east-1")
 
-		req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/download-iam/user-123/blob-456", nil)
+		req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/download-iam/user-123/blob-456", nil) //nolint:errcheck // Test only
 		_, err := transport.RoundTrip(req)
 		if err != nil {
 			t.Fatalf("RoundTrip error = %v, want nil", err)
@@ -119,7 +119,7 @@ func TestSigV4Transport_HashesRequestBody(t *testing.T) {
 
 		transport := NewSigV4Transport(fakeRT, &fakeCredentialsProvider{}, "us-east-1")
 
-		req, _ := http.NewRequest(http.MethodPost, "https://api.example.com/jmap-iam/user-123", strings.NewReader(bodyContent))
+		req, _ := http.NewRequest(http.MethodPost, "https://api.example.com/jmap-iam/user-123", strings.NewReader(bodyContent)) //nolint:errcheck // Test only
 		req.Header.Set("Content-Type", "application/json")
 		_, err := transport.RoundTrip(req)
 		if err != nil {
@@ -170,8 +170,8 @@ func TestSigV4Transport_CallsWrappedTransport(t *testing.T) {
 
 	transport := NewSigV4Transport(fakeRT, &fakeCredentialsProvider{}, "us-east-1")
 
-	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/test", nil)
-	_, _ = transport.RoundTrip(req)
+	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/test", nil) //nolint:errcheck // Test only
+	_, _ = transport.RoundTrip(req) //nolint:errcheck // Test only
 
 	if !called {
 		t.Error("wrapped transport was not called")

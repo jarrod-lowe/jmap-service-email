@@ -526,8 +526,8 @@ func TestHandler_EmptyRoleOmittedNotNull(t *testing.T) {
 		t.Fatalf("handle() error = %v", err)
 	}
 
-	list := resp.MethodResponse.Args["list"].([]any)
-	mbox := list[0].(map[string]any)
+	list := resp.MethodResponse.Args["list"].([]any) //nolint:errcheck // Test only
+	mbox := list[0].(map[string]any) //nolint:errcheck // Test only
 
 	// role should be ABSENT from the response, not present with value nil
 	_, roleExists := mbox["role"]

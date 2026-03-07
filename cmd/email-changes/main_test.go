@@ -110,12 +110,12 @@ func TestHandler_BasicChanges(t *testing.T) {
 	}
 
 	// Should have empty updated and destroyed
-	updated, _ := response.MethodResponse.Args["updated"].([]string)
+	updated, _ := response.MethodResponse.Args["updated"].([]string) //nolint:errcheck // Test only
 	if len(updated) != 0 {
 		t.Errorf("updated length = %d, want 0", len(updated))
 	}
 
-	destroyed, _ := response.MethodResponse.Args["destroyed"].([]string)
+	destroyed, _ := response.MethodResponse.Args["destroyed"].([]string) //nolint:errcheck // Test only
 	if len(destroyed) != 0 {
 		t.Errorf("destroyed length = %d, want 0", len(destroyed))
 	}

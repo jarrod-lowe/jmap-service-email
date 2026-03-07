@@ -114,7 +114,7 @@ func TestSQSPublisher_CorrectQueueURL(t *testing.T) {
 	}
 
 	pub := NewSQSPublisher(mock, "https://sqs.example.com/my-queue")
-	_ = pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1"}, "https://api.example.com/stage")
+	_ = pub.PublishBlobDeletions(context.Background(), "user-123", []string{"blob-1"}, "https://api.example.com/stage") //nolint:errcheck // Test only
 
 	if capturedQueueURL != "https://sqs.example.com/my-queue" {
 		t.Errorf("QueueUrl = %q, want %q", capturedQueueURL, "https://sqs.example.com/my-queue")

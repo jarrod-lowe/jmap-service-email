@@ -172,7 +172,7 @@ func (m *mockTokenWriter) DeleteTokens(ctx context.Context, emailItem *email.Ema
 func makeSQSEvent(msgs ...searchindex.Message) events.SQSEvent {
 	var records []events.SQSMessage
 	for i, msg := range msgs {
-		body, _ := json.Marshal(msg)
+		body, _ := json.Marshal(msg) //nolint:errcheck // Test only
 		records = append(records, events.SQSMessage{
 			MessageId: "msg-" + string(rune('0'+i)),
 			Body:      string(body),
@@ -498,7 +498,7 @@ func TestHandler_VectorMetadata(t *testing.T) {
 		APIURL:    "https://api.example.com",
 	})
 
-	_, _ = h.handle(context.Background(), event)
+	_, _ = h.handle(context.Background(), event) //nolint:errcheck // Test only
 
 	if len(store.putCalls) == 0 {
 		t.Fatal("expected at least one vector")
@@ -752,7 +752,7 @@ func TestHandler_IndexEmail_OverwritePreview(t *testing.T) {
 		APIURL:    "https://api.example.com",
 	})
 
-	_, _ = h.handle(context.Background(), event)
+	_, _ = h.handle(context.Background(), event) //nolint:errcheck // Test only
 
 	if len(updater.summaryUpdates) != 1 {
 		t.Fatalf("expected 1 summary update, got %d", len(updater.summaryUpdates))

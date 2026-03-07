@@ -1,6 +1,7 @@
 version: "2"
 
 linters:
+  disable-all: true
   enable:
     - errcheck
     - govet
@@ -8,8 +9,24 @@ linters:
     - staticcheck
     - gosec
   settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
     gosec:
       excludes:
-        - G104  # Errors unhandled
-        - G101  # Potential hardcoded credentials (test data only)
-        - G115  # Integer overflow conversion (known safe conversions)
+        - G101  # Test data only
+        - G115  # Known safe conversions - TODO: verify and fix if needed
+    govet:
+      enable-all: true
+      disable:
+        - shadow        # Intentional error wrapping patterns
+        - fieldalignment # Memory optimization, not correctness
+        - unusedwrite    # Test-only and intentional
+  issues:
+    exclude-use-default: false
+    # Exclude linter rules for test files
+    exclude-rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unusedwrite
