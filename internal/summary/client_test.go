@@ -21,7 +21,7 @@ func TestSummarize_Success(t *testing.T) {
 	invoker := &mockInvoker{
 		invokeFunc: func(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
 			// Verify the model ID
-			if *params.ModelId != "us.anthropic.claude-haiku-4-5-20251001-v1:0" {
+			if *params.ModelId != "anthropic.claude-haiku-4-5-20251001-v1:0" {
 				t.Errorf("model ID = %q, want default haiku model", *params.ModelId)
 			}
 
