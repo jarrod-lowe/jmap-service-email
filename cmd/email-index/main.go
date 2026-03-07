@@ -23,7 +23,6 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/embeddings"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
-	"github.com/jarrod-lowe/jmap-service-email/internal/htmlstrip"
 	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-email/internal/summary"
@@ -31,18 +30,12 @@ import (
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
 	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
+	"github.com/jarrod-lowe/jmap-service-libs/textproc/chain"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 var logger = logging.New()
-
-const (
-	// chunkSize is the target size in characters for each text chunk (~7500 tokens).
-	chunkSize = 30000
-	// chunkOverlap is the overlap between chunks in characters.
-	chunkOverlap = 800
-)
 
 // EmailReader reads email records from DynamoDB.
 type EmailReader interface {
@@ -227,10 +220,8 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 
 	// Determine which parts to index: prefer textBody, fall back to htmlBody
 	partIDs := emailItem.TextBody
-	isHTML := false
 	if len(partIDs) == 0 {
 		partIDs = emailItem.HTMLBody
-		isHTML = true
 	}
 	if len(partIDs) == 0 {
 		// No text content to index, but tokens were still written
@@ -279,16 +270,19 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 			return fmt.Errorf("stream blob %s: %w", part.BlobID, err)
 		}
 
-		var textReader io.Reader = stream
-		if isHTML {
-			textReader = htmlstrip.NewReader(stream)
+		// Tee the stream to capture text for summarization before chain processing
+		textReader := io.TeeReader(stream, capture)
+
+		// Use chain for text processing (UTF-8 clean, HTML strip, chunking)
+		// Chain defaults: 4,000 char chunks, 2 char overlap, 100,000 max bytes
+		c, err := chain.NewReader(textReader)
+		if err != nil {
+			_ = stream.Close()
+			return fmt.Errorf("create chain: %w", err)
 		}
 
-		// Tee the stream to capture text for summarization
-		textReader = io.TeeReader(textReader, capture)
-
-		processed, err := h.processPartStream(ctx, msg.AccountID, msg.EmailID, headerPrefix, metadata, textReader, chunkIndex)
-		stream.Close()
+		processed, err := h.processPartChain(ctx, msg.AccountID, msg.EmailID, headerPrefix, metadata, c, chunkIndex)
+		_ = stream.Close()
 		if err != nil {
 			return fmt.Errorf("process part %s: %w", part.BlobID, err)
 		}
@@ -408,74 +402,49 @@ func (h *handler) indexSummaryVector(ctx context.Context, accountID string, emai
 	})
 }
 
-// processPartStream reads text from a stream, chunks it, generates embeddings, and stores vectors.
+// processPartChain processes text chunks from a chain, generates embeddings, and stores vectors.
 // Returns the number of chunks processed.
-func (h *handler) processPartStream(ctx context.Context, accountID, emailID, headerPrefix string, metadata map[string]any, r io.Reader, startChunkIndex int) (int, error) {
+func (h *handler) processPartChain(ctx context.Context, accountID, emailID, headerPrefix string, metadata map[string]any, c *chain.Chain, startChunkIndex int) (int, error) {
 	chunkIndex := startChunkIndex
-	buf := make([]byte, chunkSize)
-	overlap := ""
 
 	for {
-		// Start with overlap from previous chunk
-		text := overlap
-
-		// Read up to chunkSize characters
-		for len(text) < chunkSize {
-			n, err := r.Read(buf[:min(len(buf), chunkSize-len(text))])
-			if n > 0 {
-				text += string(buf[:n])
-			}
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return 0, fmt.Errorf("read stream: %w", err)
-			}
-		}
-
-		if len(strings.TrimSpace(text)) == 0 {
+		chunkSlice, err := c.Next()
+		if err == io.EOF {
 			break
 		}
-
-		// Build chunk with header prefix
-		chunk := headerPrefix + text
-
-		// Generate embedding
-		vector, err := h.embedder.GenerateEmbedding(ctx, chunk)
 		if err != nil {
-			return 0, fmt.Errorf("generate embedding: %w", err)
+			return 0, fmt.Errorf("chain next: %w", err)
 		}
 
-		// Build per-chunk metadata
-		chunkMeta := make(map[string]any, len(metadata)+1)
-		for k, v := range metadata {
-			chunkMeta[k] = v
-		}
-		chunkMeta["chunkIndex"] = chunkIndex
+		// Process each chunk in the slice
+		for _, chunk := range chunkSlice {
+			// Build chunk text with header prefix
+			chunkText := headerPrefix + string(chunk)
 
-		// Store vector
-		key := fmt.Sprintf("%s#%d", emailID, chunkIndex)
-		if err := h.vectorStore.PutVector(ctx, accountID, vectorstore.Vector{
-			Key:      key,
-			Data:     vector,
-			Metadata: chunkMeta,
-		}); err != nil {
-			return 0, fmt.Errorf("put vector: %w", err)
-		}
+			// Generate embedding
+			vector, err := h.embedder.GenerateEmbedding(ctx, chunkText)
+			if err != nil {
+				return 0, fmt.Errorf("generate embedding: %w", err)
+			}
 
-		chunkIndex++
+			// Build per-chunk metadata
+			chunkMeta := make(map[string]any, len(metadata)+1)
+			for k, v := range metadata {
+				chunkMeta[k] = v
+			}
+			chunkMeta["chunkIndex"] = chunkIndex
 
-		// Save overlap for next chunk
-		if len(text) > chunkOverlap {
-			overlap = text[len(text)-chunkOverlap:]
-		} else {
-			// Text was shorter than overlap; we're done
-			break
-		}
+			// Store vector
+			key := fmt.Sprintf("%s#%d", emailID, chunkIndex)
+			if err := h.vectorStore.PutVector(ctx, accountID, vectorstore.Vector{
+				Key:      key,
+				Data:     vector,
+				Metadata: chunkMeta,
+			}); err != nil {
+				return 0, fmt.Errorf("put vector: %w", err)
+			}
 
-		// If text was shorter than chunkSize, we've read everything
-		if len(text) < chunkSize {
-			break
+			chunkIndex++
 		}
 	}
 
