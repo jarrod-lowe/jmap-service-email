@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: write
+
+env:
+  MAJOR: 1
+  MINOR: 0
+
 jobs:
   fmt-check:
     name: Format Check
@@ -110,24 +117,19 @@ jobs:
 
   tag:
     name: Auto-tag on main
-    runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [fmt-check, mod-check, test, test-race, lint, vulncheck, license-check, apidiff]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: auto-tag
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Calculate next version
-        id: version
+      - name: Push tag
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
-          BASE=$(echo $LATEST_TAG | cut -d. -f1-2)
-          NEXT_PATCH=$(echo $LATEST_TAG | cut -d. -f3 | sed 's/v//')
-          NEW_VERSION="${BASE}.$((NEXT_PATCH + 1))"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-      - name: Create tag
-        run: |
-          git tag -a ${{ steps.version.outputs.version }} -m "Auto-tag for run ${{ github.run_number }}"
-          git push origin ${{ steps.version.outputs.version }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG="v${MAJOR}.${MINOR}.${{ github.run_number }}"
+          echo "Tagging as ${TAG}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${TAG}"
+          git push origin "${TAG}"
