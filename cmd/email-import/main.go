@@ -253,7 +253,7 @@ func (h *handler) importEmail(ctx context.Context, accountID string, emailArgs m
 		}
 		return nil, jmaperror.SetServerFail(err.Error()).ToMap()
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Parse email with streaming parser
 	parsed, err := email.ParseRFC5322Stream(ctx, stream, blobID, accountID, uploader)
