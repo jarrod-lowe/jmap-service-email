@@ -1,4 +1,4 @@
-.PHONY: help deps build build-all package package-all test test-race lint init plan show-plan apply plan-destroy destroy clean clean-all fmt fmt-go fmt-check validate outputs restore-tfvars help-tfvars reset reset-dry-run mod-check vulncheck license-check apidiff all-tests clean-go
+.PHONY: help deps build build-all package package-all test test-race lint init plan show-plan apply plan-destroy destroy clean clean-all fmt fmt-go fmt-check validate outputs restore-tfvars help-tfvars reset reset-dry-run mod-check vulncheck license-check apidiff all-tests clean-go setup setup-repo setup-branch-protection
 
 # Environment selection (test or prod)
 ENV ?= test
@@ -56,6 +56,11 @@ help:
 	@echo "  make license-check           - Check dependency license compatibility"
 	@echo "  make apidiff                 - Detect breaking API changes vs last tag"
 	@echo "  make all-tests               - Run all validation checks (pre-commit suite)"
+	@echo ""
+	@echo "Repository setup (requires gh CLI and admin access):"
+	@echo "  make setup                   - Run all repo setup targets"
+	@echo "  make setup-repo              - Configure repo settings and Actions permissions"
+	@echo "  make setup-branch-protection - Apply branch protection to main"
 	@echo ""
 	@echo "Terraform Commands:"
 	@echo "  make init ENV=<env>          - Initialize Terraform (creates state bucket)"
@@ -232,6 +237,23 @@ apidiff:
 # Run all validation checks (pre-commit suite)
 all-tests: test test-race lint mod-check vulncheck license-check apidiff fmt-check
 	@echo "All validation checks passed!"
+
+# Repository setup targets (require gh CLI and admin access)
+setup: setup-repo setup-branch-protection
+
+setup-repo:
+	@echo "Configuring repository settings..."
+	gh repo edit --delete-branch-on-merge --enable-auto-merge --enable-wiki=false
+	gh api -X PUT repos/{owner}/{repo}/actions/permissions/workflow \
+		-f default_workflow_permissions=read \
+		-F can_approve_pull_request_reviews=true
+	@echo "Repository settings applied."
+
+setup-branch-protection:
+	@echo "Applying branch protection to main..."
+	gh api -X PUT repos/{owner}/{repo}/branches/main/protection \
+		--input .github/branch-protection.json
+	@echo "Branch protection applied."
 
 # Clean Go build artifacts only
 clean-go:
