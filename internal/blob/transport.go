@@ -51,7 +51,8 @@ func (t *SigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		h := sha256.Sum256(nil)
 		payloadHashHex = hex.EncodeToString(h[:])
 	} else {
-		bodyBytes, err := io.ReadAll(signedReq.Body)
+		var bodyBytes []byte
+		bodyBytes, err = io.ReadAll(signedReq.Body)
 		if err != nil {
 			return nil, err
 		}

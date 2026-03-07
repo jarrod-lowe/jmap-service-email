@@ -26,6 +26,7 @@ func (f *fakeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 type fakeCredentialsProvider struct{}
 
 func (f *fakeCredentialsProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	//nolint:gosec // G101: Test data only, not real credentials
 	return aws.Credentials{
 		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -171,7 +172,7 @@ func TestSigV4Transport_CallsWrappedTransport(t *testing.T) {
 	transport := NewSigV4Transport(fakeRT, &fakeCredentialsProvider{}, "us-east-1")
 
 	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/test", nil) //nolint:errcheck // Test only
-	_, _ = transport.RoundTrip(req) //nolint:errcheck // Test only
+	_, _ = transport.RoundTrip(req)                                                //nolint:errcheck // Test only
 
 	if !called {
 		t.Error("wrapped transport was not called")

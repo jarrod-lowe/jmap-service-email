@@ -24,6 +24,10 @@ var (
 	ErrVersionConflict   = errors.New("version conflict")
 )
 
+const (
+	maxFetchLimit = 10000
+)
+
 // Repository handles email storage operations.
 type Repository struct {
 	client    dbclient.DynamoDBClient
@@ -81,6 +85,9 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	fetchLimit := req.Position + limit
 	if req.Filter != nil && req.Filter.needsPostFilter() {
 		fetchLimit *= 4 // Over-fetch since some results will be filtered out
+	}
+	if fetchLimit > maxFetchLimit { // Cap at reasonable maximum
+		fetchLimit = maxFetchLimit
 	}
 	queryInput.Limit = aws.Int32(int32(fetchLimit))
 

@@ -87,12 +87,12 @@ func TestMailboxItem_Fields(t *testing.T) {
 		MailboxID:    "inbox",
 		Name:         "Inbox",
 		Role:         "inbox",
-		SortOrder:    0,
+		SortOrder:    0, //nolint:govet // unusedwrite: test fixture completeness
 		TotalEmails:  10,
 		UnreadEmails: 3,
 		IsSubscribed: true,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		CreatedAt:    now, //nolint:govet // unusedwrite: test fixture completeness
+		UpdatedAt:    now, //nolint:govet // unusedwrite: test fixture completeness
 	}
 
 	if m.AccountID != "user-123" {
