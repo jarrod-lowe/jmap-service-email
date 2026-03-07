@@ -2,14 +2,14 @@
   "required_status_checks": {
     "strict": true,
     "contexts": [
-      "Format Check",
-      "Go Mod Check",
-      "Tests",
-      "Tests (Race Detector)",
-      "Lint",
-      "Vulnerability Check",
-      "License Check",
-      "API Diff"
+      "fmt-check",
+      "mod-check",
+      "test",
+      "test-race",
+      "lint",
+      "vulncheck",
+      "license-check",
+      "apidiff"
     ]
   },
   "enforce_admins": true,
