@@ -414,7 +414,7 @@ func TestStream_ConstructsCorrectURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error = %v, want nil", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	expected := "https://api.example.com/download-iam/user-123/blob-456"
 	if capturedURL != expected {
@@ -442,7 +442,7 @@ func TestStream_ReturnsReadCloserOn200(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error = %v, want nil", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	content, err := io.ReadAll(rc)
 	if err != nil {
@@ -871,7 +871,7 @@ func TestStream_CreatesSpanWithAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error = %v, want nil", err)
 	}
-	rc.Close()
+	_ = rc.Close()
 
 	span := findSpan(recorder, "blob.Stream")
 	if span == nil {

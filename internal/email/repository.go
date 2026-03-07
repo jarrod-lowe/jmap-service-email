@@ -68,10 +68,7 @@ func (r *Repository) QueryEmails(ctx context.Context, accountID string, req *Que
 	}
 
 	// Set sort order (default descending for receivedAt)
-	scanForward := false
-	if len(req.Sort) > 0 && req.Sort[0].IsAscending {
-		scanForward = true
-	}
+	scanForward := len(req.Sort) > 0 && req.Sort[0].IsAscending
 	queryInput.ScanIndexForward = aws.Bool(scanForward)
 
 	// Set limit (fetch position + limit to support pagination)

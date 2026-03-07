@@ -105,23 +105,23 @@ func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string
 		}
 
 		if resp.StatusCode == http.StatusNotFound {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			tracing.RecordError(span, ErrBlobNotFound)
 			return nil, ErrBlobNotFound
 		}
 		if resp.StatusCode == http.StatusForbidden {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			tracing.RecordError(span, ErrForbidden)
 			return nil, ErrForbidden
 		}
 		if resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			lastErr = ErrServerFail
 			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			tracing.RecordError(span, err)
 			return nil, err
@@ -160,17 +160,17 @@ func (c *HTTPBlobClient) Stream(ctx context.Context, accountID, blobID string) (
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		tracing.RecordError(span, ErrBlobNotFound)
 		return nil, ErrBlobNotFound
 	}
 	if resp.StatusCode == http.StatusForbidden {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		tracing.RecordError(span, ErrForbidden)
 		return nil, ErrForbidden
 	}
 	if resp.StatusCode >= 500 {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		tracing.RecordError(span, ErrServerFail)
 		return nil, ErrServerFail
 	}
@@ -212,7 +212,7 @@ func (c *HTTPBlobClient) Delete(ctx context.Context, accountID, blobID string) e
 		tracing.RecordError(span, err)
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
 		return nil
@@ -265,7 +265,7 @@ func (c *HTTPBlobClient) Upload(ctx context.Context, accountID, parentBlobID, co
 		tracing.RecordError(span, err)
 		return "", 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 500 {
 		tracing.RecordError(span, ErrServerFail)

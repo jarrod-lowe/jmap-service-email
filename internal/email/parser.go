@@ -267,9 +267,10 @@ func collectParts(parsed *ParsedEmail, part *BodyPart) {
 	}
 
 	// Collect text and HTML body parts
-	if part.Type == "text/plain" {
+	switch part.Type {
+	case "text/plain":
 		parsed.TextBody = append(parsed.TextBody, part.PartID)
-	} else if part.Type == "text/html" {
+	case "text/html":
 		parsed.HTMLBody = append(parsed.HTMLBody, part.PartID)
 	}
 }

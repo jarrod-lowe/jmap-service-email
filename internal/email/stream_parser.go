@@ -273,7 +273,7 @@ func parseSinglePartStreaming(
 	if isIdentityEncoding(encoding) {
 		// Identity encoding: drain body to count bytes, optionally capturing preview
 		startByte := headerSize
-		var w io.Writer = io.Discard
+		var w = io.Discard
 		if isText && !previewCapture.Full() {
 			w = io.MultiWriter(io.Discard, previewCapture)
 		}
@@ -288,7 +288,7 @@ func parseSinglePartStreaming(
 		// Non-identity encoding: decode and upload
 		decodedReader := getDecoder(encoding, bodyReader)
 
-		var uploadReader io.Reader = decodedReader
+		var uploadReader = decodedReader
 		if isText && !previewCapture.Full() {
 			uploadReader = io.TeeReader(decodedReader, previewCapture)
 		}
@@ -426,13 +426,13 @@ func processLeafPartStreaming(
 	isText := strings.HasPrefix(mediaType, "text/plain")
 
 	// Decode if non-identity encoding
-	var contentReader io.Reader = partReader
+	var contentReader = partReader
 	if !isIdentityEncoding(encoding) {
 		contentReader = getDecoder(encoding, partReader)
 	}
 
 	// Tee text/plain to preview capture
-	var uploadReader io.Reader = contentReader
+	var uploadReader = contentReader
 	if isText && !previewCapture.Full() {
 		uploadReader = io.TeeReader(contentReader, previewCapture)
 	}

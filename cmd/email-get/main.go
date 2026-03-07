@@ -185,7 +185,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 				)
 			} else {
 				rawHeaders, _ = textproto.NewReader(bufio.NewReader(headerReader)).ReadMIMEHeader()
-				headerReader.Close()
+				_ = headerReader.Close()
 			}
 		}
 
@@ -308,7 +308,7 @@ func fetchBodyValue(ctx context.Context, blobStreamer BlobStreamer, accountID st
 		)
 		return "", false, true
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Decode charset
 	decodedReader, encodingProblem, err := charset.DecodeReader(reader, part.Charset)

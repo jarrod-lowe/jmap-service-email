@@ -1377,7 +1377,7 @@ func TestParseRFC5322Stream_TooManyParts(t *testing.T) {
 	for i := 0; i < 101; i++ {
 		body.WriteString("--" + boundary + "\r\n")
 		body.WriteString("Content-Type: text/plain\r\n\r\n")
-		body.WriteString(fmt.Sprintf("part %d\r\n", i))
+		fmt.Fprintf(&body, "part %d\r\n", i)
 	}
 	body.WriteString("--" + boundary + "--\r\n")
 
@@ -1458,7 +1458,7 @@ func TestParseRFC5322Stream_AtPartLimit(t *testing.T) {
 	for i := 0; i < 99; i++ {
 		body.WriteString("--" + boundary + "\r\n")
 		body.WriteString("Content-Type: text/plain\r\n\r\n")
-		body.WriteString(fmt.Sprintf("part %d\r\n", i))
+		fmt.Fprintf(&body, "part %d\r\n", i)
 	}
 	body.WriteString("--" + boundary + "--\r\n")
 

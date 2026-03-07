@@ -55,7 +55,7 @@ func (t *SigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		signedReq.Body.Close()
+		_ = signedReq.Body.Close()
 		h := sha256.Sum256(bodyBytes)
 		payloadHashHex = hex.EncodeToString(h[:])
 		signedReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
