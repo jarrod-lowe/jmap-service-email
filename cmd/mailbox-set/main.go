@@ -558,7 +558,8 @@ func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID
 			transactItems = append(transactItems, h.emailRepo.BuildSoftDeleteEmailItem(emailItem, now, apiURL))
 
 			if h.stateRepo != nil {
-				emailState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+				var emailState int64
+				emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
 				if err != nil {
 					return err
 				}
@@ -591,7 +592,8 @@ func (h *handler) cleanupMailboxEmails(ctx context.Context, accountID, mailboxID
 			transactItems = append(transactItems, emailItems...)
 
 			if h.stateRepo != nil {
-				emailState, err := h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
+				var emailState int64
+				emailState, err = h.stateRepo.GetCurrentState(ctx, accountID, state.ObjectTypeEmail)
 				if err != nil {
 					return err
 				}

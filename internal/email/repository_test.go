@@ -1937,8 +1937,8 @@ func TestMarshalEmailItem_OmitsDeletedAtWhenNil(t *testing.T) {
 
 func TestQueryRequest_HasCollapseThreadsField(t *testing.T) {
 	req := &QueryRequest{
-		Filter:          &QueryFilter{InMailbox: "inbox-id"},
-		Limit:           25,
+		Filter:          &QueryFilter{InMailbox: "inbox-id"}, //nolint:govet // unusedwrite: test fixture completeness
+		Limit:           25, //nolint:govet // unusedwrite: test fixture completeness
 		CollapseThreads: true,
 	}
 
@@ -1950,9 +1950,9 @@ func TestQueryRequest_HasCollapseThreadsField(t *testing.T) {
 func TestQueryResult_HasTotalField(t *testing.T) {
 	total := 42
 	result := &QueryResult{
-		IDs:        []string{"email-1", "email-2"},
-		Position:   0,
-		QueryState: "state-123",
+		IDs:        []string{"email-1", "email-2"}, //nolint:govet // unusedwrite: test fixture completeness
+		Position:   0, //nolint:govet // unusedwrite: test fixture completeness
+		QueryState: "state-123", //nolint:govet // unusedwrite: test fixture completeness
 		Total:      &total,
 	}
 

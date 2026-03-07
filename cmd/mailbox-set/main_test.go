@@ -908,7 +908,7 @@ func TestHandler_CreateMailboxTransaction(t *testing.T) {
 	if !ok {
 		t.Fatalf("created not a map: %T", resp.MethodResponse.Args["created"])
 	}
-	if _, ok := created["c0"]; !ok {
+	if _, ok2 := created["c0"]; !ok2 {
 		t.Fatal("c0 should be in created")
 	}
 
@@ -1004,7 +1004,7 @@ func TestHandler_UpdateMailboxTransaction(t *testing.T) {
 	if !ok {
 		t.Fatalf("updated not a map: %T", resp.MethodResponse.Args["updated"])
 	}
-	if _, ok := updated["inbox"]; !ok {
+	if _, ok2 := updated["inbox"]; !ok2 {
 		t.Fatal("inbox should be in updated")
 	}
 

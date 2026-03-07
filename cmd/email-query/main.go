@@ -22,6 +22,11 @@ import (
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
 
+const (
+	minTokenLimit = 100
+	maxTokenLimit = 10000
+)
+
 var logger = logging.New()
 
 // EmailRepository defines the interface for email operations.
@@ -380,12 +385,14 @@ func (h *handler) queryByAddress(ctx context.Context, accountID string, filter *
 	normalized := email.NormalizeSearchQuery(searchValue)
 
 	// Over-fetch to have headroom after structural filtering + pagination
-	tokenLimit := int32((position + limit) * 4)
-	if tokenLimit < 100 {
-		tokenLimit = 100
+	tokenLimit := (position + limit) * 4
+	if tokenLimit < minTokenLimit {
+		tokenLimit = minTokenLimit
+	} else if tokenLimit > maxTokenLimit { // Cap at reasonable maximum
+		tokenLimit = maxTokenLimit
 	}
 
-	results, err := h.tokenQuerier.QueryTokens(ctx, accountID, field, normalized, tokenLimit, false)
+	results, err := h.tokenQuerier.QueryTokens(ctx, accountID, field, normalized, int32(tokenLimit), false)
 	if err != nil {
 		return nil, err
 	}

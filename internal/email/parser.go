@@ -79,7 +79,7 @@ func ParseRFC5322(data []byte) (*ParsedEmail, error) {
 
 	// Parse Date
 	if dateStr := msg.Header.Get("Date"); dateStr != "" {
-		if t, err := mail.ParseDate(dateStr); err == nil {
+		if t, parseErr := mail.ParseDate(dateStr); parseErr == nil {
 			parsed.SentAt = t.UTC()
 		}
 	}

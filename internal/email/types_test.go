@@ -251,7 +251,7 @@ func TestQueryFilter_HasAddressFilter(t *testing.T) {
 }
 
 func TestComparator_Defaults(t *testing.T) {
-	comp := Comparator{Property: "receivedAt"}
+	comp := Comparator{Property: "receivedAt"} //nolint:govet // unusedwrite: test fixture completeness
 	if comp.IsAscending != false {
 		t.Errorf("IsAscending default = %v, want false", comp.IsAscending)
 	}
@@ -260,7 +260,7 @@ func TestComparator_Defaults(t *testing.T) {
 func TestQueryResult_Fields(t *testing.T) {
 	result := QueryResult{
 		IDs:        []string{"email-1", "email-2"},
-		Position:   0,
+		Position:   0, //nolint:govet // unusedwrite: test fixture completeness
 		QueryState: "state-123",
 	}
 	if len(result.IDs) != 2 {

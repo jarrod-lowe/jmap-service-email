@@ -10,6 +10,11 @@ import (
 	"github.com/jarrod-lowe/jmap-service-email/internal/vectorstore"
 )
 
+const (
+	minTopK = 50
+	maxTopK = 1000
+)
+
 // Embedder generates vector embeddings from text.
 type Embedder interface {
 	GenerateEmbedding(ctx context.Context, text string) ([]float32, error)
@@ -69,14 +74,16 @@ func (vs *VectorSearcher) Search(ctx context.Context, accountID string, filter *
 	}
 
 	// Query vectors with headroom for deduplication and pagination
-	topK := int32((position + limit) * 3)
-	if topK < 50 {
-		topK = 50
+	topK := (position + limit) * 3
+	if topK < minTopK {
+		topK = minTopK
+	} else if topK > maxTopK { // Cap at reasonable maximum
+		topK = maxTopK
 	}
 
 	results, err := vs.store.QueryVectors(ctx, accountID, vectorstore.QueryRequest{
 		Vector: vector,
-		TopK:   topK,
+		TopK:   int32(topK),
 		Filter: metaFilter,
 	})
 	if err != nil {

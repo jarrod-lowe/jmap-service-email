@@ -20,6 +20,10 @@ var (
 	ErrTransactionFailed = errors.New("transaction failed")
 )
 
+const (
+	maxChangesLimit = 10000
+)
+
 // Repository handles state tracking operations.
 type Repository struct {
 	client        dbclient.DynamoDBClient
@@ -317,6 +321,10 @@ func (r *Repository) QueryChanges(ctx context.Context, accountID string, objectT
 	}
 
 	if maxChanges > 0 {
+		// Cap at reasonable maximum to avoid int32 overflow
+		if maxChanges > maxChangesLimit {
+			maxChanges = maxChangesLimit
+		}
 		queryInput.Limit = aws.Int32(int32(maxChanges))
 	}
 

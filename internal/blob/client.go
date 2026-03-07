@@ -279,7 +279,7 @@ func (c *HTTPBlobClient) Upload(ctx context.Context, accountID, parentBlobID, co
 
 	var uploadResp uploadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&uploadResp); err != nil {
-		err := fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		err = fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 		tracing.RecordError(span, err)
 		return "", 0, err
 	}
