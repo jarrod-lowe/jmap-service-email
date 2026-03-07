@@ -26,7 +26,7 @@ func TestPreviewCapture_TruncatesLargeInput(t *testing.T) {
 	pc := NewPreviewCapture(256)
 	// Create input longer than 256 bytes
 	input := strings.Repeat("word ", 100) // 500 bytes
-	_, _ = pc.Write([]byte(input))
+	_, _ = pc.Write([]byte(input)) //nolint:errcheck // Test only
 
 	got := pc.Preview()
 	runeLen := utf8.RuneCountInString(got)
@@ -41,7 +41,7 @@ func TestPreviewCapture_TruncatesLargeInput(t *testing.T) {
 func TestPreviewCapture_CleansNewlines(t *testing.T) {
 	pc := NewPreviewCapture(256)
 	input := "Line one\r\nLine two\nLine three"
-	_, _ = pc.Write([]byte(input))
+	_, _ = pc.Write([]byte(input)) //nolint:errcheck // Test only
 
 	got := pc.Preview()
 	want := "Line one Line two Line three"
@@ -53,7 +53,7 @@ func TestPreviewCapture_CleansNewlines(t *testing.T) {
 func TestPreviewCapture_CollapsesDoubleSpaces(t *testing.T) {
 	pc := NewPreviewCapture(256)
 	input := "Hello  World   Test"
-	_, _ = pc.Write([]byte(input))
+	_, _ = pc.Write([]byte(input)) //nolint:errcheck // Test only
 
 	got := pc.Preview()
 	want := "Hello World Test"
@@ -65,7 +65,7 @@ func TestPreviewCapture_CollapsesDoubleSpaces(t *testing.T) {
 func TestPreviewCapture_TruncatesAtWordBoundary(t *testing.T) {
 	pc := NewPreviewCapture(20)
 	input := "Hello World this is a longer text"
-	_, _ = pc.Write([]byte(input))
+	_, _ = pc.Write([]byte(input)) //nolint:errcheck // Test only
 
 	got := pc.Preview()
 	// Should truncate at a word boundary near 20 characters (runes) and add "…"
@@ -93,9 +93,9 @@ func TestPreviewCapture_EmptyInput(t *testing.T) {
 
 func TestPreviewCapture_MultipleWrites(t *testing.T) {
 	pc := NewPreviewCapture(256)
-	_, _ = pc.Write([]byte("Hello "))
-	_, _ = pc.Write([]byte("World "))
-	_, _ = pc.Write([]byte("Test"))
+	_, _ = pc.Write([]byte("Hello ")) //nolint:errcheck // Test only
+	_, _ = pc.Write([]byte("World ")) //nolint:errcheck // Test only
+	_, _ = pc.Write([]byte("Test")) //nolint:errcheck // Test only
 
 	got := pc.Preview()
 	want := "Hello World Test"
@@ -119,7 +119,7 @@ func TestPreviewCapture_WriteReturnsFullLength(t *testing.T) {
 
 func TestPreviewCapture_FullReturnsTrueAfterMaxBytes(t *testing.T) {
 	pc := NewPreviewCapture(10)
-	_, _ = pc.Write([]byte("12345678901234567890")) // 20 bytes, well over 10
+	pc.Write([]byte("12345678901234567890")) //nolint:errcheck,gosec // Test only // 20 bytes, well over 10
 
 	if !pc.Full() {
 		t.Error("Full() should return true after exceeding max bytes")
@@ -128,7 +128,7 @@ func TestPreviewCapture_FullReturnsTrueAfterMaxBytes(t *testing.T) {
 
 func TestPreviewCapture_FullReturnsFalseBeforeMaxBytes(t *testing.T) {
 	pc := NewPreviewCapture(256)
-	_, _ = pc.Write([]byte("short"))
+	_, _ = pc.Write([]byte("short")) //nolint:errcheck // Test only
 
 	if pc.Full() {
 		t.Error("Full() should return false before reaching max bytes")
@@ -140,7 +140,7 @@ func TestPreviewCapture_MultiByte(t *testing.T) {
 	// Each CJK character is 3 bytes in UTF-8, so 256 chars = 768 bytes.
 	// With byte-based limiting, we'd only get ~85 characters instead of 256.
 	input := strings.Repeat("日", 300) // 300 CJK chars = 900 bytes
-	_, _ = pc.Write([]byte(input))
+	_, _ = pc.Write([]byte(input)) //nolint:errcheck // Test only
 
 	got := pc.Preview()
 

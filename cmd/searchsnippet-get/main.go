@@ -106,7 +106,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 	// Extract and validate filter
 	terms, err := extractSearchTerms(request.Args)
 	if err != nil {
-		return errorResponse(request.ClientID, err.(*jmaperror.MethodError)), nil
+		return errorResponse(request.ClientID, err.(*jmaperror.MethodError)), nil //nolint:errcheck // Controlled error type
 	}
 
 	// Fetch emails and build snippets
@@ -237,7 +237,7 @@ func main() {
 
 	// Warm the DynamoDB connection during init
 	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{ //nolint:errcheck // Best-effort warmup
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},

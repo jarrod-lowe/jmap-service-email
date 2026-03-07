@@ -27,7 +27,7 @@ func makeRecord(accountID string, blobIDs []string, apiURL string) events.SQSMes
 		BlobIDs:   blobIDs,
 		APIURL:    apiURL,
 	}
-	body, _ := json.Marshal(msg)
+	body, _ := json.Marshal(msg) //nolint:errcheck // Test only
 	return events.SQSMessage{
 		MessageId: "msg-1",
 		Body:      string(body),
@@ -71,7 +71,7 @@ func TestHandler_FactoryReceivesAPIURL(t *testing.T) {
 	}
 
 	h := newHandler(factory)
-	_, _ = h.handle(context.Background(), events.SQSEvent{
+	_, _ = h.handle(context.Background(), events.SQSEvent{ //nolint:errcheck // Test only
 		Records: []events.SQSMessage{
 			makeRecord("user-123", []string{"blob-1"}, "https://api.test.com/v1"),
 		},

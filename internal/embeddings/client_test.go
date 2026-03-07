@@ -42,7 +42,7 @@ func TestBedrockClient_GenerateEmbedding_Success(t *testing.T) {
 
 			// Return mock response
 			resp := titanResponse{Embedding: expectedVector}
-			body, _ := json.Marshal(resp)
+			body, _ := json.Marshal(resp) //nolint:errcheck // Test only
 			return &bedrockruntime.InvokeModelOutput{Body: body}, nil
 		},
 	}

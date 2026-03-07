@@ -29,7 +29,7 @@ func (m *mockUploader) Upload(ctx context.Context, accountID, parentBlobID, cont
 	if m.err != nil {
 		return "", 0, m.err
 	}
-	content, _ := io.ReadAll(body)
+	content, _ := io.ReadAll(body) //nolint:errcheck // Test only
 	m.uploads = append(m.uploads, uploadCall{
 		accountID:    accountID,
 		parentBlobID: parentBlobID,
@@ -829,7 +829,7 @@ func TestParseSinglePartStreaming_IdentityTextPlain(t *testing.T) {
 	cr := NewCountingReader(bytes.NewReader(fullData))
 	// Advance past headers
 	headerBuf := make([]byte, headerSize)
-	_, _ = cr.Read(headerBuf)
+	_, _ = cr.Read(headerBuf) //nolint:errcheck // Test only
 
 	bodyReader := io.LimitReader(cr, int64(len(bodyContent)))
 	pc := NewPreviewCapture(256)
@@ -872,7 +872,7 @@ func TestParseSinglePartStreaming_IdentityNonText(t *testing.T) {
 
 	cr := NewCountingReader(bytes.NewReader(fullData))
 	headerBuf := make([]byte, headerSize)
-	_, _ = cr.Read(headerBuf)
+	_, _ = cr.Read(headerBuf) //nolint:errcheck // Test only
 
 	bodyReader := io.LimitReader(cr, int64(len(bodyContent)))
 	pc := NewPreviewCapture(256)
@@ -911,7 +911,7 @@ func TestParseSinglePartStreaming_Base64Upload(t *testing.T) {
 
 	cr := NewCountingReader(bytes.NewReader(fullData))
 	headerBuf := make([]byte, headerSize)
-	_, _ = cr.Read(headerBuf)
+	_, _ = cr.Read(headerBuf) //nolint:errcheck // Test only
 
 	bodyReader := io.LimitReader(cr, int64(len(bodyContent)))
 	pc := NewPreviewCapture(256)
@@ -956,7 +956,7 @@ func TestParseSinglePartStreaming_QPTextPlainWithPreview(t *testing.T) {
 
 	cr := NewCountingReader(bytes.NewReader(fullData))
 	headerBuf := make([]byte, headerSize)
-	_, _ = cr.Read(headerBuf)
+	_, _ = cr.Read(headerBuf) //nolint:errcheck // Test only
 
 	bodyReader := io.LimitReader(cr, int64(len(bodyContent)))
 	pc := NewPreviewCapture(256)
@@ -996,7 +996,7 @@ type sequentialUploader struct {
 }
 
 func (s *sequentialUploader) Upload(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
-	content, _ := io.ReadAll(body)
+	content, _ := io.ReadAll(body) //nolint:errcheck // Test only
 	s.uploads = append(s.uploads, uploadCall{
 		accountID:    accountID,
 		parentBlobID: parentBlobID,

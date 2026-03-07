@@ -277,12 +277,12 @@ func (h *handler) indexEmail(ctx context.Context, msg searchindex.Message) error
 		// Chain defaults: 4,000 char chunks, 2 char overlap, 100,000 max bytes
 		c, err := chain.NewReader(textReader)
 		if err != nil {
-			_ = stream.Close()
+			_ = stream.Close() //nolint:errcheck // Cleanup before returning error
 			return fmt.Errorf("create chain: %w", err)
 		}
 
 		processed, err := h.processPartChain(ctx, msg.AccountID, msg.EmailID, headerPrefix, metadata, c, chunkIndex)
-		_ = stream.Close()
+		_ = stream.Close() //nolint:errcheck // Already consumed via textReader
 		if err != nil {
 			return fmt.Errorf("process part %s: %w", part.BlobID, err)
 		}
@@ -635,7 +635,7 @@ func main() {
 
 	// Warm DynamoDB connection
 	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{ //nolint:errcheck // Best-effort warmup
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},

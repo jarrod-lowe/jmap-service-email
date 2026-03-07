@@ -488,8 +488,8 @@ func TestDynamoDBRepository_BuildDecrementCountsItems_TotalOnly(t *testing.T) {
 		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
 	}
 
-	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -537,8 +537,8 @@ func TestDynamoDBRepository_BuildIncrementCountsItems_TotalOnly(t *testing.T) {
 		t.Errorf("TableName = %q, want %q", *item.Update.TableName, "test-table")
 	}
 
-	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -631,8 +631,8 @@ func TestDynamoDBRepository_BuildCreateMailboxItem(t *testing.T) {
 	}
 
 	// Verify keys are in the item
-	pk := item.Put.Item["pk"].(*types.AttributeValueMemberS).Value
-	sk := item.Put.Item["sk"].(*types.AttributeValueMemberS).Value
+	pk := item.Put.Item["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := item.Put.Item["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -684,8 +684,8 @@ func TestDynamoDBRepository_BuildUpdateMailboxItem(t *testing.T) {
 	}
 
 	// Verify keys
-	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := item.Update.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := item.Update.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}
@@ -764,8 +764,8 @@ func TestDynamoDBRepository_BuildDeleteMailboxItem(t *testing.T) {
 	}
 
 	// Verify keys
-	pk := item.Delete.Key["pk"].(*types.AttributeValueMemberS).Value
-	sk := item.Delete.Key["sk"].(*types.AttributeValueMemberS).Value
+	pk := item.Delete.Key["pk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
+	sk := item.Delete.Key["sk"].(*types.AttributeValueMemberS).Value //nolint:errcheck // Test only
 	if pk != "ACCOUNT#user-123" {
 		t.Errorf("pk = %q, want %q", pk, "ACCOUNT#user-123")
 	}

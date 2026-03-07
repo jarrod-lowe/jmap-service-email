@@ -72,7 +72,7 @@ func makeAccountCreatedMessage(accountID string) events.SQSMessage {
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		AccountID:  accountID,
 	}
-	body, _ := json.Marshal(payload)
+	body, _ := json.Marshal(payload) //nolint:errcheck // Test only
 	return events.SQSMessage{
 		MessageId: "msg-1",
 		Body:      string(body),
@@ -85,7 +85,7 @@ func makeEventMessage(eventType, accountID string) events.SQSMessage {
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		AccountID:  accountID,
 	}
-	body, _ := json.Marshal(payload)
+	body, _ := json.Marshal(payload) //nolint:errcheck // Test only
 	return events.SQSMessage{
 		MessageId: "msg-1",
 		Body:      string(body),

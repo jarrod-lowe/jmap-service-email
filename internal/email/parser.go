@@ -229,10 +229,11 @@ func parseBodyPart(mediaType string, params map[string]string, body []byte, coun
 			// Check for disposition
 			disposition := p.Header.Get("Content-Disposition")
 			if disposition != "" {
-				dispType, dispParams, _ := mime.ParseMediaType(disposition)
-				subPart.Disposition = dispType
-				if filename, ok := dispParams["filename"]; ok {
-					subPart.Name = filename
+				if dispType, dispParams, err := mime.ParseMediaType(disposition); err == nil {
+					subPart.Disposition = dispType
+					if filename, ok := dispParams["filename"]; ok {
+						subPart.Name = filename
+					}
 				}
 			}
 

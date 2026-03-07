@@ -119,7 +119,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 		})
 	}
 
-	_ = eg.Wait() // Always succeeds since goroutines return nil
+	_ = eg.Wait() //nolint:errcheck // Always succeeds since goroutines return nil
 
 	// Process results in order
 	var list []any
@@ -227,7 +227,7 @@ func main() {
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request
 	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{ //nolint:errcheck // Best-effort warmup
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},

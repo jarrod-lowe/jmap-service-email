@@ -128,7 +128,7 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 			} else {
 				created[clientID] = result
 				// Update newState after successful creation
-				newState = result["newState"].(int64)
+				newState = result["newState"].(int64) //nolint:errcheck // Type assertion, controlled source
 			}
 		}
 	}
@@ -201,8 +201,8 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 // createMailbox creates a new mailbox.
 func (h *handler) createMailbox(ctx context.Context, accountID string, data map[string]any, currentState int64) (map[string]any, map[string]any) {
-	name, _ := data["name"].(string)
-	role, _ := data["role"].(string)
+	name, _ := data["name"].(string) //nolint:errcheck // Zero value ok if missing
+	role, _ := data["role"].(string) //nolint:errcheck // Zero value ok if missing
 	sortOrder := 0
 	if v, ok := data["sortOrder"].(float64); ok {
 		sortOrder = int(v)
@@ -643,7 +643,7 @@ func main() {
 	// Warm the DynamoDB connection during init
 	// This establishes TCP+TLS connection before first real request
 	warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{
+	_, _ = dynamoClient.GetItem(warmCtx, &dynamodb.GetItemInput{ //nolint:errcheck // Best-effort warmup
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"pk": &types.AttributeValueMemberS{Value: "WARMUP"},

@@ -48,7 +48,7 @@ func (m *mockBlobUploader) Upload(ctx context.Context, accountID, parentBlobID, 
 		return m.uploadFunc(ctx, accountID, parentBlobID, contentType, body)
 	}
 	// Default: consume the body and return a mock blob ID
-	content, _ := io.ReadAll(body)
+	content, _ := io.ReadAll(body) //nolint:errcheck // Test only
 	return "uploaded-blob-id", int64(len(content)), nil
 }
 
@@ -557,7 +557,7 @@ SGVsbG8gV29ybGQ=
 	mockUploader := &mockBlobUploader{
 		uploadFunc: func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
 			uploadCount++
-			content, _ := io.ReadAll(body)
+			content, _ := io.ReadAll(body) //nolint:errcheck // Test only
 			return "decoded-blob", int64(len(content)), nil
 		},
 	}
@@ -1652,7 +1652,7 @@ SGVsbG8gV29ybGQ=
 	}
 	mockUploader := &mockBlobUploader{
 		uploadFunc: func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
-			content, _ := io.ReadAll(body)
+			content, _ := io.ReadAll(body) //nolint:errcheck // Test only
 			return "uploaded-part-blob", int64(len(content)), nil
 		},
 	}
@@ -1871,7 +1871,7 @@ SGVsbG8gV29ybGQ=
 	}
 	mockUploader := &mockBlobUploader{
 		uploadFunc: func(ctx context.Context, accountID, parentBlobID, contentType string, body io.Reader) (string, int64, error) {
-			content, _ := io.ReadAll(body)
+			content, _ := io.ReadAll(body) //nolint:errcheck // Test only
 			return "uploaded-part-blob", int64(len(content)), nil
 		},
 	}

@@ -96,7 +96,7 @@ func TestVectorSearch_BodyFilter_TypeMetadata(t *testing.T) {
 	}
 
 	vs := NewVectorSearcher(&mockEmbedder{}, store)
-	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{ //nolint:errcheck // Test only
 		Body: "test query",
 	}, 0, 25)
 
@@ -129,7 +129,7 @@ func TestVectorSearch_SubjectFilter_TypeMetadata(t *testing.T) {
 	}
 
 	vs := NewVectorSearcher(&mockEmbedder{}, store)
-	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{ //nolint:errcheck // Test only
 		Subject: "PTO request",
 	}, 0, 25)
 
@@ -140,7 +140,7 @@ func TestVectorSearch_SubjectFilter_TypeMetadata(t *testing.T) {
 	if filter == nil {
 		t.Fatal("expected metadata filter for subject query")
 	}
-	typeFilter := filter["type"].(map[string]any)
+	typeFilter := filter["type"].(map[string]any) //nolint:errcheck // Test only
 	if typeFilter["$eq"] != "subject" {
 		t.Errorf("type filter $eq = %v, want \"subject\"", typeFilter["$eq"])
 	}
@@ -214,7 +214,7 @@ func TestVectorSearch_InMailboxMetadataFilter(t *testing.T) {
 	}
 
 	vs := NewVectorSearcher(&mockEmbedder{}, store)
-	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{ //nolint:errcheck // Test only
 		Text:      "test",
 		InMailbox: "inbox-123",
 	}, 0, 25)
@@ -232,7 +232,7 @@ func TestVectorSearch_InMailboxMetadataFilter(t *testing.T) {
 	if !ok {
 		t.Fatal("expected mailboxIds in metadata filter")
 	}
-	eqMap := mailboxFilter.(map[string]any)
+	eqMap := mailboxFilter.(map[string]any) //nolint:errcheck // Test only
 	if eqMap["$eq"] != "inbox-123" {
 		t.Errorf("mailboxIds $eq = %v, want \"inbox-123\"", eqMap["$eq"])
 	}
@@ -246,7 +246,7 @@ func TestVectorSearch_AddressMetadataFilter(t *testing.T) {
 	}
 
 	vs := NewVectorSearcher(&mockEmbedder{}, store)
-	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{
+	_, _ = vs.Search(context.Background(), "user-123", &email.QueryFilter{ //nolint:errcheck // Test only
 		Text: "test",
 		From: "alice",
 	}, 0, 25)
@@ -263,7 +263,7 @@ func TestVectorSearch_AddressMetadataFilter(t *testing.T) {
 	if !ok {
 		t.Fatal("expected fromTokens in metadata filter")
 	}
-	eqMap := fromFilter.(map[string]any)
+	eqMap := fromFilter.(map[string]any) //nolint:errcheck // Test only
 	// Address search should use normalized token
 	if eqMap["$eq"] != "alice" {
 		t.Errorf("fromTokens $eq = %v, want \"alice\"", eqMap["$eq"])
@@ -286,35 +286,35 @@ func TestBuildMetadataFilter(t *testing.T) {
 	meta := BuildMetadataFilter(filter)
 
 	// Check mailbox filter
-	mailbox := meta["mailboxIds"].(map[string]any)
+	mailbox := meta["mailboxIds"].(map[string]any) //nolint:errcheck // Test only
 	if mailbox["$eq"] != "inbox-123" {
 		t.Errorf("mailboxIds $eq = %v", mailbox["$eq"])
 	}
 
 	// Check keyword filter
-	keywords := meta["keywords"].(map[string]any)
+	keywords := meta["keywords"].(map[string]any) //nolint:errcheck // Test only
 	if keywords["$eq"] != "$flagged" {
 		t.Errorf("keywords $eq = %v", keywords["$eq"])
 	}
 
 	// Check hasAttachment
-	hasAtt := meta["hasAttachment"].(map[string]any)
+	hasAtt := meta["hasAttachment"].(map[string]any) //nolint:errcheck // Test only
 	if hasAtt["$eq"] != true {
 		t.Errorf("hasAttachment $eq = %v", hasAtt["$eq"])
 	}
 
 	// Check minSize
-	size := meta["size"].(map[string]any)
+	size := meta["size"].(map[string]any) //nolint:errcheck // Test only
 	if size["$gte"] != int64(1000) {
 		t.Errorf("size $gte = %v", size["$gte"])
 	}
 
 	// Check address tokens (should be normalized/lowercased)
-	from := meta["fromTokens"].(map[string]any)
+	from := meta["fromTokens"].(map[string]any) //nolint:errcheck // Test only
 	if from["$eq"] != "alice" {
 		t.Errorf("fromTokens $eq = %v", from["$eq"])
 	}
-	to := meta["toTokens"].(map[string]any)
+	to := meta["toTokens"].(map[string]any) //nolint:errcheck // Test only
 	if to["$eq"] != "bob" {
 		t.Errorf("toTokens $eq = %v", to["$eq"])
 	}

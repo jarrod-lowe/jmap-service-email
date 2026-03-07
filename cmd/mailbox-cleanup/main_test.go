@@ -113,7 +113,7 @@ func makeMessageWithAPIURL(accountID, mailboxID, apiURL string) events.SQSMessag
 		MailboxID: mailboxID,
 		APIURL:    apiURL,
 	}
-	body, _ := json.Marshal(msg)
+	body, _ := json.Marshal(msg) //nolint:errcheck // Test only
 	return events.SQSMessage{
 		MessageId: "msg-1",
 		Body:      string(body),
