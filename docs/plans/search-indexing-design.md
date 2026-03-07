@@ -36,11 +36,11 @@ Email/set publishes `"index"` after create and `"delete"` after destroy.
 
 ### Chunking
 
-- Chunk text into ~30K character segments (~7,500 tokens for Titan v2)
-- 800 character overlap between chunks for context continuity
+- Process text via textproc/chain: UTF-8 clean, HTML strip, paragraph-aware chunking
+- ~4K character chunks (~1,000 tokens for Titan v2)
+- 2-chunk overlap between outputs for context continuity
 - Header prefix prepended to every chunk
-- Chunks processed one at a time (streaming, low memory)
-- Peak memory per part: one chunk buffer (~30KB) + overlap (~1KB) + tokenizer state
+- Streaming, low-memory processing
 
 ### Embedding Generation
 
@@ -91,7 +91,7 @@ Each vector stores metadata for future hybrid filtering:
 |-------|-------|--------|
 | S3 Vectors indexes per bucket | 10,000 | Max ~10K accounts per bucket. If exceeded, need multiple buckets with routing. |
 | S3 Vectors vectors per index | 2 billion | Unlikely to hit for a single account |
-| Titan v2 input tokens | 8,192 per call | Emails chunked at ~30K chars to stay within limit |
+| Titan v2 input tokens | 8,192 per call | Emails chunked at ~4K chars via textproc/chain |
 | S3 Vectors query latency | 100–800ms | Sub-second but not instant |
 | S3 Vectors query cost | Scales with index size | Per-account indexes keep this low |
 | Embedding cost | ~$0.00002/1K tokens | Negligible for typical email volumes |

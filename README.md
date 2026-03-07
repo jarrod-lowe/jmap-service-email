@@ -96,7 +96,6 @@ jmap-service-email/
 │   ├── blob/                  # Blob API client
 │   ├── blobdelete/            # Async blob deletion SQS publisher
 │   ├── searchindex/           # Search index SQS publisher
-│   ├── htmlstrip/             # Streaming HTML-to-text converter
 │   ├── embeddings/            # Bedrock Titan Embeddings client
 │   └── vectorstore/           # S3 Vectors client
 ├── terraform/
@@ -138,7 +137,7 @@ The `bodyValues` property returns decoded text content from email body parts whe
 ### Configuration
 
 | Variable | Environment | Default | Description |
-|----------|-------------|---------|-------------|
+| -------- | ----------- | ------- | ----------- |
 | `max_body_value_bytes` | Terraform | 262144 (256KB) | Server-side maximum for `maxBodyValueBytes` |
 | `MAX_BODY_VALUE_BYTES` | Lambda env | 262144 | Actual limit used at runtime |
 
@@ -163,6 +162,7 @@ Body parts are decoded from their declared charset to UTF-8:
 ### Truncation
 
 When decoded content exceeds `maxBodyValueBytes`:
+
 - `value` contains the first `maxBodyValueBytes` bytes
 - `isTruncated` is set to `true`
 
@@ -170,7 +170,7 @@ When decoded content exceeds `maxBodyValueBytes`:
 
 When emails are destroyed via `Email/set` or when `Email/import` fails after uploading parts, blob IDs are published to an SQS queue for async deletion. A dedicated `blob-delete` Lambda consumes from this queue and calls `DELETE /delete-iam/{accountId}/{blobId}` for each blob.
 
-```
+```plain
 Email/set destroy ──┐
                     ├──> SQS Queue ──> blob-delete Lambda ──> DELETE /delete-iam/...
 Email/import fail ──┘         │
@@ -178,6 +178,7 @@ Email/import fail ──┘         │
 ```
 
 **DLQ operational runbook:**
+
 - The `blob-delete-dlq-depth` CloudWatch alarm fires when messages land in the DLQ
 - Investigate DLQ messages via the AWS Console or `aws sqs receive-message`
 - For transient failures: requeue messages from DLQ back to the main queue
@@ -187,13 +188,12 @@ Email/import fail ──┘         │
 
 Emails are indexed for full-text search using vector embeddings stored in S3 Vectors. When an email is imported or destroyed, a message is published to an SQS queue, and a dedicated `email-index` Lambda processes it asynchronously.
 
-```
+```plain
 Email/import ──┐
                ├──> SQS Queue ──> email-index Lambda ──> S3 Vectors
 Email/set ─────┘         │              │
   (destroy)              │              ├── Fetch text parts from blob storage
-                         │              ├── Strip HTML (if needed)
-                         │              ├── Chunk text (~30K chars with overlap)
+                         │              ├── Process text (UTF-8 clean, HTML strip, chunk via textproc/chain)
                          │              ├── Generate embeddings (Bedrock Titan v2)
                          │              └── Store/delete vectors
                          └──> DLQ (after 3 retries) ──> CloudWatch Alarm
@@ -202,7 +202,7 @@ Email/set ─────┘         │              │
 - **Embedding model**: Amazon Titan Embeddings v2 (1024 dimensions, ~$0.00002/1K tokens)
 - **Vector store**: AWS S3 Vectors, one index per account (`acct-{accountId}`)
 - **Account limit**: 10,000 accounts per vector bucket (S3 Vectors index limit)
-- **Chunking**: ~30K chars per chunk with 800-char overlap; subject/addresses prepended to each chunk
+- **Chunking**: ~4K chars per chunk via textproc/chain (UTF-8 clean, HTML strip, paragraph-aware chunking)
 - **Metadata**: Each vector stores emailId, mailboxIds, keywords, receivedAt, from, to, subject, size for future hybrid filtering
 
 See `docs/plans/search-indexing-design.md` for the full system design.
@@ -212,7 +212,7 @@ See `docs/plans/search-indexing-design.md` for the full system design.
 The email data table uses the following Local Secondary Indexes:
 
 | Index | Sort Key Pattern | Purpose |
-|-------|------------------|---------|
+| ----- | ---------------- | ------- |
 | LSI1 | `RCVD#{receivedAt}#{emailId}` | Query all emails sorted by receivedAt (Email/query without filter) |
 | LSI2 | `MSGID#{messageId}` | Find email by Message-ID header (threading parent lookup) |
 | LSI3 | `THREAD#{threadId}#RCVD#{receivedAt}#{emailId}` | Query all emails in a thread sorted by receivedAt (Thread/get) |

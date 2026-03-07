@@ -971,3 +971,92 @@ func TestHandler_DeleteEmail_EmailAlreadyDeleted_WithMetadata(t *testing.T) {
 		t.Errorf("expected 1 DeleteTokens call, got %d", len(tokenWriter.deleteCalls))
 	}
 }
+
+// TestHandler_Chunking_Uses4000CharChunks tests that chunking uses 4,000 char chunks
+// instead of the previous 30,000 char chunks.
+func TestHandler_Chunking_Uses4000CharChunks(t *testing.T) {
+	// Generate ~8,000 characters of text with paragraph breaks
+	// Chain's chunker splits by paragraphs, so we need newlines to trigger chunking
+	paragraph := "This is a test sentence with enough words to fill space. This paragraph continues with more content to reach the target length for testing the chunking behavior. We want to ensure that the text processor correctly handles multiple paragraphs and creates appropriate chunks. "
+	paragraphCount := 30
+	longText := strings.Repeat(paragraph+"\n\n", paragraphCount) // ~7,500 chars with paragraph breaks
+
+	emailItem := &email.EmailItem{
+		AccountID: "user-123",
+		EmailID:   "email-chunk-test",
+		Subject:   "Long Email Test",
+		From:      []email.EmailAddress{{Email: "sender@example.com"}},
+		To:        []email.EmailAddress{{Email: "recipient@example.com"}},
+		TextBody:  []string{"1"},
+		BodyStructure: email.BodyPart{
+			PartID: "1",
+			Type:   "text/plain",
+			BlobID: "blob-long",
+		},
+	}
+
+	reader := &mockEmailReader{
+		getFunc: func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error) {
+			return emailItem, nil
+		},
+	}
+
+	streamer := &mockBlobStreamer{
+		streamFunc: func(ctx context.Context, accountID, blobID string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(longText)), nil
+		},
+	}
+
+	updater := &mockEmailUpdater{}
+	embedder := &mockEmbeddingClient{}
+	store := &mockVectorStore{}
+	tokenWriter := &mockTokenWriter{}
+
+	h := newHandler(reader, updater, nil, embedder, store, tokenWriter)
+	h.blobClientFactory = func(baseURL string) BlobStreamer {
+		return streamer
+	}
+
+	event := makeSQSEvent(searchindex.Message{
+		AccountID: "user-123",
+		EmailID:   "email-chunk-test",
+		Action:    searchindex.ActionIndex,
+		APIURL:    "https://api.example.com",
+	})
+
+	resp, err := h.handle(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected no failures, got %d", len(resp.BatchItemFailures))
+	}
+
+	// Count body chunks (exclude subject and summary vectors)
+	bodyChunkCount := 0
+	for _, vec := range store.putCalls {
+		if vec.Metadata["type"] == "body" {
+			bodyChunkCount++
+		}
+	}
+
+	// With 4,000 char chunks, we expect multiple chunks for ~8,000 chars of text
+	if bodyChunkCount < 2 {
+		t.Errorf("expected at least 2 body chunks for ~8,000 chars with 4,000 char limit, got %d", bodyChunkCount)
+	}
+
+	// Each chunk should have the header prefix
+	for _, vec := range store.putCalls {
+		if vec.Metadata["type"] == "body" {
+			// We can't check the exact text because embedder only stores metadata
+			// but we can verify the chunk index is correct
+			chunkIndex, ok := vec.Metadata["chunkIndex"].(int)
+			if !ok {
+				t.Errorf("chunkIndex not int, got %T", vec.Metadata["chunkIndex"])
+			}
+			if chunkIndex < 0 || chunkIndex >= bodyChunkCount {
+				t.Errorf("chunkIndex %d out of range [0, %d)", chunkIndex, bodyChunkCount)
+			}
+		}
+	}
+}
