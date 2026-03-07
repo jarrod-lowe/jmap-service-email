@@ -10,15 +10,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
-	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/filter"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/search"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
 
@@ -240,31 +240,31 @@ func (h *handler) handle(ctx context.Context, request plugincontract.PluginInvoc
 
 // supportedFilterKeys defines all filter properties this handler supports.
 var supportedFilterKeys = map[string]bool{
-	"inMailbox":        true,
+	"inMailbox":          true,
 	"inMailboxOtherThan": true,
-	"before":           true,
-	"after":            true,
-	"minSize":          true,
-	"maxSize":          true,
-	"hasAttachment":    true,
-	"hasKeyword":       true,
-	"notKeyword":       true,
-	"from":             true,
-	"to":               true,
-	"cc":               true,
-	"bcc":              true,
-	"text":             true,
-	"body":             true,
-	"subject":          true,
-	"summary":          true,
+	"before":             true,
+	"after":              true,
+	"minSize":            true,
+	"maxSize":            true,
+	"hasAttachment":      true,
+	"hasKeyword":         true,
+	"notKeyword":         true,
+	"from":               true,
+	"to":                 true,
+	"cc":                 true,
+	"bcc":                true,
+	"text":               true,
+	"body":               true,
+	"subject":            true,
+	"summary":            true,
 }
 
 // unsupportedFilterKeys are filter properties that we explicitly reject.
 var unsupportedFilterKeys = map[string]string{
-	"header":                    "header filter is not supported",
-	"allInThreadHaveKeyword":    "thread keyword filters are not supported",
-	"someInThreadHaveKeyword":   "thread keyword filters are not supported",
-	"noneInThreadHaveKeyword":   "thread keyword filters are not supported",
+	"header":                  "header filter is not supported",
+	"allInThreadHaveKeyword":  "thread keyword filters are not supported",
+	"someInThreadHaveKeyword": "thread keyword filters are not supported",
+	"noneInThreadHaveKeyword": "thread keyword filters are not supported",
 }
 
 // parseFilter populates a QueryFilter from the filter args.

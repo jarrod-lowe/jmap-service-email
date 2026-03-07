@@ -13,14 +13,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
-	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
 
@@ -60,8 +60,8 @@ type EmailRepository interface {
 
 // handler implements the Mailbox/set logic.
 type handler struct {
-	repo      MailboxRepository
-	stateRepo StateRepository
+	repo       MailboxRepository
+	stateRepo  StateRepository
 	transactor TransactWriter
 	emailRepo  EmailRepository
 }

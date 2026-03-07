@@ -15,11 +15,11 @@ import (
 
 // Error types for blob operations.
 var (
-	ErrBlobNotFound      = errors.New("blob not found")
-	ErrForbidden         = errors.New("forbidden")
-	ErrServerFail        = errors.New("server error")
-	ErrInvalidArguments  = errors.New("invalid arguments")
-	ErrInvalidResponse   = errors.New("invalid response")
+	ErrBlobNotFound     = errors.New("blob not found")
+	ErrForbidden        = errors.New("forbidden")
+	ErrServerFail       = errors.New("server error")
+	ErrInvalidArguments = errors.New("invalid arguments")
+	ErrInvalidResponse  = errors.New("invalid response")
 )
 
 // BlobStreamer abstracts streaming blob downloads for dependency inversion.

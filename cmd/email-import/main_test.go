@@ -9,11 +9,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blob"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 // Simple test email content
@@ -54,8 +54,8 @@ func (m *mockBlobUploader) Upload(ctx context.Context, accountID, parentBlobID, 
 
 // mockEmailRepository implements the EmailRepository interface for testing.
 type mockEmailRepository struct {
-	createFunc               func(ctx context.Context, email *emailItem) error
-	findByMessageIDFunc      func(ctx context.Context, accountID, messageID string) (*emailItem, error)
+	createFunc                func(ctx context.Context, email *emailItem) error
+	findByMessageIDFunc       func(ctx context.Context, accountID, messageID string) (*emailItem, error)
 	buildCreateEmailItemsFunc func(email *emailItem) []types.TransactWriteItem
 }
 
@@ -86,8 +86,8 @@ func (m *mockEmailRepository) BuildCreateEmailItems(email *emailItem) []types.Tr
 
 // mockMailboxRepository implements the MailboxRepository interface for testing.
 type mockMailboxRepository struct {
-	existsFunc                 func(ctx context.Context, accountID, mailboxID string) (bool, error)
-	incrementCountFunc         func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
+	existsFunc                    func(ctx context.Context, accountID, mailboxID string) (bool, error)
+	incrementCountFunc            func(ctx context.Context, accountID, mailboxID string, incrementUnread bool) error
 	buildIncrementCountsItemsFunc func(accountID, mailboxID string, incrementUnread bool) types.TransactWriteItem
 }
 
@@ -115,9 +115,9 @@ func (m *mockMailboxRepository) BuildIncrementCountsItems(accountID, mailboxID s
 
 // mockStateRepository implements the StateRepository interface for testing.
 type mockStateRepository struct {
-	incrementFunc           func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
-	getCurrentStateFunc     func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
-	buildStateChangeItemsFunc func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+	incrementFunc                  func(ctx context.Context, accountID string, objectType state.ObjectType, objectID string, changeType state.ChangeType) (int64, error)
+	getCurrentStateFunc            func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	buildStateChangeItemsFunc      func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 	buildStateChangeItemsMultiFunc func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 
@@ -1545,7 +1545,7 @@ func TestHandler_StateTracking_IncludesThread(t *testing.T) {
 
 // mockTransactWriter captures transaction writes for verification.
 type mockTransactWriter struct {
-	transactFunc func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+	transactFunc  func(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 	capturedInput *dynamodb.TransactWriteItemsInput
 }
 

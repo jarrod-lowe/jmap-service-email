@@ -1,0 +1,15 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        - G104  # Errors unhandled
+        - G101  # Potential hardcoded credentials (test data only)
+        - G115  # Integer overflow conversion (known safe conversions)

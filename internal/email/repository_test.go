@@ -1432,12 +1432,12 @@ func TestUnmarshalEmailItem_IncludesHeaderSize(t *testing.T) {
 		getItemFunc: func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			return &dynamodb.GetItemOutput{
 				Item: map[string]types.AttributeValue{
-					"pk":            &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
-					"sk":            &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
-					"emailId":       &types.AttributeValueMemberS{Value: "email-456"},
-					"accountId":     &types.AttributeValueMemberS{Value: "user-123"},
-					"receivedAt":    &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
-					AttrHeaderSize:  &types.AttributeValueMemberN{Value: "1024"},
+					"pk":           &types.AttributeValueMemberS{Value: "ACCOUNT#user-123"},
+					"sk":           &types.AttributeValueMemberS{Value: "EMAIL#email-456"},
+					"emailId":      &types.AttributeValueMemberS{Value: "email-456"},
+					"accountId":    &types.AttributeValueMemberS{Value: "user-123"},
+					"receivedAt":   &types.AttributeValueMemberS{Value: receivedAt.Format(time.RFC3339)},
+					AttrHeaderSize: &types.AttributeValueMemberN{Value: "1024"},
 				},
 			}, nil
 		},

@@ -14,16 +14,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
-	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-email/internal/blobdelete"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
-	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
+	"github.com/jarrod-lowe/jmap-service-email/internal/searchindex"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
 	"github.com/jarrod-lowe/jmap-service-libs/awsinit"
+	"github.com/jarrod-lowe/jmap-service-libs/dbclient"
 	"github.com/jarrod-lowe/jmap-service-libs/jmaperror"
 	"github.com/jarrod-lowe/jmap-service-libs/logging"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
 )
 
@@ -68,12 +68,12 @@ type SearchIndexPublisher interface {
 
 // handler implements the Email/set logic.
 type handler struct {
-	emailRepo              EmailRepository
-	mailboxRepo            MailboxRepository
-	stateRepo              StateRepository
-	blobDeletePublisher    blobdelete.BlobDeletePublisher
-	transactor             TransactWriter
-	searchIndexPublisher   SearchIndexPublisher
+	emailRepo            EmailRepository
+	mailboxRepo          MailboxRepository
+	stateRepo            StateRepository
+	blobDeletePublisher  blobdelete.BlobDeletePublisher
+	transactor           TransactWriter
+	searchIndexPublisher SearchIndexPublisher
 }
 
 // newHandler creates a new handler.
@@ -516,7 +516,7 @@ func (h *handler) parseMailboxIDsUpdate(ctx context.Context, accountID, emailID 
 		mailboxID := strings.TrimPrefix(key, "mailboxIds/")
 		// Validate that the mailboxID doesn't contain nested paths (RFC 8620 Section 5.3)
 		if strings.Contains(mailboxID, "/") {
-			return nil, nil, jmaperror.InvalidPatch("invalid patch path: "+key).ToMap()
+			return nil, nil, jmaperror.InvalidPatch("invalid patch path: " + key).ToMap()
 		}
 
 		if value == nil {
@@ -638,7 +638,7 @@ func (h *handler) parseKeywordUpdates(data map[string]any, currentKeywords map[s
 		keyword := strings.TrimPrefix(key, "keywords/")
 		// Validate that the keyword doesn't contain nested paths (RFC 8620 Section 5.3)
 		if strings.Contains(keyword, "/") {
-			return nil, jmaperror.InvalidPatch("invalid patch path: "+key).ToMap()
+			return nil, jmaperror.InvalidPatch("invalid patch path: " + key).ToMap()
 		}
 		keyword = email.NormalizeKeyword(keyword)
 

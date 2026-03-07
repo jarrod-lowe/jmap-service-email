@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/email"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 // emailItem is an alias for the internal email.EmailItem type.
@@ -2415,10 +2415,10 @@ func TestResolveBodyPartRefs_AttachmentWithFullProperties(t *testing.T) {
 
 func TestResolveBodyPartRefs_TextBodyWithCharset(t *testing.T) {
 	bodyStructure := email.BodyPart{
-		PartID: "1",
-		Type:   "text/plain",
-		BlobID: "blob-1",
-		Size:   200,
+		PartID:  "1",
+		Type:    "text/plain",
+		BlobID:  "blob-1",
+		Size:    200,
 		Charset: "iso-8859-1",
 	}
 

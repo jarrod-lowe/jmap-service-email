@@ -17,9 +17,9 @@ import (
 
 // mockEmailRepository implements EmailRepository for testing.
 type mockEmailRepository struct {
-	queryEmailsByMailboxFunc          func(ctx context.Context, accountID, mailboxID string) ([]string, error)
-	getEmailFunc                      func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
-	buildDeleteEmailItemsFunc         func(emailItem *email.EmailItem) []types.TransactWriteItem
+	queryEmailsByMailboxFunc           func(ctx context.Context, accountID, mailboxID string) ([]string, error)
+	getEmailFunc                       func(ctx context.Context, accountID, emailID string) (*email.EmailItem, error)
+	buildDeleteEmailItemsFunc          func(emailItem *email.EmailItem) []types.TransactWriteItem
 	buildUpdateEmailMailboxesItemsFunc func(emailItem *email.EmailItem, newMailboxIDs map[string]bool) ([]string, []string, []types.TransactWriteItem)
 }
 
@@ -53,8 +53,8 @@ func (m *mockEmailRepository) BuildUpdateEmailMailboxesItems(emailItem *email.Em
 
 // mockStateRepository implements StateRepository for testing.
 type mockStateRepository struct {
-	getCurrentStateFunc           func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
-	buildStateChangeItemsFunc     func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
+	getCurrentStateFunc            func(ctx context.Context, accountID string, objectType state.ObjectType) (int64, error)
+	buildStateChangeItemsFunc      func(accountID string, objectType state.ObjectType, currentState int64, objectID string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 	buildStateChangeItemsMultiFunc func(accountID string, objectType state.ObjectType, currentState int64, objectIDs []string, changeType state.ChangeType) (int64, []types.TransactWriteItem)
 }
 

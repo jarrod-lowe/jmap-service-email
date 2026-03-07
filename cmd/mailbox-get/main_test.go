@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/mailbox"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 type mockMailboxRepository struct {
-	getMailboxFunc     func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
+	getMailboxFunc      func(ctx context.Context, accountID, mailboxID string) (*mailbox.MailboxItem, error)
 	getAllMailboxesFunc func(ctx context.Context, accountID string) ([]*mailbox.MailboxItem, error)
 }
 

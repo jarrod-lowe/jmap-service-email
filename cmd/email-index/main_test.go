@@ -147,9 +147,9 @@ func (m *mockVectorStore) DeleteVectors(ctx context.Context, accountID string, k
 
 // mockTokenWriter implements TokenWriter for testing.
 type mockTokenWriter struct {
-	writeFunc  func(ctx context.Context, emailItem *email.EmailItem) error
-	deleteFunc func(ctx context.Context, emailItem *email.EmailItem) error
-	writeCalls []*email.EmailItem
+	writeFunc   func(ctx context.Context, emailItem *email.EmailItem) error
+	deleteFunc  func(ctx context.Context, emailItem *email.EmailItem) error
+	writeCalls  []*email.EmailItem
 	deleteCalls []*email.EmailItem
 }
 

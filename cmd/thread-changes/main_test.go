@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 	"github.com/jarrod-lowe/jmap-service-email/internal/state"
+	"github.com/jarrod-lowe/jmap-service-libs/plugincontract"
 )
 
 // mockStateRepository implements the StateRepository interface for testing.

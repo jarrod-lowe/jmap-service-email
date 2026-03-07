@@ -37,7 +37,7 @@ func TokenizeAddress(addr EmailAddress) []string {
 	if addr.Email != "" {
 		add(addr.Email)
 		if at := strings.LastIndex(addr.Email, "@"); at > 0 {
-			add(addr.Email[:at])  // local part
+			add(addr.Email[:at])   // local part
 			add(addr.Email[at+1:]) // domain
 		}
 	}

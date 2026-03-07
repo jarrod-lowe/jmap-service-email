@@ -1,0 +1,20 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "Format Check",
+      "Go Mod Check",
+      "Tests",
+      "Tests (Race Detector)",
+      "Lint",
+      "Vulnerability Check",
+      "License Check",
+      "API Diff"
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
