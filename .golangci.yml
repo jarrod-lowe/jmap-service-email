@@ -1,7 +1,6 @@
 version: "2"
 
 linters:
-  disable-all: true
   enable:
     - errcheck
     - govet
@@ -22,11 +21,3 @@ linters:
         - shadow        # Intentional error wrapping patterns
         - fieldalignment # Memory optimization, not correctness
         - unusedwrite    # Test-only and intentional
-  issues:
-    exclude-use-default: false
-    # Exclude linter rules for test files
-    exclude-rules:
-      - path: _test\.go
-        linters:
-          - errcheck
-          - unusedwrite
