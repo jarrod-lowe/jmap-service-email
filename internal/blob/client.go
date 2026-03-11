@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jarrod-lowe/jmap-service-libs/tracing"
@@ -60,6 +61,18 @@ func NewHTTPBlobClient(baseURL string, httpClient HTTPDoer) *HTTPBlobClient {
 // blobURL constructs the download URL for a blob.
 func (c *HTTPBlobClient) blobURL(accountID, blobID string) string {
 	return c.baseURL + "/download-iam/" + accountID + "/" + blobID
+}
+
+// wrapServerFailError wraps a 5xx response as ErrServerFail with status code and body details.
+func wrapServerFailError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body) //nolint:errcheck // Best effort to read error body
+	statusText := http.StatusText(resp.StatusCode)
+	bodyStr := strings.TrimSpace(string(body))
+	err := fmt.Errorf("%w: status %d: %s", ErrServerFail, resp.StatusCode, statusText)
+	if bodyStr != "" {
+		err = fmt.Errorf("%w: %s", err, bodyStr)
+	}
+	return err
 }
 
 // FetchBlob fetches a blob by account ID and blob ID.
@@ -116,7 +129,7 @@ func (c *HTTPBlobClient) FetchBlob(ctx context.Context, accountID, blobID string
 		}
 		if resp.StatusCode >= 500 {
 			_ = resp.Body.Close() //nolint:errcheck // Cleanup before retry
-			lastErr = ErrServerFail
+			lastErr = wrapServerFailError(resp)
 			continue
 		}
 
@@ -170,9 +183,10 @@ func (c *HTTPBlobClient) Stream(ctx context.Context, accountID, blobID string) (
 		return nil, ErrForbidden
 	}
 	if resp.StatusCode >= 500 {
-		_ = resp.Body.Close() //nolint:errcheck // Cleanup before retry
-		tracing.RecordError(span, ErrServerFail)
-		return nil, ErrServerFail
+		_ = resp.Body.Close() //nolint:errcheck // Cleanup before returning error
+		err := wrapServerFailError(resp)
+		tracing.RecordError(span, err)
+		return nil, err
 	}
 
 	return resp.Body, nil
@@ -212,14 +226,15 @@ func (c *HTTPBlobClient) Delete(ctx context.Context, accountID, blobID string) e
 		tracing.RecordError(span, err)
 		return err
 	}
-	_ = resp.Body.Close() //nolint:errcheck // Not reading body
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // Defer cleanup
 
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
 	if resp.StatusCode >= 500 {
-		tracing.RecordError(span, ErrServerFail)
-		return ErrServerFail
+		err := wrapServerFailError(resp)
+		tracing.RecordError(span, err)
+		return err
 	}
 
 	err = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
@@ -268,8 +283,9 @@ func (c *HTTPBlobClient) Upload(ctx context.Context, accountID, parentBlobID, co
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // Defer cleanup
 
 	if resp.StatusCode >= 500 {
-		tracing.RecordError(span, ErrServerFail)
-		return "", 0, ErrServerFail
+		err := wrapServerFailError(resp)
+		tracing.RecordError(span, err)
+		return "", 0, err
 	}
 	if resp.StatusCode >= 400 {
 		err := fmt.Errorf("%w: status %d", ErrInvalidArguments, resp.StatusCode)

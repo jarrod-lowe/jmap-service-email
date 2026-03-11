@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +144,61 @@ func TestFetchBlob_Returns5xxAsErrServerFail(t *testing.T) {
 				t.Errorf("status %d: error = %v, want ErrServerFail", code, err)
 			}
 		})
+	}
+}
+
+func TestFetchBlob_ErrorIncludesStatusCode(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+		maxRetries: 0, // No retries to fail immediately
+	}
+
+	_, err := client.FetchBlob(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("FetchBlob should return error for 502")
+	}
+	// Verify error contains status code
+	errStr := err.Error()
+	if !strings.Contains(errStr, "502") {
+		t.Errorf("error message should contain status code 502, got: %s", errStr)
+	}
+}
+
+func TestFetchBlob_ErrorIncludesResponseBody(t *testing.T) {
+	responseBody := "Bad Gateway: upstream error"
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(bytes.NewReader([]byte(responseBody))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+		maxRetries: 0, // No retries to fail immediately
+	}
+
+	_, err := client.FetchBlob(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("FetchBlob should return error for 502")
+	}
+	// Verify error contains response body
+	errStr := err.Error()
+	if !strings.Contains(errStr, responseBody) {
+		t.Errorf("error message should contain response body, got: %s", errStr)
 	}
 }
 
@@ -516,6 +572,59 @@ func TestStream_Returns5xxAsErrServerFail(t *testing.T) {
 	}
 }
 
+func TestStream_ErrorIncludesStatusCode(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("Stream should return error for 502")
+	}
+	// Verify error contains status code
+	errStr := err.Error()
+	if !strings.Contains(errStr, "502") {
+		t.Errorf("error message should contain status code 502, got: %s", errStr)
+	}
+}
+
+func TestStream_ErrorIncludesResponseBody(t *testing.T) {
+	responseBody := "Bad Gateway: upstream error"
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(bytes.NewReader([]byte(responseBody))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, err := client.Stream(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("Stream should return error for 502")
+	}
+	// Verify error contains response body
+	errStr := err.Error()
+	if !strings.Contains(errStr, responseBody) {
+		t.Errorf("error message should contain response body, got: %s", errStr)
+	}
+}
+
 // Tests for Upload method
 
 func TestUpload_ConstructsCorrectURL(t *testing.T) {
@@ -681,6 +790,59 @@ func TestUpload_Returns5xxAsServerFail(t *testing.T) {
 	}
 }
 
+func TestUpload_ErrorIncludesStatusCode(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if err == nil {
+		t.Fatal("Upload should return error for 502")
+	}
+	// Verify error contains status code
+	errStr := err.Error()
+	if !strings.Contains(errStr, "502") {
+		t.Errorf("error message should contain status code 502, got: %s", errStr)
+	}
+}
+
+func TestUpload_ErrorIncludesResponseBody(t *testing.T) {
+	responseBody := "Bad Gateway: upstream error"
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(bytes.NewReader([]byte(responseBody))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	_, _, err := client.Upload(context.Background(), "user-123", "parent-blob", "text/plain", bytes.NewReader([]byte("test")))
+	if err == nil {
+		t.Fatal("Upload should return error for 502")
+	}
+	// Verify error contains response body
+	errStr := err.Error()
+	if !strings.Contains(errStr, responseBody) {
+		t.Errorf("error message should contain response body, got: %s", errStr)
+	}
+}
+
 // Tests for Delete method
 
 func TestDelete_ConstructsCorrectURL(t *testing.T) {
@@ -776,6 +938,59 @@ func TestDelete_5xxReturnsError(t *testing.T) {
 	err := client.Delete(context.Background(), "user-123", "blob-456")
 	if !errors.Is(err, ErrServerFail) {
 		t.Errorf("Delete error = %v, want ErrServerFail", err)
+	}
+}
+
+func TestDelete_ErrorIncludesStatusCode(t *testing.T) {
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("Delete should return error for 502")
+	}
+	// Verify error contains status code
+	errStr := err.Error()
+	if !strings.Contains(errStr, "502") {
+		t.Errorf("error message should contain status code 502, got: %s", errStr)
+	}
+}
+
+func TestDelete_ErrorIncludesResponseBody(t *testing.T) {
+	responseBody := "Bad Gateway: upstream error"
+	fake := &fakeHTTPDoer{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(bytes.NewReader([]byte(responseBody))),
+			}, nil
+		},
+	}
+
+	client := &HTTPBlobClient{
+		baseURL:    "https://api.example.com",
+		httpClient: fake,
+	}
+
+	err := client.Delete(context.Background(), "user-123", "blob-456")
+	if err == nil {
+		t.Fatal("Delete should return error for 502")
+	}
+	// Verify error contains response body
+	errStr := err.Error()
+	if !strings.Contains(errStr, responseBody) {
+		t.Errorf("error message should contain response body, got: %s", errStr)
 	}
 }
 
