@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.2
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.1
 	github.com/aws/aws-sdk-go-v2/service/s3vectors v1.6.4
-	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.23
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
 	github.com/google/uuid v1.6.0
 	github.com/jarrod-lowe/jmap-service-libs v1.0.120
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
