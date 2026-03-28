@@ -28,8 +28,8 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.19 h1:X1Tow7su
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.19/go.mod h1:/rARO8psX+4sfjUQXp5LLifjUt8DuATZ31WptNJTyQA=
 github.com/aws/aws-sdk-go-v2/service/route53 v1.62.1 h1:1jIdwWOulae7bBLIgB36OZ0DINACb1wxM6wdGlx4eHE=
 github.com/aws/aws-sdk-go-v2/service/route53 v1.62.1/go.mod h1:tE2zGlMIlxWv+7Otap7ctRp3qeKqtnja7DZguj3Vu/Y=
-github.com/aws/aws-sdk-go-v2/service/s3vectors v1.6.5 h1:kXLBdrcSQI6ZVJXqkjKaS4uL3MlkjO8jI1MYXcHQ2/0=
-github.com/aws/aws-sdk-go-v2/service/s3vectors v1.6.5/go.mod h1:Ayz1oy7HLYDTSC5K3QtlRSY/BCHQTAePGeX8VcjyI6U=
+github.com/aws/aws-sdk-go-v2/service/s3vectors v1.6.6 h1:YCfJLyF/bhvZyv2Fdv5eJtwzV78/BNAr/HIrOEh2dlk=
+github.com/aws/aws-sdk-go-v2/service/s3vectors v1.6.6/go.mod h1:b2x5u+RkZRQe9tKUkJWh3LoYLB+S8/3KnKF7+OYQP6s=
 github.com/aws/aws-sdk-go-v2/service/signin v1.0.7 h1:Y2cAXlClHsXkkOvWZFXATr34b0hxxloeQu/pAZz2row=
 github.com/aws/aws-sdk-go-v2/service/signin v1.0.7/go.mod h1:idzZ7gmDeqeNrSPkdbtMp9qWMgcBwykA7P7Rzh5DXVU=
 github.com/aws/aws-sdk-go-v2/service/sns v1.39.11 h1:Ke7RS0NuP9Xwk31prXYcFGA1Qfn8QmNWcxyjKPcXZdc=
