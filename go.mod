@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/aws/aws-lambda-go v1.53.0
-	github.com/aws/aws-sdk-go-v2 v1.41.4
+	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.2
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.0
 	github.com/aws/aws-sdk-go-v2/service/s3vectors v1.6.5
