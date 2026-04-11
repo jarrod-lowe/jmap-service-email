@@ -81,8 +81,8 @@ go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellam
 go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda/xrayconfig v0.67.0/go.mod h1:YCruOZhOhgPCoZ5dYJkREKgthoZyfyZMqbxT6jTM9S0=
 go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws v0.65.0 h1:aOlCp3OznfXnulbpr/aQAEEMz1azLE4oZDAqjHDbnHM=
 go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws v0.65.0/go.mod h1:sWOBrtYEIBgtR+Pv18b13D+85t/5vJG2rBimthyC99o=
-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 h1:OyrsyzuttWTSur2qN/Lm0m2a8yqyIjUVBZcxFPuXq2o=
-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0/go.mod h1:C2NGBr+kAB4bk3xtMXfZ94gqFDtg/GkI7e9zqGh5Beg=
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 h1:CqXxU8VOmDefoh0+ztfGaymYbhdB/tT3zs79QaZTNGY=
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0/go.mod h1:BuhAPThV8PBHBvg8ZzZ/Ok3idOdhWIodywz2xEcRbJo=
 go.opentelemetry.io/contrib/propagators/aws v1.42.0 h1:Kbr3xDxs6kcxp5ThXTKWK2OtwLhNoXBVtqguNYcsZL0=
 go.opentelemetry.io/contrib/propagators/aws v1.42.0/go.mod h1:Jzw9hZHtxdpCN7x8S17UH59X/EiFivp6VXLs9bdM1OQ=
 go.opentelemetry.io/otel v1.43.0 h1:mYIM03dnh5zfN7HautFE4ieIig9amkNANT+xcVxAj9I=
