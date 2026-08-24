@@ -1,6 +1,6 @@
 module github.com/jarrod-lowe/jmap-service-email
 
-go 1.26.1
+go 1.27.0
 
 require (
 	github.com/aws/aws-lambda-go v1.54.0
